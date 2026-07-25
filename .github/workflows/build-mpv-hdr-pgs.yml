@@ -105,9 +105,17 @@ jobs:
             's#https://git.videolan.org/git/ffmpeg/nv-codec-headers.git#https://github.com/FFmpeg/nv-codec-headers.git#' \
             packages/nvcodec-headers.cmake
 
-          # curl enables experimental ECH by default in the imported patch,
-          # but the pinned OpenSSL build does not expose an ECH API.
-          # Keep normal HTTPS, Windows CA, HTTP/2 and HTTPS RR enabled.
+          # The Windows release must use Schannel so certificate verification
+          # follows the Windows trust store, matching the proven 7/17 build.
+          sed -i \
+            's/-DCURL_USE_OPENSSL=ON/-DCURL_USE_OPENSSL=OFF/' \
+            packages/curl.cmake
+          sed -i \
+            '/-DCURL_USE_OPENSSL=OFF/a\        -DCURL_USE_SCHANNEL=ON' \
+            packages/curl.cmake
+
+          # ECH is not available through Schannel in this build. Normal
+          # HTTP/HTTPS, Windows CA, redirects, ranges and request headers remain.
           sed -i \
             's/-DUSE_ECH=ON/-DUSE_ECH=OFF/' \
             packages/curl.cmake
@@ -119,11 +127,20 @@ jobs:
             echo "::error::curl is still excluded from the mpv dependency graph"
             exit 1
           fi
-          grep -Fq -- '-DCURL_USE_OPENSSL=ON' packages/curl.cmake
+          grep -Fq -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
+          grep -Fq -- '-DCURL_USE_SCHANNEL=ON' packages/curl.cmake
           grep -Fq -- '-DCURL_CA_NATIVE=ON' packages/curl.cmake
           grep -Fq -- '-DUSE_ECH=OFF' packages/curl.cmake
+          if grep -Fq -- '-DCURL_USE_OPENSSL=ON' packages/curl.cmake; then
+            echo "::error::curl OpenSSL backend is still enabled"
+            exit 1
+          fi
+          if grep -Fq -- '-DCURL_USE_SCHANNEL=OFF' packages/curl.cmake; then
+            echo "::error::curl Schannel backend is disabled"
+            exit 1
+          fi
           if grep -Fq -- '-DUSE_ECH=ON' packages/curl.cmake; then
-            echo "::error::curl ECH is enabled with an OpenSSL build that lacks ECH"
+            echo "::error::curl ECH is enabled in the Schannel release build"
             exit 1
           fi
           if grep -Eq 'ngtcp2|nghttp3|USE_NGTCP2=ON|USE_NGHTTP3=ON' \
@@ -134,7 +151,7 @@ jobs:
           grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
           grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
-          grep -n -A10 -B4 -- '-DCURL_USE_OPENSSL=ON' packages/curl.cmake
+          grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
 
       - name: Restore reusable build cache
@@ -145,17 +162,19 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-libcurl-pinned-no-ech-v3-ubuntu-gcc64-${{ hashFiles('patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch') }}
+          key: mpv-hdr-pgs-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch') }}
           restore-keys: |
-            mpv-hdr-pgs-libcurl-pinned-no-ech-v3-ubuntu-gcc64-
+            mpv-hdr-pgs-schannel-v1-ubuntu-gcc64-
 
-      - name: Reset cached mpv source before patching
+      - name: Reset cached mpv and curl sources before patching
         shell: bash
         run: |
           set -euxo pipefail
           cd winbuild/mpv-winbuild-cmake
           rm -rf \
+            src_packages/curl \
             src_packages/mpv \
+            build64/packages/curl-prefix \
             build64/packages/mpv-prefix \
             build64/packages/mpv-release-prefix \
             build64/packages/mpv-packaging-prefix
@@ -185,6 +204,16 @@ jobs:
           fi
           ninja -C build64 update
           ninja -C build64 curl
+
+          curl_config_log=build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log
+          test -f "$curl_config_log"
+          grep -Fq -- 'Enabled SSL backends: Schannel' "$curl_config_log"
+          if grep -Fq -- 'Enabled SSL backends: OpenSSL' "$curl_config_log"; then
+            echo "::error::libcurl unexpectedly configured with OpenSSL"
+            exit 1
+          fi
+          grep -F -- 'Features:' "$curl_config_log"
+          grep -F -- 'Enabled SSL backends:' "$curl_config_log"
 
       - name: Build static x86-64 mpv
         id: build
@@ -229,6 +258,9 @@ jobs:
             -maxdepth 1 -type f -name 'mpv-x86_64-*.7z' -print -quit)"
           test -n "$archive"
           7za l "$archive" | grep -E 'mpv\.(exe|com)'
+          mkdir artifact-check
+          7za e -y -oartifact-check "$archive" mpv.exe mpv.com
+          strings -a artifact-check/mpv.exe | grep -qi schannel
           mkdir artifact
           cp "$archive" artifact/
           sha256sum "$archive" > artifact/SHA256SUMS.txt
