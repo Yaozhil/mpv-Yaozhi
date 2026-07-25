@@ -149,6 +149,17 @@ jobs:
           restore-keys: |
             mpv-hdr-pgs-libcurl-pinned-no-ech-v3-ubuntu-gcc64-
 
+      - name: Reset cached mpv source before patching
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd winbuild/mpv-winbuild-cmake
+          rm -rf \
+            src_packages/mpv \
+            build64/packages/mpv-prefix \
+            build64/packages/mpv-release-prefix \
+            build64/packages/mpv-packaging-prefix
+
       - name: Preflight and build libcurl dependency chain
         shell: bash
         env:
