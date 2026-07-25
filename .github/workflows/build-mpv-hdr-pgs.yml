@@ -260,7 +260,8 @@ jobs:
           7za l "$archive" | grep -E 'mpv\.(exe|com)'
           mkdir artifact-check
           7za e -y -oartifact-check "$archive" mpv.exe mpv.com
-          strings -a artifact-check/mpv.exe | grep -qi schannel
+          strings -a artifact-check/mpv.exe > artifact-check/mpv.strings
+          grep -qi schannel artifact-check/mpv.strings
           mkdir artifact
           cp "$archive" artifact/
           sha256sum "$archive" > artifact/SHA256SUMS.txt
