@@ -1,13 +1,13 @@
 From 03b17140ec4cc2f6eac20d0c595dfe034a3e4b02 Mon Sep 17 00:00:00 2001
 From: Yaozhi mpv build <build@local.invalid>
 Date: Fri, 24 Jul 2026 13:15:50 +0800
-Subject: [PATCH] vo_gpu_next: add image subtitle colorspace control
+Subject: [PATCH] vo_gpu_next: add image subtitle colorspace and brightness control
 
 ---
  DOCS/interface-changes.rst |  1 +
- DOCS/man/options.rst       | 11 +++++++++++
- video/out/vo_gpu_next.c    | 29 +++++++++++++++++++++++++++--
- 3 files changed, 39 insertions(+), 2 deletions(-)
+ DOCS/man/options.rst       | 15 +++++++++++++++
+ video/out/vo_gpu_next.c    | 33 +++++++++++++++++++++++++++++++--
+ 3 files changed, 47 insertions(+), 2 deletions(-)
 
 diff --git a/DOCS/interface-changes.rst b/DOCS/interface-changes.rst
 index 230a5b5..49a64a1 100644
@@ -25,7 +25,11 @@ diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
 index de82638..02d2c13 100644
 --- a/DOCS/man/options.rst
 +++ b/DOCS/man/options.rst
-@@ -2815,6 +2815,17 @@ Subtitles
+@@ -2815,6 +2815,21 @@ Subtitles
++    Numeric values and ``sdr`` also control the diffuse white level when
++    ``--image-subs-colorspace`` selects SDR sRGB. The video metadata modes
++    fall back to standard SDR white in that path.
++
      This also affects image subtitle brightness in HDR tone mapping with
      ``--blend-subtitles=<yes|video>``.
  
@@ -102,20 +106,22 @@ index a7567e1..78de932 100644
                  ol->color = src->params.color;
                  if (pl_color_transfer_is_hdr(ol->color.transfer)) {
                      bool use_static = p->next_opts->image_subs_hdr_peak == -2;
-@@ -421,6 +440,12 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
+@@ -421,6 +440,16 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
                          };
                      }
                  }
 +            } else {
 +                // Image subtitles are authored as SDR graphics. In particular,
 +                // PGS bitmaps must not inherit PQ/HLG/Dolby Vision transfer
-+                // metadata from the video they are overlaid on.
++                // metadata from the video they are overlaid on. Keep the sRGB
++                // color description while allowing an independent HDR diffuse
++                // white level for the bitmap itself.
++                int peak = p->next_opts->image_subs_hdr_peak;
 +                ol->color = pl_color_space_srgb;
-+                ol->color.hdr.max_luma = PL_COLOR_SDR_WHITE;
++                ol->color.hdr.max_luma = peak >= 10
++                    ? peak : PL_COLOR_SDR_WHITE;
              }
              break;
          case SUBBITMAP_LIBASS:
 -- 
 2.54.0.windows.1
-
-
