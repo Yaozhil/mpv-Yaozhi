@@ -21,6 +21,10 @@
 
 ![网盘登录面板](docs/images/alist-login-annotated.png)
 
+### 杳知菜单展示
+
+![杳知菜单展示](docs/images/yaozhi-menu-showcase.png)
+
 
 ### 杳知配置助手5.0
 
