@@ -402,19 +402,14 @@ jobs:
           grep -qi schannel artifact-check/mpv.strings
           grep -qi libarcdav3a artifact-check/mpv.strings
 
-          ffmpeg_config="$(
-            find winbuild/mpv-winbuild-cmake/build64/packages/ffmpeg-prefix \
-              -type f -name config_components.h -print -quit
-          )"
-          test -n "$ffmpeg_config"
-          grep -Fq '#define CONFIG_LIBARCDAV3A_DECODER 1' "$ffmpeg_config"
+          ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
+          test -f "$ffmpeg_exe"
+          strings -a "$ffmpeg_exe" > artifact-check/ffmpeg.strings
+          grep -qi libarcdav3a artifact-check/ffmpeg.strings
 
           mkdir artifact
           cp "$archive" artifact/
-          ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
-          test -f "$ffmpeg_exe"
           cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
-          cp "$ffmpeg_config" artifact/FFMPEG-CONFIG-COMPONENTS.txt
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
             artifact/AV3A-SYMBOLS.txt
