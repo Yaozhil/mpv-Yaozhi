@@ -106,6 +106,8 @@ jobs:
             packages/avs3-audiodec-9000-static-library.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
             packages/ffmpeg-9000-libarcdav3a-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
+            packages/davs2-9000-const-correctness.patch
 
           python3 - <<'PY'
           from pathlib import Path
@@ -176,6 +178,20 @@ jobs:
           if tag not in text:
               text = text.replace(fork, fork + tag, 1)
 
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9000-const-correctness.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9000-const-correctness.patch\n"
+          )
+          if "davs2-9000-const-correctness.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate davs2 update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+
           davs2.write_text(text)
           PY
 
@@ -237,6 +253,7 @@ jobs:
           grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
           grep -n -A4 -B2 'llawsxx/davs2-10bit' packages/davs2.cmake
           grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
+          grep -n 'PATCH_COMMAND.*davs2-9000' packages/davs2.cmake
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
