@@ -1,0 +1,190 @@
+diff --git a/libavcodec/libarcdav3a.c b/libavcodec/libarcdav3a.c
+index 87c4a7a..508ea1b 100644
+--- a/libavcodec/libarcdav3a.c
++++ b/libavcodec/libarcdav3a.c
+@@ -1,6 +1,7 @@
+-#include <dlfcn.h>
+-#include <unistd.h>
++#include <errno.h>
++#include <limits.h>
+ #include <stdbool.h>
++#include <stdint.h>
+ #include "decode.h"
+ #include "avcodec.h"
+ #include "internal.h"
+@@ -9,7 +10,7 @@
+ #include "libavutil/mem.h"
+ #include "avs3_decoder_interface.h"
+ 
+-#define MAX_VIVID_SIZE 4096*64 //解码输出buffer 256k
++#define MAX_VIVID_SIZE (4096U * 64U)
+ 
+ typedef struct AVS3DecoderOutput
+ {
+@@ -59,6 +60,8 @@ static av_cold int arcdav3a_decode_init(AVCodecContext *avctx)
+ 	//avctx->ch_layout  = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+ 	if (!h->m_hAvs3)
+ 		h->m_hAvs3 = avs3_create_decoder();
++	if (!h->m_hAvs3)
++		return AVERROR(ENOMEM);
+ 	
+ 	h->m_lastChCfg = -1;
+ 	h->m_lastObjcnt = -1;
+@@ -72,6 +75,11 @@ static av_cold int arcdav3a_decode_init(AVCodecContext *avctx)
+ 	memset(&h->m_LastMetaData, 0, sizeof(h->m_LastMetaData));
+ 	memset(&h->out_frame, 0, sizeof(AVS3DecoderOutput));
+ 	h->out_frame.pOutData = av_malloc(MAX_VIVID_SIZE*sizeof(unsigned char));
++	if (!h->out_frame.pOutData) {
++		avs3_destroy_decoder(h->m_hAvs3);
++		h->m_hAvs3 = NULL;
++		return AVERROR(ENOMEM);
++	}
+ 	memset(h->out_frame.pOutData, 0, MAX_VIVID_SIZE*sizeof(unsigned char));
+ 	h->m_bGotMD = false;
+ 	av_log(avctx, AV_LOG_DEBUG, "end arcdav3a_decode_init!\n");
+@@ -86,6 +94,8 @@ static av_cold void arcdav3a_decode_flush(AVCodecContext *avctx)
+ 		avs3_destroy_decoder(h->m_hAvs3);
+ 	av_log(avctx, AV_LOG_DEBUG, "arcdav3a_decode_flush! avs3_destroy_decoder end!\n");
+ 	h->m_hAvs3 = avs3_create_decoder();
++	if (!h->m_hAvs3)
++		av_log(avctx, AV_LOG_ERROR, "Failed to recreate AV3A decoder\n");
+ 	av_log(avctx, AV_LOG_DEBUG, "arcdav3a_decode_flush! avs3_create_decoder end!\n");
+ 	h->m_bFirstFrame = true;
+ 	h->m_dwDataLen = 0;
+@@ -101,23 +111,20 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 	av_log(avctx, AV_LOG_DEBUG, "begin  dav3a_decode_frame!\n");
+ 	arcdav3a_context *h = avctx->priv_data;
+     int ret = 0;
+-	if (!h->m_pBuffer)
+-	{
+-		h->m_dwBufferSize = lenIn * 2;
+-		h->m_pBuffer = av_malloc(h->m_dwBufferSize);
+-	}
+-	if (h->m_dwDataLen + lenIn > h->m_dwBufferSize)
+-	{
+-		h->m_dwBufferSize = h->m_dwDataLen + lenIn * 2;
+-		char* ptmp = av_realloc(h->m_pBuffer, h->m_dwBufferSize);
+-		if (ptmp)
+-			h->m_pBuffer = ptmp;
+-		else
+-		    av_free(h->m_pBuffer);
+-	}
+-	if (!h->m_pBuffer)
+-	{
+-		av_log(avctx, AV_LOG_ERROR, "av3a memory error!");
++	unsigned long required;
++
++	if (!h->m_hAvs3 || !pIn || !lenConsumed || !pOut || !pOut->pOutData)
++		return AVERROR(EINVAL);
++	if (lenIn > ULONG_MAX - h->m_dwDataLen)
++		return AVERROR(ENOMEM);
++
++	required = h->m_dwDataLen + lenIn;
++	if (required > h->m_dwBufferSize) {
++		char *ptmp = av_realloc(h->m_pBuffer, required);
++		if (!ptmp)
++			return AVERROR(ENOMEM);
++		h->m_pBuffer = ptmp;
++		h->m_dwBufferSize = required;
+ 	}
+ 
+ 	memcpy(h->m_pBuffer + h->m_dwDataLen, pIn, lenIn);
+@@ -202,6 +209,9 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 			h->m_bFirstFrame = false;
+ 
+ 		int outlen = 0;
++		if ((unsigned long)outindex >
++		    MAX_VIVID_SIZE - MAX_CHANNELS * FRAME_LEN * sizeof(int16_t))
++			return AVERROR_BUFFER_TOO_SMALL;
+ 		av_log(avctx, AV_LOG_DEBUG, "begin  avs3_decode! pos:%d m_dwDataLen:%ld h->m_pBuffer:%p pOut->pOutData:%p\n", pos, h->m_dwDataLen, h->m_pBuffer, pOut->pOutData);
+ 		ret = avs3_decode(h->m_hAvs3, h->m_pBuffer + pos, h->m_dwDataLen - pos, pOut->pOutData + outindex, &outlen, &consumed);
+ 		pos += consumed;
+@@ -267,6 +277,38 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 	return ret;
+ }
+ 
++static int arcdav3a_set_layout(AVCodecContext *avctx, AVFrame *frame,
++			       unsigned long channels, unsigned long channel_config)
++{
++	AVChannelLayout layout = {
++		.order = AV_CHANNEL_ORDER_UNSPEC,
++		.nb_channels = channels,
++	};
++	ChannelNumConfig config = (ChannelNumConfig)channel_config;
++	int ret;
++
++	if (channels == 1)
++		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
++	else if (channels == 2)
++		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
++	else if (config == CHANNEL_CONFIG_MC_5_1_4 && channels == 10)
++		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_5POINT1POINT4_BACK;
++	else if (config == CHANNEL_CONFIG_MC_7_1_2 && channels == 10)
++		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT2;
++	else if (config == CHANNEL_CONFIG_MC_7_1_4 && channels == 12)
++		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK;
++	else if (config == CHANNEL_CONFIG_HOA_ORDER3 && channels == 16)
++		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_HEXADECAGONAL;
++
++	av_channel_layout_uninit(&frame->ch_layout);
++	ret = av_channel_layout_copy(&frame->ch_layout, &layout);
++	if (ret < 0)
++		return ret;
++
++	av_channel_layout_uninit(&avctx->ch_layout);
++	return av_channel_layout_copy(&avctx->ch_layout, &layout);
++}
++
+ 
+ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_frame_ptr, AVPacket *avpkt)
+ {
+@@ -310,7 +352,7 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 			
+ 			ret = dav3a_decode_frame(avctx, pbIn, size, &lenConsumed, &h->out_frame);
+ 			if (ret < 0)
+-				return AVERROR(EAGAIN);
++				return ret;
+ 		
+ 			pbIn += lenConsumed;
+ 			size -= lenConsumed;
+@@ -329,28 +371,22 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 			}
+ 			fclose(fpout);*/
+ 			
++			if (!h->out_frame.nlen)
++				return avpkt->size;
++			if (!h->out_frame.nChannel)
++				return AVERROR_INVALIDDATA;
++
+ 			frm->format = AV_SAMPLE_FMT_S16;
+ 			sampleSize = h->out_frame.nChannel * av_get_bytes_per_sample(frm->format);
++			if (h->out_frame.nlen % sampleSize)
++				return AVERROR_INVALIDDATA;
+ 			frm->nb_samples = h->out_frame.nlen / sampleSize;
+ 			frm->sample_rate = h->out_frame.nSamplerate;
+-        	av_channel_layout_default(&frm->ch_layout, h->out_frame.nChannel);
+-			ChannelNumConfig chconf = (ChannelNumConfig)h->out_frame.nChCfg;
+-			if(h->out_frame.nChannel == 1)
+-			    frm->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;// need set frame->ch_payout to frame ch_out verification
+-			else if(h->out_frame.nChannel == 2)
+-			    frm->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;// need set frame->ch_payout to frame ch_out verification
+-			else if(chconf == CHANNEL_CONFIG_MC_5_1_4 && h->out_frame.nChannel >= 10)
+-			    frm->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_5POINT1POINT4_BACK;
+-			else if(chconf == CHANNEL_CONFIG_MC_7_1_2 && h->out_frame.nChannel >= 10)
+-			    frm->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT2;
+-			else if(chconf == CHANNEL_CONFIG_MC_7_1_4 && h->out_frame.nChannel >= 12)
+-			    frm->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK;
+-			else if(chconf == CHANNEL_CONFIG_HOA_ORDER3 && h->out_frame.nChannel == 16)
+-			    frm->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_HEXADECAGONAL;
+-			else if(chconf == CHANNEL_CONFIG_UNKNOWN)//error
+-			av_log(avctx, AV_LOG_ERROR, "unknown audio chconf! Please check the source...\n");
+-			frm->ch_layout.nb_channels = h->out_frame.nChannel;// set correct channel, OTHERWISE will crash when 声床+对象方式没有render成2声道的情况
+-            avctx->ch_layout  = frm->ch_layout;//need reset avctx->ch_layout for ff_get_buffer to get correct size
++			ret = arcdav3a_set_layout(avctx, frm,
++						 h->out_frame.nChannel,
++						 h->out_frame.nChCfg);
++			if (ret < 0)
++				return ret;
+ 			avctx->sample_rate = frm->sample_rate;
+ 
+ 			av_log(avctx, AV_LOG_DEBUG, " before ff_get_buffer! h->out_frame.nlen %ld frm->nb_samples %d\n", h->out_frame.nlen, frm->nb_samples);

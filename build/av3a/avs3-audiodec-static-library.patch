@@ -1,0 +1,125 @@
+diff --git a/av3adecoder/CMakeLists.txt b/av3adecoder/CMakeLists.txt
+new file mode 100644
+index 0000000..6e64cc1
+--- /dev/null
++++ b/av3adecoder/CMakeLists.txt
+@@ -0,0 +1,66 @@
++cmake_minimum_required(VERSION 3.19)
++
++project(AVS3AudioDec LANGUAGES C)
++
++file(GLOB AVS3_DECODER_SOURCES CONFIGURE_DEPENDS
++    "${CMAKE_CURRENT_SOURCE_DIR}/avs3Decoder/src/*.c"
++)
++file(GLOB AVS3_COMMON_SOURCES CONFIGURE_DEPENDS
++    "${CMAKE_CURRENT_SOURCE_DIR}/libavs3_common/*.c"
++)
++file(GLOB AVS3_DEBUG_SOURCES CONFIGURE_DEPENDS
++    "${CMAKE_CURRENT_SOURCE_DIR}/libavs3_debug/*.c"
++)
++list(FILTER AVS3_DECODER_SOURCES EXCLUDE REGEX
++    "/avs3_(io_dec|write_wav)\\.c$"
++)
++
++add_library(AVS3AudioDec STATIC
++    ${AVS3_DECODER_SOURCES}
++    ${AVS3_COMMON_SOURCES}
++    ${AVS3_DEBUG_SOURCES}
++)
++
++target_compile_features(AVS3AudioDec PRIVATE c_std_99)
++target_compile_definitions(AVS3AudioDec PRIVATE
++    AVS3_AUDIODEC_LIBRARY=1
++)
++target_compile_options(AVS3AudioDec PRIVATE
++    $<$<C_COMPILER_ID:GNU,Clang>:-fno-strict-aliasing>
++)
++target_include_directories(AVS3AudioDec
++    PUBLIC
++        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/avs3Decoder/include>
++        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libavs3_common>
++        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libavs3_debug>
++        $<INSTALL_INTERFACE:include/avs3a>
++)
++
++set_target_properties(AVS3AudioDec PROPERTIES
++    OUTPUT_NAME AVS3AudioDec
++    POSITION_INDEPENDENT_CODE ON
++)
++
++install(TARGETS AVS3AudioDec
++    ARCHIVE DESTINATION lib
++)
++install(FILES
++    avs3Decoder/include/avs3_decoder_interface.h
++    avs3Decoder/include/avs3_prot_dec.h
++    avs3Decoder/include/avs3_stat_dec.h
++    DESTINATION include/avs3a
++)
++install(DIRECTORY libavs3_common/
++    DESTINATION include/avs3a
++    FILES_MATCHING PATTERN "*.h"
++)
++install(DIRECTORY libavs3_debug/
++    DESTINATION include/avs3a
++    FILES_MATCHING PATTERN "*.h"
++)
++
++if(NOT CMAKE_CROSSCOMPILING)
++    message(WARNING
++        "AVS3AudioDec is intended to be built with the same target toolchain "
++        "as FFmpeg.")
++endif()
+diff --git a/av3adecoder/avs3Decoder/src/decoder.c b/av3adecoder/avs3Decoder/src/decoder.c
+index d63950c..1906111 100644
+--- a/av3adecoder/avs3Decoder/src/decoder.c
++++ b/av3adecoder/avs3Decoder/src/decoder.c
+@@ -6,9 +6,13 @@
+ #include "avs3_cnst_com.h"
+ #include "avs3_prot_dec.h"
+ #include "avs3_rom_com.h"
++#ifndef AVS3_AUDIODEC_LIBRARY
+ #include <time.h>
++#endif
+ #include "avs3_decoder_interface.h"
++#ifndef AVS3_AUDIODEC_LIBRARY
+ #include "avs3_dec_lib.h"
++#endif
+ #include <string.h>
+ #include <math.h>
+ #include "avs3_prot_com.h"
+@@ -22,6 +26,7 @@
+ #if defined(WIN32) || defined(_WINDLL)
+ #include "windows.h"
+ #endif
++#ifndef AVS3_AUDIODEC_LIBRARY
+ long long  VMF_GetTime()
+ {
+     struct timespec time;
+@@ -170,6 +175,7 @@ int main(int argc, char* argv[])
+ 
+     return 0;
+ }
++#endif
+ 
+ AVS3DecoderHandle avs3_create_decoder()
+ {
+@@ -243,7 +249,9 @@ int parse_header(AVS3DecoderHandle hAvs3Dec, unsigned char* pData, int nLenIn,
+ 	if (nLenIn < MAX_NBYTES_FRAME_HEADER)
+ 	{
+ //		ASLOG_MsgA(3, "%p, nLenIn(%d) < MAX_NBYTES_FRAME_HEADER", hAvs3Dec, nLenIn);
++#ifndef AVS3_AUDIODEC_LIBRARY
+ 		printf("%p, nLenIn(%d) < MAX_NBYTES_FRAME_HEADER", hAvs3Dec, nLenIn);
++#endif
+ 		return AVS3_DATA_NOT_ENOUGH;
+ 	}
+ 
+diff --git a/av3adecoder/libavs3_common/avs3_cnst_com.h b/av3adecoder/libavs3_common/avs3_cnst_com.h
+--- a/av3adecoder/libavs3_common/avs3_cnst_com.h
++++ b/av3adecoder/libavs3_common/avs3_cnst_com.h
+@@ -318,2 +318,4 @@
+-#ifdef ANDROID
++#if defined(AVS3_AUDIODEC_LIBRARY)
++#define LOGD(format, ...)
++#elif defined(ANDROID)
+ #include <android/log.h>

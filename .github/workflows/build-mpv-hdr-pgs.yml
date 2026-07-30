@@ -1,4 +1,4 @@
-name: Build mpv HDR PGS fix
+name: Build mpv HDR PGS + AV3A
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - codex/hdr-pgs-core-fix
     paths:
       - ".github/workflows/build-mpv-hdr-pgs.yml"
+      - "build/av3a/**"
       - "patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
   workflow_dispatch:
 
@@ -98,6 +99,70 @@ jobs:
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
             packages/mpv-9000-image-subs-colorspace.patch
 
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
+            packages/avs3-audiodec.cmake
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec-static-library.patch" \
+            packages/avs3-audiodec-9000-static-library.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
+            packages/ffmpeg-9000-libarcdav3a-hardening.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          packages = Path("packages/CMakeLists.txt")
+          text = packages.read_text()
+          av3a_entry = "    avs3-audiodec\n"
+          if av3a_entry not in text:
+              anchor = "    ffmpeg\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate ffmpeg package-list anchor")
+              text = text.replace(anchor, av3a_entry + anchor, 1)
+              packages.write_text(text)
+
+          ffmpeg = Path("packages/ffmpeg.cmake")
+          text = ffmpeg.read_text()
+          dependency = "        avs3-audiodec\n"
+          if dependency not in text:
+              anchor = "    DEPENDS\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg dependency anchor")
+              text = text.replace(anchor, anchor + dependency, 1)
+
+          upstream = "    GIT_REPOSITORY https://github.com/FFmpeg/FFmpeg.git\n"
+          fork = "    GIT_REPOSITORY https://github.com/llawsxx/FFmpeg.git\n"
+          if upstream in text:
+              text = text.replace(upstream, fork, 1)
+          elif fork not in text:
+              raise SystemExit("Could not locate FFmpeg repository")
+
+          tag = "    GIT_TAG 18c01ad424ca7712ef9a9d46953308efc75c4776\n"
+          if tag not in text:
+              text = text.replace(fork, fork + tag, 1)
+
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "ffmpeg-9000-libarcdav3a-hardening.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "ffmpeg-9000-libarcdav3a-hardening.patch\n"
+          )
+          if "ffmpeg-9000-libarcdav3a-hardening.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+
+          option = "        --enable-libarcdav3a\n"
+          if option not in text:
+              anchor = "        --enable-libplacebo\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg configure anchor")
+              text = text.replace(anchor, anchor + option, 1)
+
+          ffmpeg.write_text(text)
+          PY
+
           sed -i \
             '/GIT_REPOSITORY https:\/\/github.com\/mpv-player\/mpv.git/a\\    GIT_TAG 99b4c12cc' \
             packages/mpv.cmake
@@ -150,6 +215,10 @@ jobs:
           fi
           grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
           grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
+          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
+          grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
+          grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
+          grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
@@ -162,9 +231,9 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch') }}
+          key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch') }}
           restore-keys: |
-            mpv-hdr-pgs-schannel-v1-ubuntu-gcc64-
+            mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
       - name: Reset cached mpv and curl sources before patching
         shell: bash
@@ -172,9 +241,13 @@ jobs:
           set -euxo pipefail
           cd winbuild/mpv-winbuild-cmake
           rm -rf \
+            src_packages/avs3-audiodec \
             src_packages/curl \
+            src_packages/ffmpeg \
             src_packages/mpv \
+            build64/packages/avs3-audiodec-prefix \
             build64/packages/curl-prefix \
+            build64/packages/ffmpeg-prefix \
             build64/packages/mpv-prefix \
             build64/packages/mpv-release-prefix \
             build64/packages/mpv-packaging-prefix
@@ -214,6 +287,27 @@ jobs:
           fi
           grep -F -- 'Features:' "$curl_config_log"
           grep -F -- 'Enabled SSL backends:' "$curl_config_log"
+
+      - name: Build and verify AV3A decoder dependency
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          cd winbuild/mpv-winbuild-cmake
+
+          ninja -C build64 avs3-audiodec
+
+          av3a_lib=build64/install/x86_64-w64-mingw32/lib/libAVS3AudioDec.a
+          test -f "$av3a_lib"
+          nm -g --defined-only "$av3a_lib" > avs3-audiodec-symbols.txt
+          for symbol in \
+            avs3_create_decoder \
+            avs3_destroy_decoder \
+            parse_header \
+            avs3_decode; do
+            grep -Eq "[[:space:]]_?${symbol}$" avs3-audiodec-symbols.txt
+          done
 
       - name: Build static x86-64 mpv
         id: build
@@ -262,14 +356,26 @@ jobs:
           7za e -y -oartifact-check "$archive" mpv.exe mpv.com
           strings -a artifact-check/mpv.exe > artifact-check/mpv.strings
           grep -qi schannel artifact-check/mpv.strings
+          grep -qi libarcdav3a artifact-check/mpv.strings
+
+          ffmpeg_config="$(
+            find winbuild/mpv-winbuild-cmake/build64/packages/ffmpeg-prefix \
+              -type f -name config_components.h -print -quit
+          )"
+          test -n "$ffmpeg_config"
+          grep -Fq '#define CONFIG_LIBARCDAV3A_DECODER 1' "$ffmpeg_config"
+
           mkdir artifact
           cp "$archive" artifact/
+          cp \
+            winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
+            artifact/AV3A-SYMBOLS.txt
           sha256sum "$archive" > artifact/SHA256SUMS.txt
 
       - name: Upload custom mpv
         uses: actions/upload-artifact@v6
         with:
-          name: mpv-hdr-pgs-x86_64
+          name: mpv-hdr-pgs-av3a-x86_64
           path: artifact/*
           if-no-files-found: error
           retention-days: 7
