@@ -106,6 +106,8 @@ jobs:
             packages/avs3-audiodec-9000-static-library.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
             packages/ffmpeg-9000-libarcdav3a-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-nvenc-sdk-13.1.patch" \
+            packages/ffmpeg-9001-nvenc-sdk-13.1.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
             packages/davs2-9000-const-correctness.patch
 
@@ -145,10 +147,14 @@ jobs:
           patch = (
               "    PATCH_COMMAND ${EXEC} git apply --check "
               "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9000-libarcdav3a-hardening.patch\n"
+              "ffmpeg-9000-libarcdav3a-hardening.patch "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "ffmpeg-9001-nvenc-sdk-13.1.patch\n"
               "        COMMAND ${EXEC} git apply "
               "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9000-libarcdav3a-hardening.patch\n"
+              "ffmpeg-9000-libarcdav3a-hardening.patch "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "ffmpeg-9001-nvenc-sdk-13.1.patch\n"
           )
           if "ffmpeg-9000-libarcdav3a-hardening.patch" not in text:
               anchor = '    UPDATE_COMMAND ""\n'
@@ -250,6 +256,7 @@ jobs:
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9001-nvenc-sdk-13.1.patch' packages/ffmpeg.cmake
           grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
           grep -n -A4 -B2 'llawsxx/davs2-10bit' packages/davs2.cmake
           grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
