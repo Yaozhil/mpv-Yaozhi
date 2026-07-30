@@ -20,6 +20,7 @@ jobs:
     env:
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
+      DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
 
     steps:
       - name: Install build dependencies
@@ -161,6 +162,21 @@ jobs:
               text = text.replace(anchor, anchor + option, 1)
 
           ffmpeg.write_text(text)
+
+          davs2 = Path("packages/davs2.cmake")
+          text = davs2.read_text()
+          upstream = "    GIT_REPOSITORY https://github.com/saindriches/davs2.git\n"
+          fork = "    GIT_REPOSITORY https://github.com/llawsxx/davs2-10bit.git\n"
+          if upstream in text:
+              text = text.replace(upstream, fork, 1)
+          elif fork not in text:
+              raise SystemExit("Could not locate davs2 repository")
+
+          tag = "    GIT_TAG b42ffca966970dc788f8c57549bee038b2974346\n"
+          if tag not in text:
+              text = text.replace(fork, fork + tag, 1)
+
+          davs2.write_text(text)
           PY
 
           sed -i \
@@ -219,6 +235,8 @@ jobs:
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
           grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
+          grep -n -A4 -B2 'llawsxx/davs2-10bit' packages/davs2.cmake
+          grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
@@ -235,7 +253,7 @@ jobs:
           restore-keys: |
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
-      - name: Reset cached mpv and curl sources before patching
+      - name: Reset cached patched sources before building
         shell: bash
         run: |
           set -euxo pipefail
@@ -243,10 +261,12 @@ jobs:
           rm -rf \
             src_packages/avs3-audiodec \
             src_packages/curl \
+            src_packages/davs2 \
             src_packages/ffmpeg \
             src_packages/mpv \
             build64/packages/avs3-audiodec-prefix \
             build64/packages/curl-prefix \
+            build64/packages/davs2-prefix \
             build64/packages/ffmpeg-prefix \
             build64/packages/mpv-prefix \
             build64/packages/mpv-release-prefix \
@@ -367,6 +387,10 @@ jobs:
 
           mkdir artifact
           cp "$archive" artifact/
+          ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
+          test -f "$ffmpeg_exe"
+          cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
+          cp "$ffmpeg_config" artifact/FFMPEG-CONFIG-COMPONENTS.txt
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
             artifact/AV3A-SYMBOLS.txt
