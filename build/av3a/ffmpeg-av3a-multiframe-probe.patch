@@ -70,3 +70,15 @@ index ac9baf9..ecabe20 100644
  static int av3a_read_header(AVFormatContext *s)
  {
      int ret = 0;
+diff --git a/libavformat/demux.c b/libavformat/demux.c
+index 93e29228ce..480f071d77 100644
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -110,6 +110,7 @@ static int set_codec_from_probe_data(AVFormatContext *s, AVStream *st,
+         { "ac3",        AV_CODEC_ID_AC3,          AVMEDIA_TYPE_AUDIO    },
+         { "aptx",       AV_CODEC_ID_APTX,         AVMEDIA_TYPE_AUDIO    },
+         { "av1",        AV_CODEC_ID_AV1,          AVMEDIA_TYPE_VIDEO    },
++        { "av3a",       AV_CODEC_ID_AV3A,         AVMEDIA_TYPE_AUDIO    },
+         { "dts",        AV_CODEC_ID_DTS,          AVMEDIA_TYPE_AUDIO    },
+         { "dvbsub",     AV_CODEC_ID_DVB_SUBTITLE, AVMEDIA_TYPE_SUBTITLE },
+         { "dvbtxt",     AV_CODEC_ID_DVB_TELETEXT, AVMEDIA_TYPE_SUBTITLE },

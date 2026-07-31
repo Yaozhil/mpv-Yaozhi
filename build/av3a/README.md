@@ -23,7 +23,8 @@ a hardening item and are not AO-related.
 `ffmpeg-av3a-multiframe-probe.patch` also handles legacy/test MPEG-TS files
 whose PMT incorrectly uses MPEG audio stream type `0x04`. It requires three
 complete AV3A frames at computed boundaries before overriding the MPEG audio
-classification, rather than globally remapping stream type `0x04`.
+classification, then maps the accepted `av3a` stream probe result to
+`AV_CODEC_ID_AV3A`, rather than globally remapping stream type `0x04`.
 
 SDL is intentionally not part of this chain. It is an optional PCM audio
 output backend, not an AV3A decoder dependency. Windows release builds keep
