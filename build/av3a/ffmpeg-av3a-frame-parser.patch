@@ -1,0 +1,182 @@
+diff --git a/libavcodec/av3a_parser.c b/libavcodec/av3a_parser.c
+index 7de2e4d..46d7f23 100644
+--- a/libavcodec/av3a_parser.c
++++ b/libavcodec/av3a_parser.c
+@@ -20,26 +20,24 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+  */
+ 
++#include <limits.h>
+ #include <stdio.h>
+ #include <stdint.h>
++#include <string.h>
++#include "libavutil/common.h"
+ #include "libavutil/intreadwrite.h"
+ #include "parser.h"
++#include "parser_internal.h"
+ #include "get_bits.h"
+ #include "av3a.h"
+ 
++#define AV3A_HEADER_SIZE (AV3A_MAX_NBYTES_HEADER + 7)
++
+ typedef struct {
+-    int16_t audio_codec_id;
+-    int16_t nn_type;
+-    int16_t frame_size;
+-    int16_t resolution;
+-    int32_t sample_rate;
+-    int64_t bit_rate;
+-
+-    int16_t content_type;
+-    int16_t channel_number_index;
+-    int16_t nb_channels;
+-    int16_t nb_objects;
+-    int16_t total_channels;
++    ParseContext pc;
++    uint8_t header[AV3A_HEADER_SIZE];
++    int header_size;
++    int frame_size;
+ } Av3aParseContext;
+ 
+ static int ff_av3a_header_parse(const uint8_t *buf, const int buf_size, AATFHeaderInfo *hdf)
+@@ -188,41 +186,116 @@ static int ff_av3a_header_parse(const uint8_t *buf, const int buf_size, AATFHead
+     return 0;
+ }
+ 
+-static int raw_av3a_parse(AVCodecParserContext *s, AVCodecContext *avctx, const uint8_t **poutbuf,
+-                              int32_t *poutbuf_size, const uint8_t *buf, int32_t buf_size)
++static int av3a_frame_size(const AATFHeaderInfo *hdf)
+ {
+-    int ret = 0;
+-    AATFHeaderInfo hdf;
++    int64_t denominator;
++    int64_t frame_size;
++    int64_t numerator;
++    int64_t packet_bits;
+ 
+-    if ((!s) || (!avctx) || (!buf) || (buf_size < (AV3A_MAX_NBYTES_HEADER + 7))) {
+-        *poutbuf      = NULL;
+-        *poutbuf_size = 0;
+-        return buf_size;
+-    }
++    if (hdf->total_bitrate <= 0 || hdf->sampling_rate <= 0)
++        return AVERROR_INVALIDDATA;
+ 
+-    if ((ret = ff_av3a_header_parse(buf, AV3A_MAX_NBYTES_HEADER + 7, &hdf)) < 0) {
+-        *poutbuf      = NULL;
+-        *poutbuf_size = 0;
+-        return buf_size;
++    numerator = hdf->total_bitrate * AV3A_AUDIO_FRAME_SIZE;
++    if (hdf->sampling_rate == 44100) {
++        packet_bits = numerator / hdf->sampling_rate;
++        frame_size = (packet_bits + 7) / 8;
++    } else {
++        denominator = hdf->sampling_rate * 8LL;
++        frame_size = (numerator + denominator - 1) / denominator;
+     }
+ 
++    if (frame_size > INT_MAX)
++        return AVERROR_INVALIDDATA;
++    return (int)frame_size;
++}
++
++static void av3a_set_parser_info(AVCodecParserContext *s,
++                                 AVCodecContext *avctx,
++                                 const AATFHeaderInfo *hdf)
++{
+     avctx->codec_id            = AV_CODEC_ID_AV3A;
+     avctx->frame_size          = AV3A_AUDIO_FRAME_SIZE;
+-    avctx->bits_per_raw_sample = hdf.resolution;
+-    avctx->sample_rate         = hdf.sampling_rate;
+-    avctx->bit_rate            = hdf.total_bitrate;
++    avctx->bits_per_raw_sample = hdf->resolution;
++    avctx->sample_rate         = hdf->sampling_rate;
++    avctx->bit_rate            = hdf->total_bitrate;
+ 
++    av_channel_layout_uninit(&avctx->ch_layout);
+     avctx->ch_layout.order       = AV_CHANNEL_ORDER_UNSPEC;
+-    avctx->ch_layout.nb_channels = hdf.total_channels;
++    avctx->ch_layout.nb_channels = hdf->total_channels;
++    s->duration                  = AV3A_AUDIO_FRAME_SIZE;
++}
++
++static int raw_av3a_parse(AVCodecParserContext *s1, AVCodecContext *avctx,
++                          const uint8_t **poutbuf, int *poutbuf_size,
++                          const uint8_t *buf, int buf_size)
++{
++    Av3aParseContext *s = s1->priv_data;
++    ParseContext *pc = &s->pc;
++    int next = END_NOT_FOUND;
++    int i = 0;
++
++    while (i < buf_size) {
++        if (s->frame_size) {
++            int consumed = FFMIN(buf_size - i, s->frame_size);
++
++            i += consumed;
++            s->frame_size -= consumed;
++            if (!s->frame_size) {
++                next = i;
++                break;
++            }
++            continue;
++        }
++
++        while (i < buf_size) {
++            AATFHeaderInfo hdf;
++            int frame_size;
++
++            s->header[s->header_size++] = buf[i++];
++            if (s->header_size < AV3A_HEADER_SIZE)
++                continue;
++
++            if (ff_av3a_header_parse(s->header, AV3A_HEADER_SIZE, &hdf) < 0 ||
++                (frame_size = av3a_frame_size(&hdf)) < AV3A_HEADER_SIZE) {
++                memmove(s->header, s->header + 1, AV3A_HEADER_SIZE - 1);
++                s->header_size = AV3A_HEADER_SIZE - 1;
++                continue;
++            }
++
++            av3a_set_parser_info(s1, avctx, &hdf);
++            s->header_size = 0;
++
++            if (s1->flags & PARSER_FLAG_COMPLETE_FRAMES) {
++                next = buf_size;
++            } else {
++                s->frame_size = frame_size - AV3A_HEADER_SIZE;
++                if (!s->frame_size)
++                    next = i;
++            }
++            break;
++        }
++
++        if (next != END_NOT_FOUND)
++            break;
++    }
++
++    if (ff_combine_frame(pc, next, &buf, &buf_size) < 0) {
++        *poutbuf      = NULL;
++        *poutbuf_size = 0;
++        return buf_size;
++    }
+ 
+     *poutbuf = buf;
+     *poutbuf_size = buf_size;
+-
+-    return buf_size;
++    return next;
+ }
+ 
+-const AVCodecParser ff_av3a_parser = {
+-    .codec_ids = { AV_CODEC_ID_AV3A },
++const FFCodecParser ff_av3a_parser = {
++    PARSER_CODEC_LIST(AV_CODEC_ID_AV3A),
+     .priv_data_size = sizeof(Av3aParseContext),
+-    .parser_parse = raw_av3a_parse,
+-};
+\ No newline at end of file
++    .parse          = raw_av3a_parse,
++    .close          = ff_parse_close,
++};
++
++#undef AV3A_HEADER_SIZE
