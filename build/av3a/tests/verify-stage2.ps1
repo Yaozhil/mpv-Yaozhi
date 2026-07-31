@@ -4,17 +4,15 @@ param(
 
     [string]$MpvPath,
 
-    [string]$SamplePath = (Join-Path $PSScriptRoot "hoa-order1-128k.av3a")
+    [string]$SamplePath = (Join-Path $PSScriptRoot "hoa-order1-128k.av3a"),
+
+    [string]$ObjectSamplePath = (Join-Path $PSScriptRoot "bed-object-moving.av3a"),
+
+    [string]$MetadataProbePath
 )
 
 $ErrorActionPreference = "Stop"
-$expectedFrames = 94
-$expectedBytes = $expectedFrames * 1024 * 4 * 2
 $work = Join-Path $env:TEMP ("av3a-stage2-" + [guid]::NewGuid().ToString("N"))
-$nativePcm = Join-Path $work "native-s16le.pcm"
-$binauralPcm = Join-Path $work "binaural-f32le.pcm"
-$mpvNativePcm = Join-Path $work "mpv-native-s16le.pcm"
-$mpvBinauralPcm = Join-Path $work "mpv-binaural-f32le.pcm"
 
 function Invoke-Checked {
     param(
@@ -95,6 +93,7 @@ function Assert-SameHash {
 
 function Assert-DecodeFormat {
     param(
+        [string]$InputPath,
         [string]$Mode,
         [string]$SampleFormat,
         [int]$Channels,
@@ -104,7 +103,7 @@ function Assert-DecodeFormat {
     $output = Invoke-Checked $FFmpegPath @(
         "-hide_banner", "-loglevel", "info",
         "-av3a_render", $Mode,
-        "-i", $SamplePath,
+        "-i", $InputPath,
         "-map", "0:a:0",
         "-frames:a", "1",
         "-af", "ashowinfo",
@@ -132,6 +131,103 @@ function Assert-DecodeFormat {
     }
 }
 
+function Assert-MetadataProbe {
+    if (-not $MetadataProbePath) {
+        throw "MetadataProbePath is required for moving-object validation"
+    }
+
+    $output = Invoke-Checked $MetadataProbePath @($ObjectSamplePath)
+    Assert-Contains $output `
+        "\bsummary frames=281 dynamic_frames=281 changed_frames=([1-9][0-9]*) transport_channel=2 first_x=-?[0-9.]+ last_x=-?[0-9.]+ object1_changes=([1-9][0-9]*)\b" `
+        "281-frame changing object metadata summary"
+}
+
+function Assert-Sample {
+    param(
+        [string]$Name,
+        [string]$InputPath,
+        [int]$ExpectedFrames,
+        [int]$NativeChannels,
+        [string]$NativeLayoutPattern
+    )
+
+    $nativeBytes = [long]$ExpectedFrames * 1024 * $NativeChannels * 2
+    $binauralBytes = [long]$ExpectedFrames * 1024 * 2 * 4
+    $nativePcm = Join-Path $work "$Name-native-s16le.pcm"
+    $binauralPcm = Join-Path $work "$Name-binaural-f32le.pcm"
+    $mpvNativePcm = Join-Path $work "$Name-mpv-native-s16le.pcm"
+    $mpvBinauralPcm = Join-Path $work "$Name-mpv-binaural-f32le.pcm"
+
+    Assert-DecodeFormat $InputPath "native" "s16" $NativeChannels $NativeLayoutPattern
+    Assert-DecodeFormat $InputPath "binaural" "flt" 2 "\bchlayout:stereo\b"
+
+    Invoke-Checked $FFmpegPath @(
+        "-hide_banner", "-loglevel", "warning", "-y",
+        "-av3a_render", "native",
+        "-i", $InputPath,
+        "-map", "0:a:0",
+        "-c:a", "pcm_s16le",
+        "-f", "s16le",
+        $nativePcm
+    ) | Out-Null
+    Assert-Size $nativePcm $nativeBytes
+
+    Invoke-Checked $FFmpegPath @(
+        "-hide_banner", "-loglevel", "warning", "-y",
+        "-av3a_render", "binaural",
+        "-i", $InputPath,
+        "-map", "0:a:0",
+        "-c:a", "pcm_f32le",
+        "-f", "f32le",
+        $binauralPcm
+    ) | Out-Null
+    Assert-Size $binauralPcm $binauralBytes
+
+    if (-not $MpvPath) {
+        return
+    }
+
+    $nativeMpvOutput = Invoke-Checked $MpvPath @(
+        "--no-config",
+        "--vo=null",
+        "--ao=pcm",
+        "--ao-pcm-waveheader=no",
+        "--ao-pcm-file=$mpvNativePcm",
+        "--audio-display=no",
+        "--audio-format=s16",
+        "--audio-samplerate=48000",
+        "--ad-lavc-o=av3a_render=native",
+        $InputPath
+    )
+    Assert-NotContains $nativeMpvOutput `
+        "Converting libavcodec frame to mpv frame failed" `
+        "libavcodec-to-mpv frame conversion failure"
+    Assert-NotContains $nativeMpvOutput `
+        "Audio filter chain:|libswresample|lavrresample" `
+        "native audio conversion"
+    Assert-Size $mpvNativePcm $nativeBytes
+    Assert-SameHash $nativePcm $mpvNativePcm
+
+    $binauralMpvOutput = Invoke-Checked $MpvPath @(
+        "--no-config",
+        "--vo=null",
+        "--ao=pcm",
+        "--ao-pcm-waveheader=no",
+        "--ao-pcm-file=$mpvBinauralPcm",
+        "--audio-display=no",
+        "--audio-format=float",
+        "--audio-samplerate=48000",
+        "--audio-channels=stereo",
+        "--ad-lavc-o=av3a_render=binaural",
+        $InputPath
+    )
+    Assert-NotContains $binauralMpvOutput `
+        "Cannot open Libavresample context|libswresample failed to initialize" `
+        "binaural resampler initialization failure"
+    Assert-Size $mpvBinauralPcm $binauralBytes
+    Assert-SameHash $binauralPcm $mpvBinauralPcm
+}
+
 try {
     New-Item -ItemType Directory -Path $work | Out-Null
 
@@ -142,72 +238,12 @@ try {
     Assert-Contains $decoderHelp "\bav3a_render\b" "av3a_render decoder option"
     Assert-Contains $decoderHelp "\(default native\)" "native decoder default"
 
-    Assert-DecodeFormat "native" "s16" 4 "\bchlayout:4 channels\b"
-    Assert-DecodeFormat "binaural" "flt" 2 "\bchlayout:stereo\b"
+    Assert-MetadataProbe
+    Assert-Sample "hoa" $SamplePath 94 4 "\bchlayout:4 channels\b"
+    Assert-Sample "object" $ObjectSamplePath 281 3 `
+        "\bchlayout:3 channels \(FL\+FR\+UNK@OBJ1\)"
 
-    Invoke-Checked $FFmpegPath @(
-        "-hide_banner", "-loglevel", "warning", "-y",
-        "-av3a_render", "native",
-        "-i", $SamplePath,
-        "-map", "0:a:0",
-        "-c:a", "pcm_s16le",
-        "-f", "s16le",
-        $nativePcm
-    ) | Out-Null
-    Assert-Size $nativePcm $expectedBytes
-
-    Invoke-Checked $FFmpegPath @(
-        "-hide_banner", "-loglevel", "warning", "-y",
-        "-av3a_render", "binaural",
-        "-i", $SamplePath,
-        "-map", "0:a:0",
-        "-c:a", "pcm_f32le",
-        "-f", "f32le",
-        $binauralPcm
-    ) | Out-Null
-    Assert-Size $binauralPcm $expectedBytes
-
-    if ($MpvPath) {
-        $nativeMpvOutput = Invoke-Checked $MpvPath @(
-            "--no-config",
-            "--vo=null",
-            "--ao=pcm",
-            "--ao-pcm-waveheader=no",
-            "--ao-pcm-file=$mpvNativePcm",
-            "--audio-display=no",
-            "--audio-format=s16",
-            "--audio-samplerate=48000",
-            "--audio-channels=unknown4",
-            "--ad-lavc-o=av3a_render=native",
-            $SamplePath
-        )
-        Assert-NotContains $nativeMpvOutput `
-            "Converting libavcodec frame to mpv frame failed" `
-            "libavcodec-to-mpv frame conversion failure"
-        Assert-Size $mpvNativePcm $expectedBytes
-        Assert-SameHash $nativePcm $mpvNativePcm
-
-        $binauralMpvOutput = Invoke-Checked $MpvPath @(
-            "--no-config",
-            "--vo=null",
-            "--ao=pcm",
-            "--ao-pcm-waveheader=no",
-            "--ao-pcm-file=$mpvBinauralPcm",
-            "--audio-display=no",
-            "--audio-format=float",
-            "--audio-samplerate=48000",
-            "--audio-channels=stereo",
-            "--ad-lavc-o=av3a_render=binaural",
-            $SamplePath
-        )
-        Assert-NotContains $binauralMpvOutput `
-            "Cannot open Libavresample context|libswresample failed to initialize" `
-            "binaural resampler initialization failure"
-        Assert-Size $mpvBinauralPcm $expectedBytes
-        Assert-SameHash $binauralPcm $mpvBinauralPcm
-    }
-
-    Write-Output "AV3A stage-two validation passed: native=4ch/s16, binaural=stereo/f32, mpv PCM hashes match FFmpeg"
+    Write-Output "AV3A stage-two validation passed: HOA native=4ch/s16, moving-object native=3ch/s16, binaural=stereo/f32, mpv PCM hashes match FFmpeg"
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

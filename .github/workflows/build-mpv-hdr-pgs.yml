@@ -431,6 +431,15 @@ jobs:
             grep -Eq "[[:space:]]_?${symbol}$" avs3-renderer-symbols.txt
           done
 
+          av3a_prefix=build64/install/x86_64-w64-mingw32
+          build64/install/bin/cross-gcc \
+            -std=c99 -O2 -Wall -Wextra -Werror \
+            -I"$av3a_prefix/include/avs3a" \
+            "$GITHUB_WORKSPACE/build/av3a/tests/object-metadata-probe.c" \
+            "$av3a_lib" -lm \
+            -o object-metadata-probe.exe
+          test -f object-metadata-probe.exe
+
       - name: Build static x86-64 mpv
         id: build
         continue-on-error: true
@@ -503,6 +512,12 @@ jobs:
             build/av3a/tests/hoa-order1-128k.av3a \
             artifact/
           cp \
+            build/av3a/tests/bed-object-moving.av3a \
+            artifact/
+          cp \
+            winbuild/mpv-winbuild-cmake/object-metadata-probe.exe \
+            artifact/
+          cp \
             build/av3a/tests/verify-stage2.ps1 \
             artifact/
           (
@@ -511,6 +526,8 @@ jobs:
               "$(basename "$archive")" \
               ffmpeg-av3a-validation.exe \
               hoa-order1-128k.av3a \
+              bed-object-moving.av3a \
+              object-metadata-probe.exe \
               verify-stage2.ps1 \
               > SHA256SUMS.txt
           )
@@ -582,4 +599,6 @@ jobs:
           & (Join-Path $artifact "verify-stage2.ps1") `
             -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
             -MpvPath $mpv `
-            -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a")
+            -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a") `
+            -ObjectSamplePath (Join-Path $artifact "bed-object-moving.av3a") `
+            -MetadataProbePath (Join-Path $artifact "object-metadata-probe.exe")
