@@ -233,7 +233,8 @@ Minimum verification for Stage 1:
 - sample inside MPEG-TS is detected through stream type `0xd5`.
 - legacy/test MPEG-TS that incorrectly labels AV3A as stream type `0x04` is
   reclassified only after three consecutive AV3A headers match computed frame
-  boundaries; ordinary MPEG audio must remain MPEG audio.
+  boundaries; the codec parser must then reassemble exact AV3A frames across
+  arbitrary PES boundaries, and ordinary MPEG audio must remain MPEG audio.
 - sample inside MP4 is detected through `av3a`.
 - ordinary AAC/AC3/EAC3/TrueHD/DTS playback is unchanged.
 - existing HDR/image-subtitle mpv patch still applies and `mpv.com --no-config --list-options` still exposes the expected custom options.
@@ -245,7 +246,15 @@ Minimum verification for Stage 1:
 - The GitHub Actions mpv build graph includes the pinned decoder before FFmpeg.
 - The decoder library has been cross-compiled for Windows x64 and linked through
   a four-symbol smoke program locally.
-- Full mpv/FFmpeg CI compilation and sample playback remain required before a
-  release binary can be called accepted.
+- GitHub Actions Run `30600707954` completed successfully from commit
+  `520f7b4b90d2382daa8f27354539589788161ddf`; the accepted Windows kernel is
+  `mpv v0.41.0-847-gb766af840`.
+- Full MP4, raw `.av3a`, standard `0xd5` TS, and legacy `0x04` mistagged TS
+  decoding passed. The mistagged TS produced all 153 frames / 156672 samples,
+  completed mpv playback, and passed stereo Realtek WASAPI output.
+- Runtime AV3A -> AAC -> AV3A track switching, 60-second seek, ordinary
+  AAC/MP3/FLAC regression, full portable configuration loading, Schannel, and
+  the existing HDR image-subtitle options were retained.
 - `mpv-changerefresh` remains intentionally deferred. SDL AO is not required for
-  Stage 1 and WASAPI remains the Windows default.
+  Stage 1 and WASAPI remains the Windows default. Full object/HOA spatial
+  rendering remains Stage 2.

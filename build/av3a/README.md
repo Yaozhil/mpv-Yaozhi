@@ -26,6 +26,12 @@ complete AV3A frames at computed boundaries before overriding the MPEG audio
 classification, then maps the accepted `av3a` stream probe result to
 `AV_CODEC_ID_AV3A`, rather than globally remapping stream type `0x04`.
 
+`ffmpeg-av3a-frame-parser.patch` replaces the original packet passthrough
+parser with an `FFCodecParser` backed by `ParseContext`. It calculates the
+encoded frame size from the validated AV3A header and uses
+`ff_combine_frame()` to assemble exact frames when MPEG-TS PES payloads split
+or combine AV3A access units.
+
 SDL is intentionally not part of this chain. It is an optional PCM audio
 output backend, not an AV3A decoder dependency. Windows release builds keep
 mpv's native WASAPI output as the default.
