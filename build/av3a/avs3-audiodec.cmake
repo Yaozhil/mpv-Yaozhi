@@ -6,7 +6,10 @@ ExternalProject_Add(avs3-audiodec
     GIT_CLONE_POST_COMMAND
         "sparse-checkout set av3adecoder av3a_binaural_render/AudioDecoder/av3a_binaural_render"
     UPDATE_COMMAND ""
-    PATCH_COMMAND ${EXEC} git apply --check
+    PATCH_COMMAND ${EXEC} python3
+        ${CMAKE_CURRENT_SOURCE_DIR}/avs3-normalize-source-eol.py
+        <SOURCE_DIR>
+        COMMAND ${EXEC} git apply --check
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-audiodec-9000-static-library.patch
         COMMAND ${EXEC} git apply
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-audiodec-9000-static-library.patch

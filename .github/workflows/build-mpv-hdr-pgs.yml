@@ -112,6 +112,8 @@ jobs:
 
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
             packages/avs3-audiodec.cmake
+          cp "$GITHUB_WORKSPACE/build/av3a/normalize-source-eol.py" \
+            packages/avs3-normalize-source-eol.py
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec-static-library.patch" \
             packages/avs3-audiodec-9000-static-library.patch
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-stage2.patch" \
@@ -294,6 +296,7 @@ jobs:
           grep -Fq 'av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
             packages/avs3-audiodec.cmake
           grep -Fq 'avs3-renderer-hardening.patch' packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-normalize-source-eol.py' packages/avs3-audiodec.cmake
           grep -Fq -- '-DAVS3_BUILD_RENDERER=ON' packages/avs3-audiodec.cmake
           grep -Fq -- \
             '-DRENDERER_ROOT=<SOURCE_DIR>/av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
