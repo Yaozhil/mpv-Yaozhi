@@ -20,7 +20,9 @@ jobs:
     env:
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
+      MPV_COMMIT: 99b4c12cccb4d8d3f72b41944cb6c640e2156650
       DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
+      SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
 
     steps:
       - name: Install build dependencies
@@ -94,7 +96,15 @@ jobs:
               if anchor not in text:
                   raise SystemExit("Could not locate mpv GIT_CLONE_FLAGS anchor")
               text = text.replace(anchor, patch_command, 1)
-              path.write_text(text)
+
+          option = "        -Dsdl2-audio=enabled\n"
+          if option not in text:
+              anchor = "        -Dsdl2-gamepad=enabled\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate SDL2 gamepad option")
+              text = text.replace(anchor, anchor + option, 1)
+
+          path.write_text(text)
           PY
 
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
@@ -104,8 +114,14 @@ jobs:
             packages/avs3-audiodec.cmake
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec-static-library.patch" \
             packages/avs3-audiodec-9000-static-library.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-stage2.patch" \
+            packages/avs3-audiodec-9001-spatial-metadata.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-hardening.patch" \
+            packages/avs3-renderer-hardening.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
             packages/ffmpeg-9000-libarcdav3a-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-spatial.patch" \
+            packages/ffmpeg-9004-libarcdav3a-spatial.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-multiframe-probe.patch" \
             packages/ffmpeg-9001-av3a-multiframe-probe.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-frame-parser.patch" \
@@ -148,26 +164,22 @@ jobs:
           if tag not in text:
               text = text.replace(fork, fork + tag, 1)
 
-          patch = (
-              "    PATCH_COMMAND ${EXEC} git apply --check "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9000-libarcdav3a-hardening.patch "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9001-av3a-multiframe-probe.patch "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9002-av3a-frame-parser.patch "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9003-nvenc-sdk-13.1.patch\n"
-              "        COMMAND ${EXEC} git apply "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9000-libarcdav3a-hardening.patch "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9001-av3a-multiframe-probe.patch "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9002-av3a-frame-parser.patch "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "ffmpeg-9003-nvenc-sdk-13.1.patch\n"
-          )
+          patch_files = [
+              "ffmpeg-9000-libarcdav3a-hardening.patch",
+              "ffmpeg-9004-libarcdav3a-spatial.patch",
+              "ffmpeg-9001-av3a-multiframe-probe.patch",
+              "ffmpeg-9002-av3a-frame-parser.patch",
+              "ffmpeg-9003-nvenc-sdk-13.1.patch",
+          ]
+          patch = ""
+          for index, patch_file in enumerate(patch_files):
+              command = "    PATCH_COMMAND" if index == 0 else "        COMMAND"
+              patch += (
+                  command + " ${EXEC} git apply --check "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/" + patch_file + "\n"
+                  "        COMMAND ${EXEC} git apply "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/" + patch_file + "\n"
+              )
           if "ffmpeg-9000-libarcdav3a-hardening.patch" not in text:
               anchor = '    UPDATE_COMMAND ""\n'
               if anchor not in text:
@@ -214,11 +226,14 @@ jobs:
           PY
 
           sed -i \
-            '/GIT_REPOSITORY https:\/\/github.com\/mpv-player\/mpv.git/a\\    GIT_TAG 99b4c12cc' \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/mpv-player\\/mpv.git/a\\    GIT_TAG $MPV_COMMIT" \
             packages/mpv.cmake
           sed -i \
             's#https://git.videolan.org/git/ffmpeg/nv-codec-headers.git#https://github.com/FFmpeg/nv-codec-headers.git#' \
             packages/nvcodec-headers.cmake
+          sed -i \
+            "s/GIT_TAG SDL2/GIT_TAG $SDL2_COMMIT/" \
+            packages/libsdl2.cmake
 
           # The Windows release must use Schannel so certificate verification
           # follows the Windows trust store, matching the proven 7/17 build.
@@ -238,6 +253,9 @@ jobs:
           test -f packages/curl.cmake
           grep -Eq '^[[:space:]]*curl[[:space:]]*$' packages/mpv.cmake
           grep -Fq -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
+          grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
           if grep -E 'list\(APPEND removed .*"curl"' packages/CMakeLists.txt; then
             echo "::error::curl is still excluded from the mpv dependency graph"
             exit 1
@@ -271,13 +289,23 @@ jobs:
           grep -Fq 'ffmpeg-9001-av3a-multiframe-probe.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9002-av3a-frame-parser.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9003-nvenc-sdk-13.1.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
           grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
+          grep -Fq 'av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
+            packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-renderer-hardening.patch' packages/avs3-audiodec.cmake
+          grep -Fq -- '-DAVS3_BUILD_RENDERER=ON' packages/avs3-audiodec.cmake
+          grep -Fq -- \
+            '-DRENDERER_ROOT=<SOURCE_DIR>/av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
+            packages/avs3-audiodec.cmake
           grep -n -A4 -B2 'llawsxx/davs2-10bit' packages/davs2.cmake
           grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
           grep -n 'PATCH_COMMAND.*davs2-9000' packages/davs2.cmake
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
+          grep -Fq "GIT_TAG $MPV_COMMIT" packages/mpv.cmake
+          grep -Fq '^audio-device=auto' "$GITHUB_WORKSPACE/portable_config/mpv.conf"
 
       - name: Restore reusable build cache
         uses: actions/cache@v5
@@ -357,14 +385,32 @@ jobs:
           ninja -C build64 avs3-audiodec
 
           av3a_lib=build64/install/x86_64-w64-mingw32/lib/libAVS3AudioDec.a
+          renderer_lib=build64/install/x86_64-w64-mingw32/lib/libRendererCore.a
+          samplerate_lib=build64/install/x86_64-w64-mingw32/lib/libavs3_samplerate.a
           test -f "$av3a_lib"
+          test -f "$renderer_lib"
+          test -f "$samplerate_lib"
+          test -f \
+            build64/install/x86_64-w64-mingw32/include/avs3a/avs3_spatial_metadata.h
+          test -f \
+            build64/install/x86_64-w64-mingw32/include/avs3-renderer/avs3_audio.h
           nm -g --defined-only "$av3a_lib" > avs3-audiodec-symbols.txt
+          nm -g --defined-only "$renderer_lib" > avs3-renderer-symbols.txt
           for symbol in \
             avs3_create_decoder \
             avs3_destroy_decoder \
             parse_header \
-            avs3_decode; do
+            avs3_decode \
+            avs3_get_spatial_stream_info \
+            avs3_get_spatial_frame; do
             grep -Eq "[[:space:]]_?${symbol}$" avs3-audiodec-symbols.txt
+          done
+          for symbol in \
+            audio_create_context \
+            audio_destroy \
+            audio_submit_ambisonic_channel_buffer \
+            audio_submit_interleaved_ambisonic_buffer; do
+            grep -Eq "[[:space:]]_?${symbol}$" avs3-renderer-symbols.txt
           done
 
       - name: Build static x86-64 mpv
@@ -415,11 +461,16 @@ jobs:
           strings -a artifact-check/mpv.exe > artifact-check/mpv.strings
           grep -qi schannel artifact-check/mpv.strings
           grep -qi libarcdav3a artifact-check/mpv.strings
+          grep -Fq 'SDL 2.0+ audio output' artifact-check/mpv.strings
+          grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
 
           ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
           test -f "$ffmpeg_exe"
           strings -a "$ffmpeg_exe" > artifact-check/ffmpeg.strings
           grep -qi libarcdav3a artifact-check/ffmpeg.strings
+          grep -Fq av3a_render artifact-check/ffmpeg.strings
+          grep -Fq 'force binaural rendering for spatial AV3A streams' \
+            artifact-check/ffmpeg.strings
 
           mkdir artifact
           cp "$archive" artifact/
@@ -427,7 +478,24 @@ jobs:
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
             artifact/AV3A-SYMBOLS.txt
-          sha256sum "$archive" > artifact/SHA256SUMS.txt
+          cp \
+            winbuild/mpv-winbuild-cmake/avs3-renderer-symbols.txt \
+            artifact/AV3A-RENDERER-SYMBOLS.txt
+          cp \
+            build/av3a/tests/hoa-order1-128k.av3a \
+            artifact/
+          cp \
+            build/av3a/tests/verify-stage2.ps1 \
+            artifact/
+          (
+            cd artifact
+            sha256sum \
+              "$(basename "$archive")" \
+              ffmpeg-av3a-validation.exe \
+              hoa-order1-128k.av3a \
+              verify-stage2.ps1 \
+              > SHA256SUMS.txt
+          )
 
       - name: Upload custom mpv
         uses: actions/upload-artifact@v6

@@ -1,7 +1,8 @@
 # AV3A build integration
 
-This directory contains the reproducible build glue for first-stage AV3A /
-Audio Vivid decoding in the normal Windows mpv kernel.
+This directory contains the reproducible build glue for AV3A / Audio Vivid
+decoding and the optional spatial-rendering path in the normal Windows mpv
+kernel.
 
 Pinned upstream inputs:
 
@@ -32,6 +33,31 @@ encoded frame size from the validated AV3A header and uses
 `ff_combine_frame()` to assemble exact frames when MPEG-TS PES payloads split
 or combine AV3A access units.
 
-SDL is intentionally not part of this chain. It is an optional PCM audio
-output backend, not an AV3A decoder dependency. Windows release builds keep
-mpv's native WASAPI output as the default.
+The decoder defaults to `av3a_render=native`. In this mode FFmpeg preserves
+the decoder's transport-channel count, sample count, sample rate, and PCM
+samples; no automatic downmix is performed. HOA transport channels use ACN
+ordering. Streams explicitly identified as ACN/SN3D can use FFmpeg's
+ambisonic layout; the reference decoder's metadata-free HOA transport default
+is ACN/N3D, so that path intentionally uses named custom channels rather than
+claiming SN3D. Object and bed-plus-object streams likewise use custom channel
+layouts so object transport channels are not mislabeled as speakers.
+
+`av3a_render=binaural` is an explicit opt-in path for object, bed-plus-object,
+and HOA streams. It feeds the decoder's spatial metadata and PCM into the
+bundled ByteDance renderer and returns interleaved stereo float PCM. This
+renderer is a headphone/binaural renderer; it is not a general multichannel
+speaker renderer. Native multichannel output remains the default until a
+separate speaker-rendering backend is implemented and validated.
+
+SDL is not part of the AV3A decode chain. The Windows build enables mpv's
+maintained SDL2 audio output as an optional PCM compatibility backend, while
+keeping native WASAPI first in mpv's Windows AO selection order and leaving
+the release configuration on `audio-device=auto`. Selecting SDL does not
+perform object/HOA rendering and does not change the decoded channel layout.
+
+`tests/hoa-order1-128k.av3a` is a 32-frame, 48 kHz, first-order ACN/N3D HOA
+validation stream. `tests/verify-stage2.ps1` checks that the decoder option
+defaults to `native`, verifies the first decoded frame metadata, then requires
+native decoding to produce the original four 16-bit transport channels and
+explicit binaural rendering to produce two float channels with the same sample
+count.

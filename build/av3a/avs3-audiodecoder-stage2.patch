@@ -1,0 +1,558 @@
+diff --git a/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h b/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h
+index fa38a33..9d4ddf9 100644
+--- a/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h
++++ b/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h
+@@ -1,19 +1,33 @@
+-#pragma once
+-
+-#include "avs3_stat_dec.h"
+-
+-#ifdef __cplusplus
+-extern "C" {
+-#endif
+-
+-	AVS3DecoderHandle avs3_create_decoder();
+-	void avs3_destroy_decoder(AVS3DecoderHandle hAvs3Dec);
+-	int parse_header(AVS3DecoderHandle hAvs3Dec, unsigned char* pData, int nLenIn, int isInitFrame, int *pnLenConsumed, unsigned short *crc);
+-	int avs3_decode(AVS3DecoderHandle hAvs3Dec, unsigned char* pDataIN, int nLenIn, unsigned char* pDataOut, int *pnLenOut, int *pnLenConsumed);
+-
+-
+-
+-#ifdef __cplusplus
+-}
+-#endif
+-
++#pragma once
++
++#include "avs3_spatial_metadata.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct avs3_main_decoder_structure AVS3Decoder;
++typedef AVS3Decoder *AVS3DecoderHandle;
++
++typedef enum AVS3DecoderResult {
++    AVS3_DECODER_ERROR = 0,
++    AVS3_DECODER_SUCCESS = 1,
++    AVS3_DECODER_NEED_MORE_DATA = 2
++} AVS3DecoderResult;
++
++AVS3DecoderHandle avs3_create_decoder(void);
++void avs3_destroy_decoder(AVS3DecoderHandle hAvs3Dec);
++int parse_header(AVS3DecoderHandle hAvs3Dec, unsigned char *pData,
++                 int nLenIn, int isInitFrame, int *pnLenConsumed,
++                 unsigned short *crc);
++int avs3_decode(AVS3DecoderHandle hAvs3Dec, unsigned char *pDataIn,
++                int nLenIn, unsigned char *pDataOut, int *pnLenOut,
++                int *pnLenConsumed);
++int avs3_get_spatial_stream_info(AVS3DecoderHandle hAvs3Dec,
++                                 AVS3SpatialStreamInfo *info);
++int avs3_get_spatial_frame(AVS3DecoderHandle hAvs3Dec,
++                           AVS3SpatialFrame *frame);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/av3adecoder/avs3Decoder/include/avs3_spatial_metadata.h b/av3adecoder/avs3Decoder/include/avs3_spatial_metadata.h
+new file mode 100644
+index 0000000..af3325b
+--- /dev/null
++++ b/av3adecoder/avs3Decoder/include/avs3_spatial_metadata.h
+@@ -0,0 +1,94 @@
++#ifndef AVS3_SPATIAL_METADATA_H
++#define AVS3_SPATIAL_METADATA_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AVS3_SPATIAL_ABI_VERSION 3U
++#define AVS3_SPATIAL_MAX_CHANNELS 32
++#define AVS3_SPATIAL_MAX_OBJECTS 32
++
++typedef enum AVS3SpatialFormat {
++    AVS3_SPATIAL_FORMAT_CHANNELS = 0,
++    AVS3_SPATIAL_FORMAT_OBJECTS = 1,
++    AVS3_SPATIAL_FORMAT_BED_OBJECTS = 2,
++    AVS3_SPATIAL_FORMAT_HOA = 3
++} AVS3SpatialFormat;
++
++typedef enum AVS3SpatialHoaNormalization {
++    AVS3_SPATIAL_HOA_UNKNOWN = -1,
++    AVS3_SPATIAL_HOA_SN3D = 0,
++    AVS3_SPATIAL_HOA_N3D = 1,
++    AVS3_SPATIAL_HOA_FUMA = 2
++} AVS3SpatialHoaNormalization;
++
++typedef enum AVS3SpatialHoaOrdering {
++    AVS3_SPATIAL_HOA_ORDERING_UNKNOWN = -1,
++    AVS3_SPATIAL_HOA_ORDERING_ACN = 0
++} AVS3SpatialHoaOrdering;
++
++typedef struct AVS3SpatialStreamInfo {
++    uint32_t struct_size;
++    uint32_t abi_version;
++    int32_t format;
++    int32_t sample_rate;
++    int32_t frame_length;
++    int32_t bit_depth;
++    int32_t total_channels;
++    int32_t bed_channels;
++    int32_t object_channels;
++    int32_t channel_config;
++    int32_t hoa_order;
++    int32_t hoa_normalization;
++    int32_t hoa_ordering;
++    int64_t total_bitrate;
++    int32_t channel_gain_valid[AVS3_SPATIAL_MAX_CHANNELS];
++    float channel_gain_linear[AVS3_SPATIAL_MAX_CHANNELS];
++    int32_t channel_muted[AVS3_SPATIAL_MAX_CHANNELS];
++    int32_t channel_position_valid[AVS3_SPATIAL_MAX_CHANNELS];
++    float channel_x[AVS3_SPATIAL_MAX_CHANNELS];
++    float channel_y[AVS3_SPATIAL_MAX_CHANNELS];
++    float channel_z[AVS3_SPATIAL_MAX_CHANNELS];
++} AVS3SpatialStreamInfo;
++
++typedef struct AVS3SpatialObjectFrame {
++    int32_t pcm_channel;
++    int32_t position_valid;
++    int32_t muted;
++    int32_t jump_position;
++    float x;
++    float y;
++    float z;
++    int32_t gain_valid;
++    float gain_linear;
++    float diffuse;
++    int32_t extent_valid;
++    int32_t divergence_valid;
++    int32_t channel_lock_valid;
++    int32_t screen_ref_valid;
++    float width;
++    float height;
++    float depth;
++    float divergence;
++    float divergence_azimuth_range;
++    int32_t channel_lock;
++    int32_t screen_ref;
++} AVS3SpatialObjectFrame;
++
++typedef struct AVS3SpatialFrame {
++    uint32_t struct_size;
++    uint32_t abi_version;
++    int32_t has_static_metadata;
++    int32_t has_dynamic_metadata;
++    int32_t object_count;
++    AVS3SpatialObjectFrame objects[AVS3_SPATIAL_MAX_OBJECTS];
++} AVS3SpatialFrame;
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/av3adecoder/avs3Decoder/src/avs3_init_dec.c b/av3adecoder/avs3Decoder/src/avs3_init_dec.c
+index 152c4df..bba7a61 100644
+--- a/av3adecoder/avs3Decoder/src/avs3_init_dec.c
++++ b/av3adecoder/avs3Decoder/src/avs3_init_dec.c
+@@ -328,10 +328,13 @@ static void Avs3DecCreateMetaData(AVS3DecoderHandle hAvs3Dec)
+     Avs3DecMetadataHandle hMetadata = NULL;
+ 
+     if ((hMetadata = (Avs3DecMetadataHandle)malloc(sizeof(Avs3DecMetadata))) == NULL) {
++#ifndef AVS3_AUDIODEC_LIBRARY
+         fprintf(stderr, "Can not allocate memory for AVS3 metadata structure.\n");
++#endif
+         return;
+     }
+ 
++    memset(hMetadata, 0, sizeof(*hMetadata));
+     hAvs3Dec->hMetadataDec = hMetadata;
+     return;
+ }
+diff --git a/av3adecoder/avs3Decoder/src/decoder.c b/av3adecoder/avs3Decoder/src/decoder.c
+index 1421482..d9cc29d 100644
+--- a/av3adecoder/avs3Decoder/src/decoder.c
++++ b/av3adecoder/avs3Decoder/src/decoder.c
+@@ -17,6 +17,200 @@
+ #include <math.h>
+ #include "avs3_prot_com.h"
+ 
++typedef struct AVS3StaticChannelMetadata {
++    int gain_valid;
++    int gain_unit;
++    float gain_linear;
++    int muted;
++    float absolute_distance;
++    int position_valid;
++    float x;
++    float y;
++    float z;
++} AVS3StaticChannelMetadata;
++
++static int avs3_static_metadata_available(AVS3DecoderHandle hAvs3Dec)
++{
++    const Avs3BasicL1 *basic;
++
++    if (!hAvs3Dec || !hAvs3Dec->hMetadataDec)
++        return 0;
++    basic = &hAvs3Dec->hMetadataDec->avs3MetaData
++                 .avs3MetaDataStatic.avs3BasicL1;
++    return basic->numOfPacks > 0 && basic->numOfChannels > 0;
++}
++
++static float avs3_gain_to_linear(float gain, int gainUnit)
++{
++    return gainUnit == 0 ? gain : powf(10.0f, gain / 20.0f);
++}
++
++static int avs3_pack_references_channel(const AudioPackFormat *pack,
++                                        int channelFormatIdx)
++{
++    int i;
++    int count;
++
++    if (!pack)
++        return 0;
++    count = pack->numChannels;
++    if (count < 0)
++        return 0;
++    if (count > 32)
++        count = 32;
++    for (i = 0; i < count; i++) {
++        if (pack->refChannelIdx[i] == channelFormatIdx)
++            return 1;
++    }
++    return 0;
++}
++
++static int avs3_object_references_pack(const AudioObject *object,
++                                       int packFormatIdx)
++{
++    int i;
++    int count;
++
++    if (!object)
++        return 0;
++    count = object->numPacks;
++    if (count < 0)
++        return 0;
++    if (count > 8)
++        count = 8;
++    for (i = 0; i < count; i++) {
++        if (object->refPackFormatIdx[i] == packFormatIdx)
++            return 1;
++    }
++    return 0;
++}
++
++static void avs3_get_static_channel_metadata(
++    AVS3DecoderHandle hAvs3Dec,
++    int pcmChannel,
++    AVS3StaticChannelMetadata *metadata)
++{
++    const Avs3BasicL1 *basic;
++    const AudioChannelFormat *channel = NULL;
++    const AudioPackFormat *pack = NULL;
++    const AudioObject *object = NULL;
++    int i;
++    int count;
++
++    memset(metadata, 0, sizeof(*metadata));
++    metadata->gain_linear = 1.0f;
++    metadata->absolute_distance = 1.0f;
++    if (!avs3_static_metadata_available(hAvs3Dec))
++        return;
++
++    basic = &hAvs3Dec->hMetadataDec->avs3MetaData
++                 .avs3MetaDataStatic.avs3BasicL1;
++    count = basic->numOfChannels;
++    if (count > 32)
++        count = 32;
++    for (i = 0; i < count; i++) {
++        if (basic->audioChannelFormatData[i].channelFormatIdx == pcmChannel) {
++            channel = &basic->audioChannelFormatData[i];
++            break;
++        }
++    }
++    if (!channel)
++        return;
++
++    count = basic->numOfPacks;
++    if (count > 8)
++        count = 8;
++    for (i = 0; i < count; i++) {
++        if (avs3_pack_references_channel(
++                &basic->audioPackFormatData[i],
++                channel->channelFormatIdx)) {
++            pack = &basic->audioPackFormatData[i];
++            break;
++        }
++    }
++    if (pack) {
++        count = basic->numOfObjects;
++        if (count > 8)
++            count = 8;
++        for (i = 0; i < count; i++) {
++            if (avs3_object_references_pack(
++                    &basic->audioObjectData[i],
++                    pack->packFormatIdx)) {
++                object = &basic->audioObjectData[i];
++                break;
++            }
++        }
++    }
++
++    if (channel->hasChannelGain) {
++        metadata->gain_valid = 1;
++        metadata->gain_unit = channel->gainUnit;
++        metadata->gain_linear =
++            avs3_gain_to_linear(channel->channelGain, channel->gainUnit);
++    } else if (object && object->hasGain) {
++        metadata->gain_valid = 1;
++        metadata->gain_unit = object->gainUnit;
++        metadata->gain_linear =
++            avs3_gain_to_linear(object->gain, object->gainUnit);
++    }
++    if (object)
++        metadata->muted = object->hasMute != 0;
++    if (pack && pack->absoluteDistance > 0.0f)
++        metadata->absolute_distance = pack->absoluteDistance;
++
++    if (pack && pack->typeLabel == 1 && pack->packFormatID == 0x3f) {
++        const DirectSpeakersPosition *position =
++            &channel->directSpeakersPositionData;
++        float azimuth = position->azimuth * 0.01745329251994329577f;
++        float elevation = position->elevation * 0.01745329251994329577f;
++        float distance = position->distance;
++
++        if (distance <= 0.0f)
++            distance = 1.0f;
++        distance *= metadata->absolute_distance;
++        metadata->position_valid = 1;
++        metadata->x =
++            distance * cosf(elevation) * sinf(azimuth);
++        metadata->y = distance * sinf(elevation);
++        metadata->z =
++            distance * cosf(elevation) * cosf(azimuth);
++    }
++}
++
++static int avs3_get_hoa_normalization(AVS3DecoderHandle hAvs3Dec)
++{
++    int i;
++
++    /*
++     * The native AVS3 HOA codec basis in Avs3Hoa3v2() is orthonormal
++     * (N3D). Static metadata may override this transport default.
++     */
++    if (!avs3_static_metadata_available(hAvs3Dec))
++        return AVS3_SPATIAL_HOA_N3D;
++
++    for (i = 0; i < hAvs3Dec->hMetadataDec->avs3MetaData
++                    .avs3MetaDataStatic.avs3BasicL1.numOfPacks; i++) {
++        const AudioPackFormat *pack =
++            &hAvs3Dec->hMetadataDec->avs3MetaData.avs3MetaDataStatic
++                .avs3BasicL1.audioPackFormatData[i];
++
++        if (pack->typeLabel != 4)
++            continue;
++        if (pack->normalization == AVS3_SPATIAL_HOA_SN3D ||
++            pack->normalization == AVS3_SPATIAL_HOA_N3D ||
++            pack->normalization == AVS3_SPATIAL_HOA_FUMA)
++            return pack->normalization;
++        return AVS3_SPATIAL_HOA_UNKNOWN;
++    }
++    return AVS3_SPATIAL_HOA_N3D;
++}
++
++static int avs3_get_hoa_ordering(AVS3DecoderHandle hAvs3Dec)
++{
++    (void)hAvs3Dec;
++    return AVS3_SPATIAL_HOA_ORDERING_ACN;
++}
++
+ // #define PROF_ON
+ #ifdef PROF_ON
+ #include <gperftools/profiler.h>
+@@ -698,3 +892,177 @@ int avs3_decode(AVS3DecoderHandle hAvs3Dec, unsigned char* pDataIN, int nLenIn,
+ 	return AVS3_TRUE;
+ }
+ 
++int avs3_get_spatial_stream_info(AVS3DecoderHandle hAvs3Dec, AVS3SpatialStreamInfo* info)
++{
++	int bedChannels;
++	int i;
++
++	if (!hAvs3Dec || !info || info->struct_size < sizeof(*info))
++		return AVS3_FALSE;
++
++	memset(info, 0, sizeof(*info));
++	info->struct_size = sizeof(*info);
++	info->abi_version = AVS3_SPATIAL_ABI_VERSION;
++	info->sample_rate = (int32_t)hAvs3Dec->outputFs;
++	info->frame_length = hAvs3Dec->frameLength;
++	info->bit_depth = hAvs3Dec->bitDepth;
++	info->total_channels = hAvs3Dec->numChansOutput;
++	info->object_channels = hAvs3Dec->numObjsOutput;
++	info->channel_config = hAvs3Dec->channelNumConfig;
++	info->total_bitrate = hAvs3Dec->totalBitrate;
++    info->hoa_normalization = AVS3_SPATIAL_HOA_UNKNOWN;
++    info->hoa_ordering = AVS3_SPATIAL_HOA_ORDERING_UNKNOWN;
++
++	bedChannels = hAvs3Dec->numChansOutput - hAvs3Dec->numObjsOutput;
++	info->bed_channels = bedChannels > 0 ? bedChannels : 0;
++
++    if (hAvs3Dec->avs3CodecFormat == AVS3_HOA_FORMAT) {
++        info->format = AVS3_SPATIAL_FORMAT_HOA;
++        info->hoa_normalization = avs3_get_hoa_normalization(hAvs3Dec);
++		info->hoa_ordering = avs3_get_hoa_ordering(hAvs3Dec);
++		if (hAvs3Dec->channelNumConfig == CHANNEL_CONFIG_HOA_ORDER1)
++			info->hoa_order = 1;
++		else if (hAvs3Dec->channelNumConfig == CHANNEL_CONFIG_HOA_ORDER2)
++			info->hoa_order = 2;
++		else if (hAvs3Dec->channelNumConfig == CHANNEL_CONFIG_HOA_ORDER3)
++			info->hoa_order = 3;
++	} else if (hAvs3Dec->isMixedContent && hAvs3Dec->soundBedType == 0) {
++		info->format = AVS3_SPATIAL_FORMAT_OBJECTS;
++		info->bed_channels = 0;
++	} else if (hAvs3Dec->isMixedContent && hAvs3Dec->numObjsOutput > 0) {
++		info->format = AVS3_SPATIAL_FORMAT_BED_OBJECTS;
++	} else {
++		info->format = AVS3_SPATIAL_FORMAT_CHANNELS;
++	}
++
++	for (i = 0;
++	     i < info->total_channels && i < AVS3_SPATIAL_MAX_CHANNELS;
++	     i++) {
++		AVS3StaticChannelMetadata channel;
++
++		avs3_get_static_channel_metadata(hAvs3Dec, i, &channel);
++		info->channel_gain_valid[i] = channel.gain_valid;
++		info->channel_gain_linear[i] = channel.gain_linear;
++		info->channel_muted[i] = channel.muted;
++		info->channel_position_valid[i] = channel.position_valid;
++		info->channel_x[i] = channel.x;
++		info->channel_y[i] = channel.y;
++		info->channel_z[i] = channel.z;
++	}
++
++	return AVS3_TRUE;
++}
++
++int avs3_get_spatial_frame(AVS3DecoderHandle hAvs3Dec, AVS3SpatialFrame* frame)
++{
++	Avs3MetaDataHandle metadata;
++	Avs3MetaDataDynamicHandle dynamic;
++	int objectCount;
++	int bedChannels;
++	int i;
++
++	if (!hAvs3Dec || !frame || frame->struct_size < sizeof(*frame))
++		return AVS3_FALSE;
++
++	memset(frame, 0, sizeof(*frame));
++	frame->struct_size = sizeof(*frame);
++	frame->abi_version = AVS3_SPATIAL_ABI_VERSION;
++
++	if (!hAvs3Dec->hMetadataDec)
++		return AVS3_TRUE;
++
++	metadata = &hAvs3Dec->hMetadataDec->avs3MetaData;
++	frame->has_static_metadata = avs3_static_metadata_available(hAvs3Dec);
++	frame->has_dynamic_metadata = metadata->hasDynamicMeta;
++	objectCount = hAvs3Dec->numObjsOutput;
++	if (objectCount < 0)
++		objectCount = 0;
++	if (objectCount > AVS3_SPATIAL_MAX_OBJECTS)
++		objectCount = AVS3_SPATIAL_MAX_OBJECTS;
++	frame->object_count = objectCount;
++	bedChannels = hAvs3Dec->numChansOutput - hAvs3Dec->numObjsOutput;
++	if (bedChannels < 0)
++		bedChannels = 0;
++
++	dynamic = &metadata->avs3MetaDataDynamic;
++	for (i = 0; i < objectCount; i++) {
++		AVS3SpatialObjectFrame* object = &frame->objects[i];
++		Avs3DmL1MetaDataHandle source = &dynamic->avs3DmL1MetaData[i];
++		int channel = bedChannels + i;
++		AVS3StaticChannelMetadata staticMetadata;
++
++		if (metadata->hasDynamicMeta && i < dynamic->numDmChans) {
++			channel = dynamic->transChRef[i];
++			if (channel < 0 || channel >= hAvs3Dec->numChansOutput)
++				return AVS3_FALSE;
++		}
++		avs3_get_static_channel_metadata(
++			hAvs3Dec, channel, &staticMetadata);
++		object->gain_valid = staticMetadata.gain_valid;
++		object->gain_linear = staticMetadata.gain_linear;
++		object->muted = staticMetadata.muted;
++		object->z = 1.0f;
++		if (metadata->hasDynamicMeta && i < dynamic->numDmChans) {
++			float azimuth;
++			float elevation;
++			float distance;
++
++			object->muted = dynamic->muteFlag[i] != 0;
++			object->jump_position = source->jumpPosition != 0;
++			if (!object->muted) {
++				object->position_valid = 1;
++				if (source->cartesian) {
++					object->x = -source->obj_x *
++						staticMetadata.absolute_distance;
++					object->y = source->obj_y *
++						staticMetadata.absolute_distance;
++					object->z = source->obj_z *
++						staticMetadata.absolute_distance;
++				} else {
++					azimuth = source->objAzimuth * 0.01745329251994329577f;
++					elevation = source->objElevation * 0.01745329251994329577f;
++					distance = source->objDistance *
++						staticMetadata.absolute_distance;
++					object->x = distance * cosf(elevation) * sinf(azimuth);
++					object->y = distance * sinf(elevation);
++					object->z = distance * cosf(elevation) * cosf(azimuth);
++				}
++				if (source->hasObjGain) {
++					object->gain_valid = 1;
++					/*
++					 * Dynamic object gain is decoded from RES_OBJ_GAIN
++					 * directly as a linear [0, 6] value. Unlike static
++					 * object gain, it has no gainUnit field.
++					 */
++					object->gain_linear = source->gain;
++				}
++				if (source->hasObjDiffuse)
++					object->diffuse = source->diffuse;
++			}
++			object->extent_valid = source->hasObjExtent != 0;
++			object->width = source->cartesian ? source->objWidth_x :
++				source->objWidth;
++			object->height = source->cartesian ? source->objHeight_y :
++				source->objHeight;
++			object->depth = source->cartesian ? source->objDepth_z :
++				source->objDepth;
++
++			if (i < 32) {
++				Avs3DmL2MetaDataHandle extra =
++					&dynamic->avs3DmL2MetaData[i];
++				object->divergence_valid =
++					extra->hasObjectDivergence != 0;
++				object->divergence = extra->objDivergence;
++				object->divergence_azimuth_range =
++					extra->objDiverAzimuthRange;
++				object->channel_lock_valid = extra->hasChannelLock != 0;
++				object->channel_lock = extra->channelLock;
++				object->screen_ref_valid = extra->hasObjectScreenRef != 0;
++				object->screen_ref = extra->objScreenRef;
++			}
++		}
++		object->pcm_channel = channel;
++	}
++
++	return AVS3_TRUE;
++}

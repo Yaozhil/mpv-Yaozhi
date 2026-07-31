@@ -1,0 +1,407 @@
+diff --git a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.cpp b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.cpp
+index eb80578..3a31584 100644
+--- a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.cpp
++++ b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.cpp
+@@ -16,6 +16,7 @@ limitations under the License.
+ #include <thread>
+ #include <string>
+ #include <unordered_map>
++#include <cmath>
+ 
+ #include "avs3_audio.h"
+ #include "ambisonics/spherical_harmonics.h"
+@@ -29,7 +30,6 @@ limitations under the License.
+ #include "core/utils.h"
+ #include "core/lock_free_thread_safe_object_bank.h"
+ 
+-std::string version_string;
+ using SourceId = int;
+ 
+ struct listener_params {
+@@ -103,80 +103,78 @@ const char *get_version(int *major, int *minor, int *patch) {
+         *minor = MINOR_VERSION;
+     if (patch != nullptr)
+         *patch = PATCH_VERSION;
+-    version_string =
+-            "\n"
+-            "AVS3 Binaural Renderer \n"
+-            "VERSION: " +
+-            std::to_string(MAJOR_VERSION) + "." + std::to_string(MINOR_VERSION) + "." +
+-            std::to_string(PATCH_VERSION);
+-    return version_string.c_str();
++    return "\nAVS3 Binaural Renderer\nVERSION: 0.1.2";
+ }
+ 
+ result audio_create_context(audio_context **ctx,
+                             rendering_mode mode,
+                             size_t frames_per_buffer,
+                             size_t sample_rate) {
+-    *ctx = new audio_context;
+-    (*ctx)->frames_per_buffer = frames_per_buffer;
+-    (*ctx)->sample_rate = sample_rate;
+-    (*ctx)->max_source_count = 256;
+-    switch (mode) {
+-        case AMBISONIC_FIRST_ORDER: {
+-            (*ctx)->ambisonic_order = 1;
+-            break;
+-        }
+-        case AMBISONIC_SECOND_ORDER: {
+-            (*ctx)->ambisonic_order = 2;
+-            break;
+-        }
+-        case AMBISONIC_THIRD_ORDER: {
+-            (*ctx)->ambisonic_order = 3;
+-            break;
+-        }
+-        case AMBISONIC_FOURTH_ORDER: {
+-            (*ctx)->ambisonic_order = 4;
+-            break;
+-        }
+-        case AMBISONIC_FIFTH_ORDER: {
+-            (*ctx)->ambisonic_order = 5;
+-            break;
+-        }
+-        case AMBISONIC_SIXTH_ORDER: {
+-            (*ctx)->ambisonic_order = 6;
+-            break;
+-        }
+-        case AMBISONIC_SEVENTH_ORDER: {
+-            (*ctx)->ambisonic_order = 7;
+-            break;
+-        }
+-        default: {
+-            (*ctx)->ambisonic_order = 1;
+-            break;
++    audio_context *created = nullptr;
++
++    if (ctx == nullptr || frames_per_buffer == 0 || sample_rate == 0)
++        return ILLEGAL_VALUE;
++    *ctx = nullptr;
++    try {
++        created = new audio_context;
++        created->frames_per_buffer = frames_per_buffer;
++        created->sample_rate = sample_rate;
++        created->max_source_count = 256;
++        switch (mode) {
++            case AMBISONIC_FIRST_ORDER:
++            case AMBISONIC_SECOND_ORDER:
++            case AMBISONIC_THIRD_ORDER:
++            case AMBISONIC_FOURTH_ORDER:
++            case AMBISONIC_FIFTH_ORDER:
++            case AMBISONIC_SIXTH_ORDER:
++            case AMBISONIC_SEVENTH_ORDER:
++                created->ambisonic_order = static_cast<size_t>(mode);
++                break;
++            default:
++                delete created;
++                return ILLEGAL_VALUE;
+         }
++        created->num_ambisonic_channels =
++                (created->ambisonic_order + 1) * (created->ambisonic_order + 1);
++        created->ambisonic_rotator_ =
++                std::make_shared<avs3renderer::AmbisonicRotator>(created->ambisonic_order);
++        created->ambisonic_binaural_decoder_ =
++                std::make_shared<avs3renderer::AmbisonicBinauralDecoderImpl>(
++                        sample_rate, frames_per_buffer, created->ambisonic_order);
++        created->audio_processors_ =
++                std::make_shared<avs3renderer::LockFreeThreadSafeObjectBank<audio_processor>>(
++                        created->max_source_count);
++        created->temp_binaural_buffer =
++                std::vector<float, avs3renderer::FloatAllocator>(2 * frames_per_buffer);
++        created->temp_ambisonic_buffer_before_rotation =
++                std::vector<float, avs3renderer::FloatAllocator>(
++                        created->num_ambisonic_channels * frames_per_buffer);
++        created->temp_ambisonic_buffer =
++                std::vector<float, avs3renderer::FloatAllocator>(
++                        created->num_ambisonic_channels * frames_per_buffer);
++        *ctx = created;
++        return SUCCESS;
++    } catch (...) {
++        delete created;
++        return ERROR;
+     }
+-    (*ctx)->num_ambisonic_channels = ((*ctx)->ambisonic_order + 1) * ((*ctx)->ambisonic_order + 1);
+-    (*ctx)->ambisonic_rotator_ = std::make_shared<avs3renderer::AmbisonicRotator>((*ctx)->ambisonic_order);
+-    (*ctx)->ambisonic_binaural_decoder_ = std::make_shared<avs3renderer::AmbisonicBinauralDecoderImpl>(
+-            sample_rate, frames_per_buffer, (*ctx)->ambisonic_order);
+-    (*ctx)->audio_processors_ =
+-            std::make_shared<avs3renderer::LockFreeThreadSafeObjectBank<audio_processor>>((*ctx)->max_source_count);
+-
+-    (*ctx)->temp_binaural_buffer = std::vector<float, avs3renderer::FloatAllocator>(2 * frames_per_buffer);
+-    (*ctx)->temp_ambisonic_buffer_before_rotation =
+-            std::vector<float, avs3renderer::FloatAllocator>((*ctx)->num_ambisonic_channels * frames_per_buffer);
+-    (*ctx)->temp_ambisonic_buffer =
+-            std::vector<float, avs3renderer::FloatAllocator>((*ctx)->num_ambisonic_channels * frames_per_buffer);
+-    return SUCCESS;
+ }
+ 
+ // Initialize ray tracer / listener / sampler / integrator
+ result audio_initialize_context(audio_context *ctx) {
++    if (ctx == nullptr)
++        return CONTEXT_NOT_CREATED;
+     if (ctx->listener != nullptr)
+         return CONTEXT_REPEATED_INITIALIZATION;
+-    ctx->listener = std::shared_ptr<avs3renderer::OmniListener>(
+-            new avs3renderer::OmniListener(ctx->listener_params_.listener_position, ctx->listener_params_.listener_front,
+-                                           ctx->listener_params_.listener_up));
+-    return SUCCESS;
++    try {
++        ctx->listener = std::make_shared<avs3renderer::OmniListener>(
++                ctx->listener_params_.listener_position,
++                ctx->listener_params_.listener_front,
++                ctx->listener_params_.listener_up);
++        return SUCCESS;
++    } catch (...) {
++        return ERROR;
++    }
+ }
+ 
+ result audio_update_scene(audio_context *ctx) {
+@@ -222,38 +220,55 @@ result audio_add_source_with_orientation(audio_context *ctx,
+                                          const float *up,
+                                          int *source_id,
+                                          bool is_async) {
++    int id = -1;
++
+     if (ctx == nullptr)
+         return CONTEXT_NOT_CREATED;
+     if (ctx->listener == nullptr)
+         return CONTEXT_NOT_READY;
++    if (position == nullptr || front == nullptr || up == nullptr)
++        return ILLEGAL_VALUE;
++    for (int i = 0; i < 3; ++i) {
++        if (!std::isfinite(position[i]) ||
++            !std::isfinite(front[i]) ||
++            !std::isfinite(up[i]))
++            return ILLEGAL_VALUE;
++    }
++    if (position[0] * position[0] + position[1] * position[1] +
++            position[2] * position[2] < 1.0e-12f)
++        return ILLEGAL_VALUE;
+     if (ctx->audio_processors_->isFull())
+         return ERROR;
+ 
+-    avs3renderer::Vector3f source_position(position[0], position[1], position[2]);
+-    avs3renderer::Vector3f source_front(front[0], front[1], front[2]);
+-    avs3renderer::Vector3f source_up(up[0], up[1], up[2]);
+-
+-    std::shared_ptr<avs3renderer::SoundSource> source = std::make_shared<avs3renderer::OmniSoundSource>(
+-                                            source_position, source_front, source_up,
+-                                            ctx->audio_processors_->GetNextFreeEntryId());
+-    auto id = source->id();
+-    /// write api output
+-    if (source_id != nullptr)
+-        *source_id = id;
+-    /// update ctx
+-    ctx->sound_sources_[id] = source;
+-
+-    /// Create audio processor for sound source
+-    int processor_id;
+-    if (is_async) {
+-        processor_id = ctx->audio_processors_->InsertAsync(mode, ctx);
+-    } else {
+-        processor_id = ctx->audio_processors_->Insert(mode, ctx);
+-    }
+-    if (processor_id != id)
++    try {
++        avs3renderer::Vector3f source_position(
++                position[0], position[1], position[2]);
++        avs3renderer::Vector3f source_front(front[0], front[1], front[2]);
++        avs3renderer::Vector3f source_up(up[0], up[1], up[2]);
++        std::shared_ptr<avs3renderer::SoundSource> source =
++                std::make_shared<avs3renderer::OmniSoundSource>(
++                        source_position, source_front, source_up,
++                        ctx->audio_processors_->GetNextFreeEntryId());
++        int processor_id;
++
++        id = source->id();
++        ctx->sound_sources_[id] = source;
++        if (is_async)
++            processor_id = ctx->audio_processors_->InsertAsync(mode, ctx);
++        else
++            processor_id = ctx->audio_processors_->Insert(mode, ctx);
++        if (processor_id != id) {
++            ctx->sound_sources_.erase(id);
++            return ERROR;
++        }
++        if (source_id != nullptr)
++            *source_id = id;
++        return SUCCESS;
++    } catch (...) {
++        if (id >= 0)
++            ctx->sound_sources_.erase(id);
+         return ERROR;
+-
+-    return SUCCESS;
++    }
+ }
+ 
+ result audio_set_source_gain(audio_context *ctx, int source_id, float gain) {
+@@ -393,10 +408,8 @@ result audio_set_listener_orientation(audio_context *ctx,
+     ctx->listener_params_.listener_up = {up[0], up[1], up[2]};
+     ctx->listener->SetPose(ctx->listener_params_.listener_position, ctx->listener_params_.listener_front,
+                            ctx->listener_params_.listener_up);
+-    if (ctx->has_ambisonic_input) {
+-        ctx->ambisonic_rotator_->SetRotationMatrix(
+-                (ctx->listener->WorldToListener() * ctx->ambisonic_orientation).block<3, 3>(0, 0));
+-    }
++    ctx->ambisonic_rotator_->SetRotationMatrix(
++            (ctx->listener->WorldToListener() * ctx->ambisonic_orientation).block<3, 3>(0, 0));
+     return SUCCESS;
+ }
+ 
+@@ -409,10 +422,8 @@ result audio_set_listener_pose(audio_context *ctx,
+     ctx->listener_params_.listener_up = {up[0], up[1], up[2]};
+     ctx->listener->SetPose(ctx->listener_params_.listener_position, ctx->listener_params_.listener_front,
+                            ctx->listener_params_.listener_up);
+-    if (ctx->has_ambisonic_input) {
+-        ctx->ambisonic_rotator_->SetRotationMatrix(
+-                (ctx->listener->WorldToListener() * ctx->ambisonic_orientation).block<3, 3>(0, 0));
+-    }
++    ctx->ambisonic_rotator_->SetRotationMatrix(
++            (ctx->listener->WorldToListener() * ctx->ambisonic_orientation).block<3, 3>(0, 0));
+     return SUCCESS;
+ }
+ 
+@@ -449,9 +460,12 @@ result audio_submit_ambisonic_channel_buffer(audio_context *ctx,
+                                              int degree,
+                                              ambisonic_normalization_type norm_type,
+                                              float gain) {
+-    ctx->has_ambisonic_input = true;
+-    if (order > ctx->ambisonic_order)
++    if (ctx == nullptr || ambisonic_channel_buffer == nullptr ||
++        !std::isfinite(gain) || order < 0 || order > ctx->ambisonic_order ||
++        degree < -order || degree > order ||
++        (norm_type != SN3D && norm_type != N3D))
+         return ILLEGAL_VALUE;
++    ctx->has_ambisonic_input = true;
+     int acn_channel = avs3renderer::AcnSequence(order, degree);
+     if (norm_type == N3D)
+         gain *= avs3renderer::KN3d2Sn3d(acn_channel);
+@@ -466,16 +480,20 @@ result audio_submit_interleaved_ambisonic_buffer(audio_context *ctx,
+                                                  int ambisonic_order,
+                                                  ambisonic_normalization_type norm_type,
+                                                  float gain) {
+-    ctx->has_ambisonic_input = true;
+-    if (ambisonic_order > ctx->ambisonic_order)
++    if (ctx == nullptr || ambisonic_buffer == nullptr ||
++        !std::isfinite(gain) || ambisonic_order < 0 ||
++        ambisonic_order > ctx->ambisonic_order ||
++        (norm_type != SN3D && norm_type != N3D))
+         return ILLEGAL_VALUE;
++    ctx->has_ambisonic_input = true;
+ 
+     for (int c = 0; c < avs3renderer::kNumAmbisonicChannels[ambisonic_order]; ++c) {
+-        float channel_gain = (norm_type == N3D) ? gain : gain *= avs3renderer::KN3d2Sn3d(c);
++        const float channel_gain =
++                gain * (norm_type == N3D ? avs3renderer::KN3d2Sn3d(c) : 1.0f);
+         for (int f = 0; f < ctx->frames_per_buffer; ++f) {
+             ctx->temp_ambisonic_buffer_before_rotation[c * ctx->frames_per_buffer + f] +=
+                     ambisonic_buffer[f * avs3renderer::kNumAmbisonicChannels[ambisonic_order] + c] * channel_gain;
+         }
+     }
+     return SUCCESS;
+-}
+\ No newline at end of file
++}
+diff --git a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.h b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.h
+index e07a1c9..8e34d36 100644
+--- a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.h
++++ b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.h
+@@ -15,12 +15,16 @@ limitations under the License.
+ #ifndef API_AUDIO_H
+ #define API_AUDIO_H
+ 
+-#include <cstdint>
+-#include <cstdlib>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
+ #include "avs3_audio_types.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
++#define AVS3_RENDER_DEFAULT(value) = value
++#else
++#define AVS3_RENDER_DEFAULT(value)
+ #endif
+ 
+ #define MAJOR_VERSION 0
+@@ -149,7 +153,7 @@ result audio_add_source(audio_context* ctx,
+                         source_mode source_mode,
+                         const float* position,
+                         int* source_id,
+-                        bool is_async = false);
++                        bool is_async AVS3_RENDER_DEFAULT(false));
+ 
+ /**
+  * Same as audio_add_source, except this API can setup source orientation and ray tracing detection radius.
+@@ -175,7 +179,7 @@ result audio_add_source_with_orientation(audio_context* ctx,
+                                          const float* front,
+                                          const float* up,
+                                          int* source_id,
+-                                         bool is_async = false);
++                                         bool is_async AVS3_RENDER_DEFAULT(false));
+ 
+ /**
+  * @param ctx 要使用的的 context
+@@ -254,7 +258,7 @@ result audio_submit_interleaved_ambisonic_buffer(audio_context* ctx,
+ result audio_get_interleaved_binaural_buffer(audio_context* ctx,
+                                              float* output_buffer_ptr,
+                                              size_t num_frames,
+-                                             bool is_accumulative = false);
++                                             bool is_accumulative AVS3_RENDER_DEFAULT(false));
+ 
+ /**
+  * Same as audio_get_interleaved_binaural_buffer, but the output layout is planer stereo.
+@@ -272,7 +276,7 @@ result audio_get_interleaved_binaural_buffer(audio_context* ctx,
+ result audio_get_planar_binaural_buffer(audio_context* ctx,
+                                         float* const* output_buffer_ptr,
+                                         size_t num_frames,
+-                                        bool is_accumulative = false);
++                                        bool is_accumulative AVS3_RENDER_DEFAULT(false));
+ 
+ /**
+  * Update acoustic scene status
+@@ -372,4 +376,6 @@ result audio_destroy(audio_context* ctx);
+ }
+ #endif
+ 
++#undef AVS3_RENDER_DEFAULT
++
+ #endif  // API_AUDIO_H
+diff --git a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio_types.h b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio_types.h
+index c306a5b..bda2f60 100644
+--- a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio_types.h
++++ b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio_types.h
+@@ -16,7 +16,7 @@ limitations under the License.
+ #define API_TYPES_H
+ 
+ #include <stdbool.h>
+-#include <cstdint>
++#include <stdint.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/core/ambisonic_rotator.cpp b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/core/ambisonic_rotator.cpp
+index 04ebd52..db9be1e 100644
+--- a/av3a_binaural_render/AudioDecoder/av3a_binaural_render/core/ambisonic_rotator.cpp
++++ b/av3a_binaural_render/AudioDecoder/av3a_binaural_render/core/ambisonic_rotator.cpp
+@@ -191,9 +191,7 @@ void AmbisonicRotator::Process(const float* input_buffer_ptr,
+     if (current_rotation_.AngularDifferenceRad(kIdentityRotation) < kRotationQuantizationRad &&
+         target_rotation_.at(target_rotation_read_index_.load()).AngularDifferenceRad(kIdentityRotation) <
+             kRotationQuantizationRad) {
+-        for (int c = 0; c < kNumAmbisonicChannels[ambisonic_order_]; ++c) {
+-            std::copy_n(input_buffer_ptr, num_frames * num_channels, output_buffer_ptr);
+-        }
++        std::copy_n(input_buffer_ptr, num_frames * num_channels, output_buffer_ptr);
+         return;
+     }
+ 
+@@ -284,4 +282,4 @@ void AmbisonicRotator::UpdateRotationMatrix(const Eigen::Quaternion<float>& rota
+         rotation_matrix_.block(index, index, size, size) = rotation_matrices_[current_order];
+     }
+ }
+-}  // namespace avs3renderer
+\ No newline at end of file
++}  // namespace avs3renderer

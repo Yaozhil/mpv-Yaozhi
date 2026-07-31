@@ -1,0 +1,1249 @@
+diff --git a/configure b/configure
+index 9494004..48b2c7b 100644
+--- a/configure
++++ b/configure
+@@ -3858,7 +3858,7 @@ videotoolbox_suggest="coreservices"
+ videotoolbox_deps="corefoundation coremedia corevideo VTDecompressionSessionDecodeFrame"
+ videotoolbox_encoder_deps="videotoolbox VTCompressionSessionPrepareToEncodeFrames"
+ libarcdav3a_decoder_deps="libarcdav3a"
+-libarcdav3a_decoder_extralibs="-lAVS3AudioDec"
++libarcdav3a_decoder_extralibs="-lAVS3AudioDec -lRendererCore -lavs3_samplerate -lstdc++"
+ 
+ # demuxers / muxers
+ ac3_demuxer_select="ac3_parser"
+diff --git a/libavcodec/libarcdav3a.c b/libavcodec/libarcdav3a.c
+index 508ea1b..8c44e5b 100644
+--- a/libavcodec/libarcdav3a.c
++++ b/libavcodec/libarcdav3a.c
+@@ -1,56 +1,568 @@
+ #include <errno.h>
+ #include <limits.h>
++#include <math.h>
++#include <stddef.h>
+ #include <stdbool.h>
+ #include <stdint.h>
++#include "av3a.h"
+ #include "decode.h"
+ #include "avcodec.h"
+ #include "internal.h"
+ #include "codec_internal.h"
+ #include "libavutil/mastering_display_metadata.h"
+ #include "libavutil/mem.h"
+-#include "avs3_decoder_interface.h"
++#include "libavutil/opt.h"
++#include <avs3a/avs3_decoder_interface.h>
++#include <avs3-renderer/avs3_audio.h>
+ 
+ #define MAX_VIVID_SIZE (4096U * 64U)
++#define AV3A_RENDER_MAX_CHANNELS 32
++
++enum AV3ARenderMode {
++	AV3A_RENDER_NATIVE,
++	AV3A_RENDER_BINAURAL,
++};
+ 
+ typedef struct AVS3DecoderOutput
+ {
+-	char *pOutData;
++	uint8_t *pOutData;
+ 	unsigned long nlen;	//in/out
+ 	unsigned long nChannel;
+ 	unsigned long nSamplerate;
+ 	unsigned long nBits;
+ 	unsigned long nChCfg;
+-	unsigned long nObjCnt;
+-	char *pMeta;	//alloc inside, need free outside
+-	unsigned long nMeta;
++	AVS3SpatialStreamInfo spatial_info;
++	int have_spatial_info;
+ }AVS3DecoderOutput;
+ 
+ 
+ typedef struct arcdav3a_context
+ {
++	const AVClass*      class;
+ 	AVCodecContext*     avctx;
+ 	int                 eos;
+ 	AVS3DecoderOutput   out_frame;
+ 	bool		m_bFirstFrame;
+-	Avs3MetaData m_LastMetaData;
+ 	AVS3DecoderHandle m_hAvs3;
+     
+-	char* m_pBuffer;
++	uint8_t* m_pBuffer;
+ 	unsigned long m_dwBufferSize;
+ 	unsigned long m_dwDataLen;
+ 
+ 	unsigned long m_dwErrorCounter;
+ 	int m_nlastChannels;
+-	int m_lastChCfg;
+-	int m_lastObjcnt;
+-	int m_lastMixtype;
+-	int m_lastBitrateTotal;
++	AVS3SpatialStreamInfo last_stream_info;
++	int have_last_stream_info;
+ 
+-
+-    bool        m_bGotMD;
++	int spatial_render;
++	audio_context* renderer;
++	int renderer_bed_source_ids[AV3A_RENDER_MAX_CHANNELS];
++	int renderer_object_source_ids[AVS3_SPATIAL_MAX_OBJECTS];
++	int renderer_channels;
++	int renderer_bed_channels;
++	int renderer_object_channels;
++	int renderer_frame_length;
++	int renderer_sample_rate;
++	int renderer_format;
++	int renderer_channel_config;
++	float* renderer_planar;
++	float* renderer_output;
++	size_t renderer_output_capacity;
++	AVS3SpatialFrame* spatial_frames;
++	int spatial_frame_count;
++	int spatial_frame_capacity;
++	AVS3SpatialFrame last_spatial_frame;
++	int have_last_spatial_frame;
+ 
+ } arcdav3a_context;
+ 
++static void arcdav3a_destroy_renderer(arcdav3a_context *h)
++{
++	if (h->renderer)
++		audio_destroy(h->renderer);
++	h->renderer = NULL;
++	av_freep(&h->renderer_planar);
++	av_freep(&h->renderer_output);
++	h->renderer_output_capacity = 0;
++	h->renderer_channels = 0;
++	h->renderer_bed_channels = 0;
++	h->renderer_object_channels = 0;
++	h->renderer_frame_length = 0;
++	h->renderer_sample_rate = 0;
++	h->renderer_format = -1;
++	h->renderer_channel_config = -1;
++}
++
++static void arcdav3a_bed_position(int config, int channel, int channels,
++				  float position[3])
++{
++	static const float positions_5_1[][3] = {
++		{ 0.5f, 0.0f, 0.8660254f},
++		{-0.5f, 0.0f, 0.8660254f},
++		{ 0.0f, 0.0f, 1.0f},
++		{ 0.0f, 0.0f, 1.0f},
++		{ 0.9396926f, 0.0f, -0.3420201f},
++		{-0.9396926f, 0.0f, -0.3420201f},
++	};
++	static const float positions_7_1[][3] = {
++		{ 0.5f, 0.0f, 0.8660254f},
++		{-0.5f, 0.0f, 0.8660254f},
++		{ 0.0f, 0.0f, 1.0f},
++		{ 0.0f, 0.0f, 1.0f},
++		{ 0.9396926f, 0.0f, -0.3420201f},
++		{-0.9396926f, 0.0f, -0.3420201f},
++		{ 0.7071068f, 0.0f, 0.7071068f},
++		{-0.7071068f, 0.0f, 0.7071068f},
++	};
++	static const float positions_height[][3] = {
++		{ 0.3535534f, 0.7071068f, 0.6123724f},
++		{-0.3535534f, 0.7071068f, 0.6123724f},
++		{ 0.6644630f, 0.7071068f, -0.2418448f},
++		{-0.6644630f, 0.7071068f, -0.2418448f},
++	};
++
++	if (channel < 0 || channel >= channels) {
++		position[0] = 0.0f;
++		position[1] = 0.0f;
++		position[2] = 1.0f;
++		return;
++	}
++
++	if ((config == CHANNEL_CONFIG_MC_5_1 ||
++	     config == CHANNEL_CONFIG_MC_5_1_2 ||
++	     config == CHANNEL_CONFIG_MC_5_1_4) && channel < 6) {
++		memcpy(position, positions_5_1[channel], sizeof(float) * 3);
++		return;
++	}
++	if ((config == CHANNEL_CONFIG_MC_7_1 ||
++	     config == CHANNEL_CONFIG_MC_7_1_2 ||
++	     config == CHANNEL_CONFIG_MC_7_1_4) && channel < 8) {
++		memcpy(position, positions_7_1[channel], sizeof(float) * 3);
++		return;
++	}
++	if (config == CHANNEL_CONFIG_MC_5_1_2 && channel >= 6 && channel < 8) {
++		memcpy(position, positions_height[channel - 6], sizeof(float) * 3);
++		return;
++	}
++	if (config == CHANNEL_CONFIG_MC_5_1_4 && channel >= 6 && channel < 10) {
++		memcpy(position, positions_height[channel - 6], sizeof(float) * 3);
++		return;
++	}
++	if (config == CHANNEL_CONFIG_MC_7_1_2 && channel >= 8 && channel < 10) {
++		memcpy(position, positions_height[channel - 8], sizeof(float) * 3);
++		return;
++	}
++	if (config == CHANNEL_CONFIG_MC_7_1_4 && channel >= 8 && channel < 12) {
++		memcpy(position, positions_height[channel - 8], sizeof(float) * 3);
++		return;
++	}
++	position[0] = 0.0f;
++	position[1] = 0.0f;
++	position[2] = 1.0f;
++}
++
++static int arcdav3a_position_valid(const float position[3])
++{
++	float length_squared;
++
++	if (!isfinite(position[0]) ||
++	    !isfinite(position[1]) ||
++	    !isfinite(position[2]))
++		return 0;
++	length_squared = position[0] * position[0] +
++		position[1] * position[1] +
++		position[2] * position[2];
++	return isfinite(length_squared) && length_squared > 1.0e-12f;
++}
++
++static int arcdav3a_gain_valid(float gain)
++{
++	return isfinite(gain) && gain >= 0.0f;
++}
++
++static int arcdav3a_stream_config_changed(
++	const AVS3SpatialStreamInfo *previous,
++	const AVS3SpatialStreamInfo *current)
++{
++	return previous->format != current->format ||
++		previous->sample_rate != current->sample_rate ||
++		previous->frame_length != current->frame_length ||
++		previous->bit_depth != current->bit_depth ||
++		previous->total_channels != current->total_channels ||
++		previous->bed_channels != current->bed_channels ||
++		previous->object_channels != current->object_channels ||
++		previous->channel_config != current->channel_config ||
++		previous->hoa_order != current->hoa_order ||
++		previous->hoa_normalization != current->hoa_normalization ||
++		previous->hoa_ordering != current->hoa_ordering ||
++		previous->total_bitrate != current->total_bitrate;
++}
++
++static int arcdav3a_init_renderer(AVCodecContext *avctx,
++				  const AVS3SpatialStreamInfo *info)
++{
++	arcdav3a_context *h = avctx->priv_data;
++	rendering_mode order;
++	float position[3];
++	int i;
++	int ret = AVERROR_EXTERNAL;
++
++	if (h->renderer &&
++	    h->renderer_channels == info->total_channels &&
++	    h->renderer_bed_channels == info->bed_channels &&
++	    h->renderer_object_channels == info->object_channels &&
++	    h->renderer_frame_length == info->frame_length &&
++	    h->renderer_sample_rate == info->sample_rate &&
++	    h->renderer_format == info->format &&
++	    h->renderer_channel_config == info->channel_config)
++		return 0;
++
++	arcdav3a_destroy_renderer(h);
++	if (info->total_channels <= 0 ||
++	    info->total_channels > AV3A_RENDER_MAX_CHANNELS ||
++	    info->bed_channels < 0 ||
++	    info->object_channels < 0 ||
++	    info->bed_channels + info->object_channels > info->total_channels ||
++	    info->frame_length <= 0 ||
++	    info->sample_rate <= 0)
++		return AVERROR_INVALIDDATA;
++
++	if (info->format == AVS3_SPATIAL_FORMAT_HOA) {
++		if (info->hoa_order < 1 || info->hoa_order > 7)
++			return AVERROR_PATCHWELCOME;
++		order = (rendering_mode)info->hoa_order;
++	} else {
++		order = AMBISONIC_THIRD_ORDER;
++	}
++	ret = audio_create_context(&h->renderer, order,
++				   info->frame_length, info->sample_rate);
++	if (ret != SUCCESS)
++		goto fail;
++	if (audio_initialize_context(h->renderer) != SUCCESS)
++		goto fail;
++
++	for (i = 0; i < AV3A_RENDER_MAX_CHANNELS; i++)
++		h->renderer_bed_source_ids[i] = -1;
++	for (i = 0; i < AVS3_SPATIAL_MAX_OBJECTS; i++)
++		h->renderer_object_source_ids[i] = -1;
++
++	if (info->format != AVS3_SPATIAL_FORMAT_HOA) {
++		for (i = 0; i < info->bed_channels; i++) {
++			if (info->channel_position_valid[i]) {
++				position[0] = info->channel_x[i];
++				position[1] = info->channel_y[i];
++				position[2] = info->channel_z[i];
++			} else {
++				arcdav3a_bed_position(info->channel_config, i,
++						     info->bed_channels, position);
++			}
++			if (!arcdav3a_position_valid(position))
++				goto fail;
++			if (audio_add_source(h->renderer, SOURCE_SPATIALIZE,
++					     position,
++					     &h->renderer_bed_source_ids[i],
++					     false) != SUCCESS)
++				goto fail;
++		}
++		for (i = 0; i < info->object_channels; i++) {
++			position[0] = 0.0f;
++			position[1] = 0.0f;
++			position[2] = 1.0f;
++			if (audio_add_source(h->renderer, SOURCE_SPATIALIZE,
++					     position,
++					     &h->renderer_object_source_ids[i],
++					     false) != SUCCESS)
++				goto fail;
++		}
++	}
++	if (audio_commit_scene(h->renderer) != SUCCESS)
++		goto fail;
++
++	h->renderer_planar = av_malloc_array(
++		(size_t)info->total_channels * info->frame_length,
++		sizeof(*h->renderer_planar));
++	if (!h->renderer_planar) {
++		ret = AVERROR(ENOMEM);
++		goto fail;
++	}
++
++	h->renderer_channels = info->total_channels;
++	h->renderer_bed_channels = info->bed_channels;
++	h->renderer_object_channels = info->object_channels;
++	h->renderer_frame_length = info->frame_length;
++	h->renderer_sample_rate = info->sample_rate;
++	h->renderer_format = info->format;
++	h->renderer_channel_config = info->channel_config;
++	h->have_last_spatial_frame = 0;
++	av_log(avctx, AV_LOG_INFO,
++	       "AV3A spatial renderer initialized: format=%d channels=%d objects=%d hoa=%d\n",
++	       info->format, info->total_channels, info->object_channels,
++	       info->hoa_order);
++	return 0;
++
++fail:
++	if (ret == SUCCESS)
++		ret = AVERROR_EXTERNAL;
++	arcdav3a_destroy_renderer(h);
++	return ret;
++}
++
++static int arcdav3a_ensure_renderer_output(arcdav3a_context *h,
++					   size_t samples)
++{
++	float *output;
++	size_t needed;
++
++	if (samples > SIZE_MAX / 2)
++		return AVERROR(ENOMEM);
++	needed = samples * 2;
++	if (needed <= h->renderer_output_capacity)
++		return 0;
++	output = av_realloc_array(h->renderer_output, needed, sizeof(*output));
++	if (!output)
++		return AVERROR(ENOMEM);
++	h->renderer_output = output;
++	h->renderer_output_capacity = needed;
++	return 0;
++}
++
++static int arcdav3a_select_object_metadata(
++	arcdav3a_context *h,
++	const AVS3SpatialStreamInfo *info,
++	const AVS3SpatialFrame *frame,
++	const AVS3SpatialFrame **selected)
++{
++	AVS3SpatialFrame next;
++	int i;
++
++	if (frame && frame->abi_version == AVS3_SPATIAL_ABI_VERSION &&
++	    frame->has_dynamic_metadata) {
++		if (frame->object_count != info->object_channels ||
++		    frame->object_count < 0 ||
++		    frame->object_count > AVS3_SPATIAL_MAX_OBJECTS)
++			return AVERROR_INVALIDDATA;
++		next = *frame;
++		if (h->have_last_spatial_frame) {
++			for (i = 0; i < next.object_count; i++) {
++				if (!next.objects[i].position_valid &&
++				    h->last_spatial_frame.objects[i].position_valid) {
++					next.objects[i].position_valid = 1;
++					next.objects[i].x =
++						h->last_spatial_frame.objects[i].x;
++					next.objects[i].y =
++						h->last_spatial_frame.objects[i].y;
++					next.objects[i].z =
++						h->last_spatial_frame.objects[i].z;
++				}
++			}
++		}
++		h->last_spatial_frame = next;
++		h->have_last_spatial_frame = 1;
++	} else if (!h->have_last_spatial_frame) {
++		return AVERROR_INVALIDDATA;
++	}
++	*selected = &h->last_spatial_frame;
++	return 0;
++}
++
++static int arcdav3a_render_block(
++	AVCodecContext *avctx,
++	const AVS3SpatialStreamInfo *info,
++	const AVS3SpatialFrame *frame,
++	const int16_t *input,
++	float *output)
++{
++	arcdav3a_context *h = avctx->priv_data;
++	const AVS3SpatialFrame *metadata = NULL;
++	int i;
++	int j;
++	int ret;
++
++	for (i = 0; i < info->total_channels; i++) {
++		float *plane = h->renderer_planar +
++			(size_t)i * info->frame_length;
++		for (j = 0; j < info->frame_length; j++)
++			plane[j] =
++				input[j * info->total_channels + i] / 32768.0f;
++	}
++
++	if (info->format == AVS3_SPATIAL_FORMAT_HOA) {
++		ambisonic_normalization_type normalization;
++
++		if (info->hoa_ordering != AVS3_SPATIAL_HOA_ORDERING_ACN)
++			return AVERROR_PATCHWELCOME;
++		if (info->hoa_normalization == AVS3_SPATIAL_HOA_N3D)
++			normalization = N3D;
++		else if (info->hoa_normalization == AVS3_SPATIAL_HOA_SN3D)
++			normalization = SN3D;
++		else
++			return AVERROR_PATCHWELCOME;
++		for (i = 0; i < info->total_channels; i++) {
++			int order = (int)sqrt((double)i);
++			int degree = i - order * (order + 1);
++			float gain = info->channel_muted[i] ? 0.0f :
++				(info->channel_gain_valid[i] ?
++				 info->channel_gain_linear[i] : 1.0f);
++
++			if (!arcdav3a_gain_valid(gain))
++				return AVERROR_INVALIDDATA;
++			if (audio_submit_ambisonic_channel_buffer(
++				    h->renderer,
++				    h->renderer_planar +
++					    (size_t)i * info->frame_length,
++				    order, degree, normalization, gain) != SUCCESS)
++				return AVERROR_EXTERNAL;
++		}
++	} else {
++		ret = arcdav3a_select_object_metadata(
++			h, info, frame, &metadata);
++		if (ret < 0)
++			return ret;
++		for (i = 0; i < info->bed_channels; i++) {
++			float gain = info->channel_muted[i] ? 0.0f :
++				(info->channel_gain_valid[i] ?
++				 info->channel_gain_linear[i] : 1.0f);
++
++			if (!arcdav3a_gain_valid(gain))
++				return AVERROR_INVALIDDATA;
++			if (audio_set_source_gain(
++				    h->renderer, h->renderer_bed_source_ids[i],
++				    gain) != SUCCESS ||
++			    audio_submit_source_buffer(
++				    h->renderer, h->renderer_bed_source_ids[i],
++				    h->renderer_planar +
++					    (size_t)i * info->frame_length,
++				    info->frame_length) != SUCCESS)
++				return AVERROR_EXTERNAL;
++		}
++		for (i = 0; i < metadata->object_count; i++) {
++			const AVS3SpatialObjectFrame *object =
++				&metadata->objects[i];
++			float position[3] = {
++				object->x, object->y, object->z
++			};
++			float gain = object->muted ? 0.0f :
++				(object->gain_valid ?
++				 object->gain_linear : 1.0f);
++			int channel = object->pcm_channel;
++
++			if (channel < 0 || channel >= info->total_channels ||
++			    !arcdav3a_gain_valid(gain))
++				return AVERROR_INVALIDDATA;
++			if (!object->muted) {
++				if (!object->position_valid)
++					return AVERROR_INVALIDDATA;
++				if (!arcdav3a_position_valid(position)) {
++					if (isfinite(position[0]) &&
++					    isfinite(position[1]) &&
++					    isfinite(position[2]) &&
++					    position[0] == 0.0f &&
++					    position[1] == 0.0f &&
++					    position[2] == 0.0f) {
++						position[2] = 1.0f;
++					} else {
++						return AVERROR_INVALIDDATA;
++					}
++				}
++				if (audio_set_source_position(
++					    h->renderer,
++					    h->renderer_object_source_ids[i],
++					    position) != SUCCESS)
++					return AVERROR_EXTERNAL;
++			}
++			if (audio_set_source_gain(
++				    h->renderer,
++				    h->renderer_object_source_ids[i],
++				    gain) != SUCCESS ||
++			    audio_submit_source_buffer(
++				    h->renderer,
++				    h->renderer_object_source_ids[i],
++				    h->renderer_planar +
++					    (size_t)channel * info->frame_length,
++				    info->frame_length) != SUCCESS)
++				return AVERROR_EXTERNAL;
++		}
++	}
++
++	if (audio_update_scene(h->renderer) != SUCCESS ||
++	    audio_get_interleaved_binaural_buffer(
++		    h->renderer, output,
++		    info->frame_length, false) != SUCCESS)
++		return AVERROR_EXTERNAL;
++	return 0;
++}
++
++static int arcdav3a_render_binaural(AVCodecContext *avctx,
++				    AVS3DecoderOutput *decoder_output,
++				    const uint8_t **data,
++				    unsigned long *data_size)
++{
++	arcdav3a_context *h = avctx->priv_data;
++	const AVS3SpatialStreamInfo *info = &decoder_output->spatial_info;
++	const int16_t *input = (const int16_t *)decoder_output->pOutData;
++	int samples;
++	int blocks;
++	int i;
++	int ret;
++
++	if (h->spatial_render != AV3A_RENDER_BINAURAL)
++		return 0;
++	if (!decoder_output->have_spatial_info ||
++	    info->abi_version != AVS3_SPATIAL_ABI_VERSION)
++		return AVERROR_INVALIDDATA;
++	if (info->format == AVS3_SPATIAL_FORMAT_CHANNELS) {
++		arcdav3a_destroy_renderer(h);
++		return 0;
++	}
++	if (decoder_output->nBits != 16 ||
++	    decoder_output->nChannel != info->total_channels ||
++	    decoder_output->nSamplerate != info->sample_rate ||
++	    info->total_channels <= 0 ||
++	    decoder_output->nlen %
++		    (info->total_channels * (int)sizeof(*input)))
++		return AVERROR_INVALIDDATA;
++	samples = decoder_output->nlen /
++		(info->total_channels * (int)sizeof(*input));
++	if (samples <= 0 || info->frame_length <= 0 ||
++	    samples % info->frame_length)
++		return AVERROR_INVALIDDATA;
++	blocks = samples / info->frame_length;
++	if (info->format != AVS3_SPATIAL_FORMAT_HOA &&
++	    h->spatial_frame_count != blocks)
++		return AVERROR_INVALIDDATA;
++
++	ret = arcdav3a_init_renderer(avctx, info);
++	if (ret < 0)
++		return ret;
++	ret = arcdav3a_ensure_renderer_output(h, samples);
++	if (ret < 0)
++		goto fail;
++	for (i = 0; i < blocks; i++) {
++		const AVS3SpatialFrame *frame =
++			info->format == AVS3_SPATIAL_FORMAT_HOA ? NULL :
++			&h->spatial_frames[i];
++
++		ret = arcdav3a_render_block(
++			avctx, info, frame,
++			input + (size_t)i * info->frame_length *
++				info->total_channels,
++			h->renderer_output +
++				(size_t)i * info->frame_length * 2);
++		if (ret < 0)
++			goto fail;
++	}
++
++	*data = (const uint8_t *)h->renderer_output;
++	*data_size = (unsigned long)((size_t)2 * samples *
++				     sizeof(*h->renderer_output));
++	return 1;
++
++fail:
++	arcdav3a_destroy_renderer(h);
++	h->have_last_spatial_frame = 0;
++	return ret;
++}
++
+ 
+ static av_cold int arcdav3a_decode_init(AVCodecContext *avctx)
+ {
+@@ -63,16 +575,14 @@ static av_cold int arcdav3a_decode_init(AVCodecContext *avctx)
+ 	if (!h->m_hAvs3)
+ 		return AVERROR(ENOMEM);
+ 	
+-	h->m_lastChCfg = -1;
+-	h->m_lastObjcnt = -1;
+-	h->m_lastMixtype = -1;
+-	h->m_lastBitrateTotal = -1;
+ 	h->m_bFirstFrame = true;
+ 	h->m_dwDataLen = 0;
+ 	h->m_pBuffer = NULL;
+ 	h->m_dwBufferSize = 0;
++	h->renderer_format = -1;
++	h->renderer_channel_config = -1;
++	h->have_last_stream_info = 0;
+ 
+-	memset(&h->m_LastMetaData, 0, sizeof(h->m_LastMetaData));
+ 	memset(&h->out_frame, 0, sizeof(AVS3DecoderOutput));
+ 	h->out_frame.pOutData = av_malloc(MAX_VIVID_SIZE*sizeof(unsigned char));
+ 	if (!h->out_frame.pOutData) {
+@@ -81,37 +591,93 @@ static av_cold int arcdav3a_decode_init(AVCodecContext *avctx)
+ 		return AVERROR(ENOMEM);
+ 	}
+ 	memset(h->out_frame.pOutData, 0, MAX_VIVID_SIZE*sizeof(unsigned char));
+-	h->m_bGotMD = false;
+ 	av_log(avctx, AV_LOG_DEBUG, "end arcdav3a_decode_init!\n");
+     return 0;
+ }
+ 
+-static av_cold void arcdav3a_decode_flush(AVCodecContext *avctx)
++static int arcdav3a_recreate_decoder(AVCodecContext *avctx)
+ {
+-	av_log(avctx, AV_LOG_DEBUG, "begin  arcdav3a_decode_flush!\n");
+ 	arcdav3a_context *h = avctx->priv_data;
++
+ 	if (h->m_hAvs3)
+ 		avs3_destroy_decoder(h->m_hAvs3);
+-	av_log(avctx, AV_LOG_DEBUG, "arcdav3a_decode_flush! avs3_destroy_decoder end!\n");
+ 	h->m_hAvs3 = avs3_create_decoder();
+-	if (!h->m_hAvs3)
++	if (!h->m_hAvs3) {
+ 		av_log(avctx, AV_LOG_ERROR, "Failed to recreate AV3A decoder\n");
+-	av_log(avctx, AV_LOG_DEBUG, "arcdav3a_decode_flush! avs3_create_decoder end!\n");
++		return AVERROR(ENOMEM);
++	}
+ 	h->m_bFirstFrame = true;
++	h->have_last_stream_info = 0;
++	h->m_dwErrorCounter = 0;
++	return 0;
++}
++
++static int arcdav3a_preserve_input_from(arcdav3a_context *h,
++					 unsigned long offset)
++{
++	if (offset > h->m_dwDataLen)
++		return AVERROR_INVALIDDATA;
++	if (offset > 0 && offset < h->m_dwDataLen)
++		memmove(h->m_pBuffer, h->m_pBuffer + offset,
++			h->m_dwDataLen - offset);
++	h->m_dwDataLen -= offset;
++	return 0;
++}
++
++static av_cold void arcdav3a_decode_flush(AVCodecContext *avctx)
++{
++	arcdav3a_context *h = avctx->priv_data;
++
++	av_log(avctx, AV_LOG_DEBUG, "begin arcdav3a_decode_flush!\n");
++	arcdav3a_destroy_renderer(h);
++	if (arcdav3a_recreate_decoder(avctx) < 0)
++		h->m_hAvs3 = NULL;
+ 	h->m_dwDataLen = 0;
+-	h->m_lastChCfg = -1;
+-	h->m_lastObjcnt = -1;
+-	h->m_lastMixtype = -1;
+-	h->m_lastBitrateTotal = -1;
+-	av_log(avctx, AV_LOG_DEBUG, "end  arcdav3a_decode_flush!\n");
++	h->spatial_frame_count = 0;
++	h->have_last_spatial_frame = 0;
++	h->out_frame.have_spatial_info = 0;
++	av_log(avctx, AV_LOG_DEBUG, "end arcdav3a_decode_flush!\n");
+ }
+ 
+-static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned long lenIn, unsigned long* lenConsumed, AVS3DecoderOutput* pOut)
++static int arcdav3a_append_spatial_frame(arcdav3a_context *h)
++{
++	AVS3SpatialFrame *frames;
++	AVS3SpatialFrame *frame;
++	int capacity;
++
++	if (h->spatial_frame_count >= h->spatial_frame_capacity) {
++		capacity = h->spatial_frame_capacity ?
++			h->spatial_frame_capacity * 2 : 4;
++		if (capacity < h->spatial_frame_count + 1)
++			capacity = h->spatial_frame_count + 1;
++		frames = av_realloc_array(
++			h->spatial_frames, capacity, sizeof(*frames));
++		if (!frames)
++			return AVERROR(ENOMEM);
++		h->spatial_frames = frames;
++		h->spatial_frame_capacity = capacity;
++	}
++
++	frame = &h->spatial_frames[h->spatial_frame_count++];
++	memset(frame, 0, sizeof(*frame));
++	frame->struct_size = sizeof(*frame);
++	if (avs3_get_spatial_frame(h->m_hAvs3, frame) !=
++	    AVS3_DECODER_SUCCESS)
++		frame->abi_version = 0;
++	return 0;
++}
++
++static int dav3a_decode_frame(AVCodecContext *avctx, const uint8_t *pIn,
++			      unsigned long lenIn,
++			      unsigned long *lenConsumed,
++			      AVS3DecoderOutput *pOut)
+ {
+ 	av_log(avctx, AV_LOG_DEBUG, "begin  dav3a_decode_frame!\n");
+ 	arcdav3a_context *h = avctx->priv_data;
+     int ret = 0;
+ 	unsigned long required;
++	AVS3SpatialStreamInfo output_info = { 0 };
++	int have_output_info = 0;
+ 
+ 	if (!h->m_hAvs3 || !pIn || !lenConsumed || !pOut || !pOut->pOutData)
+ 		return AVERROR(EINVAL);
+@@ -120,7 +686,7 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 
+ 	required = h->m_dwDataLen + lenIn;
+ 	if (required > h->m_dwBufferSize) {
+-		char *ptmp = av_realloc(h->m_pBuffer, required);
++		uint8_t *ptmp = av_realloc(h->m_pBuffer, required);
+ 		if (!ptmp)
+ 			return AVERROR(ENOMEM);
+ 		h->m_pBuffer = ptmp;
+@@ -133,15 +699,23 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 
+ 	//unsigned long outmaxlen = pOut->nlen;
+ 	pOut->nlen = 0;
++	pOut->have_spatial_info = 0;
++	h->spatial_frame_count = 0;
+ 	
+ 	int pos = 0;
+ 	int outindex = 0;
+ 	av_log(avctx, AV_LOG_DEBUG, "begin  audio vivid parse_header!\n");
+ 	do {
+ 		int consumed = 0;
+-		while ((ret = parse_header(h->m_hAvs3, h->m_pBuffer + pos, h->m_dwDataLen - pos, h->m_bFirstFrame, &consumed, NULL)) != AVS3_TRUE)
++		AVS3SpatialStreamInfo stream_info = {
++			.struct_size = sizeof(stream_info),
++		};
++		unsigned long frame_start = pos;
++		size_t frame_bytes;
++
++		while ((ret = parse_header(h->m_hAvs3, h->m_pBuffer + pos, h->m_dwDataLen - pos, h->m_bFirstFrame, &consumed, NULL)) != AVS3_DECODER_SUCCESS)
+ 		{
+-			if (ret == AVS3_DATA_NOT_ENOUGH)
++			if (ret == AVS3_DECODER_NEED_MORE_DATA)
+ 			{
+ 				if (pos + consumed < h->m_dwDataLen)
+ 					pos += consumed;
+@@ -157,39 +731,40 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 			else
+ 			{
+ 				pos = h->m_dwDataLen;
+-				ret = AVS3_DATA_NOT_ENOUGH;
++				ret = AVS3_DECODER_NEED_MORE_DATA;
+ 				break;
+ 			}
+ 		}
+ 
+-		if (ret != AVS3_TRUE)
++		if (ret != AVS3_DECODER_SUCCESS)
+ 		{
+ 			av_log(avctx, AV_LOG_DEBUG, "parse_header return:%d, pos(%d), m_dwDataLen(%ld)", ret, pos, h->m_dwDataLen);
+ 			break;
+ 		}
+ 
+-        //ret 
+-		if (h->m_hAvs3->numObjsOutput > 6)
+-		{
+-			av_log(avctx, AV_LOG_DEBUG, "!!!jl:Error, numObjsOutput:%d, reset\n", h->m_hAvs3->numObjsOutput);
+-			arcdav3a_decode_flush(avctx);
+-			outindex = 0;
+-			break;
+-		}
++		if (avs3_get_spatial_stream_info(h->m_hAvs3, &stream_info) !=
++			    AVS3_DECODER_SUCCESS ||
++		    stream_info.abi_version != AVS3_SPATIAL_ABI_VERSION)
++			return AVERROR_INVALIDDATA;
+ 
+-		if (((h->m_lastChCfg != -1) && (h->m_lastChCfg != h->m_hAvs3->channelNumConfig))
+-			|| ((h->m_lastObjcnt != -1) && (h->m_lastObjcnt != h->m_hAvs3->numObjsOutput))
+-			|| ( (h->m_lastMixtype != -1) && (h->m_lastMixtype != h->m_hAvs3->isMixedContent))
+-			|| ( (h->m_lastBitrateTotal != -1) && (h->m_lastBitrateTotal != h->m_hAvs3->totalBitrate))
+-			)
+-		{
+-			av_log(avctx, AV_LOG_DEBUG, "\n\nconfiguration changed, reset. m_lastChCfg:%d, now:%d, m_lastObjcnt:%d, now:%d,"
+-				"m_lastMixtype:%d, now:%d, m_lastBitrateTotal:%d, now:%ld\n\n"
+-				, h->m_lastChCfg, h->m_hAvs3->channelNumConfig, h->m_lastObjcnt, h->m_hAvs3->numObjsOutput,
+-				h->m_lastMixtype, h->m_hAvs3->isMixedContent, h->m_lastBitrateTotal, h->m_hAvs3->totalBitrate);
+-			arcdav3a_decode_flush(avctx);
+-			outindex = 0;
+-			break;
++		if (h->have_last_stream_info &&
++		    arcdav3a_stream_config_changed(
++			    &h->last_stream_info, &stream_info)) {
++			av_log(avctx, AV_LOG_DEBUG,
++			       "AV3A configuration changed, resetting decoder\n");
++			ret = arcdav3a_preserve_input_from(h, frame_start);
++			if (ret < 0)
++				return ret;
++			ret = arcdav3a_recreate_decoder(avctx);
++			if (ret < 0)
++				return ret;
++			pos = 0;
++			if (outindex)
++				break;
++			arcdav3a_destroy_renderer(h);
++			h->spatial_frame_count = 0;
++			h->have_last_spatial_frame = 0;
++			continue;
+ 		}
+ 
+ 		if (pos + consumed < h->m_dwDataLen)
+@@ -197,8 +772,9 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 		else
+ 		{
+ 			pos = h->m_dwDataLen;
+-			ret = AVS3_DATA_NOT_ENOUGH;
+-			av_log(avctx, AV_LOG_DEBUG, "%d + %d >= &u\n", pos, consumed, h->m_dwDataLen);
++			ret = AVS3_DECODER_NEED_MORE_DATA;
++			av_log(avctx, AV_LOG_DEBUG, "%d + %d >= %lu\n",
++			       pos, consumed, h->m_dwDataLen);
+ 			break;
+ 		}
+         //reset end!
+@@ -209,60 +785,79 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 			h->m_bFirstFrame = false;
+ 
+ 		int outlen = 0;
+-		if ((unsigned long)outindex >
+-		    MAX_VIVID_SIZE - MAX_CHANNELS * FRAME_LEN * sizeof(int16_t))
++		if (stream_info.total_channels <= 0 ||
++		    stream_info.frame_length <= 0 ||
++		    (size_t)stream_info.total_channels >
++			    SIZE_MAX / (size_t)stream_info.frame_length /
++				    sizeof(int16_t))
++			return AVERROR_INVALIDDATA;
++		frame_bytes = (size_t)stream_info.total_channels *
++			stream_info.frame_length * sizeof(int16_t);
++		if (frame_bytes > MAX_VIVID_SIZE ||
++		    (size_t)outindex > MAX_VIVID_SIZE - frame_bytes)
+ 			return AVERROR_BUFFER_TOO_SMALL;
+ 		av_log(avctx, AV_LOG_DEBUG, "begin  avs3_decode! pos:%d m_dwDataLen:%ld h->m_pBuffer:%p pOut->pOutData:%p\n", pos, h->m_dwDataLen, h->m_pBuffer, pOut->pOutData);
+ 		ret = avs3_decode(h->m_hAvs3, h->m_pBuffer + pos, h->m_dwDataLen - pos, pOut->pOutData + outindex, &outlen, &consumed);
+ 		pos += consumed;
+ 
+-		if ((ret != AVS3_TRUE) || (outlen <= 0))
++		if ((ret != AVS3_DECODER_SUCCESS) || (outlen <= 0))
+ 		{
+ 			h->m_dwErrorCounter++;
+ 			if (h->m_dwErrorCounter > 50)
+ 			{
+-				av_log(avctx, AV_LOG_DEBUG, "avs3_decode did not output data too many times, reset decoder.");
+-				h->m_dwErrorCounter = 0;
+-				arcdav3a_decode_flush(avctx);
+-				outindex = 0;
++				av_log(avctx, AV_LOG_WARNING,
++				       "AV3A decoder stalled, preserving remaining input and resetting\n");
++				ret = arcdav3a_preserve_input_from(h, pos);
++				if (ret < 0)
++					return ret;
++				ret = arcdav3a_recreate_decoder(avctx);
++				if (ret < 0)
++					return ret;
++				pos = 0;
++				if (outindex)
++					break;
++				arcdav3a_destroy_renderer(h);
++				h->spatial_frame_count = 0;
++				h->have_last_spatial_frame = 0;
++				continue;
+ 			}
+ 		}
+ 		else
+ 			h->m_dwErrorCounter = 0;
+ 
+-		if (ret != AVS3_TRUE)
++		if (ret != AVS3_DECODER_SUCCESS)
+ 			break;
++		if (outlen > 0 && h->spatial_render == AV3A_RENDER_BINAURAL) {
++			ret = arcdav3a_append_spatial_frame(h);
++			if (ret < 0)
++				return ret;
++		}
+ 
+-		h->m_lastChCfg = h->m_hAvs3->channelNumConfig;
+-		h->m_lastObjcnt = h->m_hAvs3->numObjsOutput;
+-		h->m_lastMixtype = h->m_hAvs3->isMixedContent;
+-		h->m_lastBitrateTotal = h->m_hAvs3->totalBitrate;
++		h->last_stream_info = stream_info;
++		h->have_last_stream_info = 1;
+ 
+-		if (outlen)
++		if (outlen) {
++			output_info = stream_info;
++			have_output_info = 1;
+ 			outindex += outlen;
+-		else
++		} else {
+ 			break;
++		}
+ 	} while (h->m_dwDataLen > pos);
+ 
+ 	if (outindex)
+ 	{
++		const AVS3SpatialStreamInfo *info = &output_info;
++
++		if (!have_output_info)
++			return AVERROR_INVALIDDATA;
+ 		pOut->nlen = outindex;
+-		pOut->nBits = h->m_hAvs3->bitDepth;
+-		pOut->nChannel = h->m_hAvs3->numChansOutput;
+-		pOut->nSamplerate = h->m_hAvs3->outputFs;
+-		pOut->nChCfg = h->m_hAvs3->channelNumConfig;
+-		pOut->nObjCnt = h->m_hAvs3->numObjsOutput;
+-		if (h->m_hAvs3->hMetadataDec->avs3MetaData.hasStaticMeta || h->m_hAvs3->hMetadataDec->avs3MetaData.hasDynamicMeta)
+-		{
+-			pOut->nMeta = sizeof(h->m_hAvs3->hMetadataDec->avs3MetaData);
+-			pOut->pMeta = (char*)&h->m_hAvs3->hMetadataDec->avs3MetaData;
+-		}
+-		else
+-		{
+-			pOut->nMeta = 0;
+-			pOut->pMeta = NULL;
+-		}
+-		h->m_hAvs3->numObjsOutput = 0;
++		pOut->nBits = info->bit_depth;
++		pOut->nChannel = info->total_channels;
++		pOut->nSamplerate = info->sample_rate;
++		pOut->nChCfg = info->channel_config;
++		pOut->spatial_info = output_info;
++		pOut->have_spatial_info = 1;
+ 	}
+ 
+ 	// Adjust input blob 
+@@ -277,34 +872,135 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const char * pIn, unsigned
+ 	return ret;
+ }
+ 
++static const Av3aChannelConfigMap *arcdav3a_channel_config(
++	unsigned long channel_config)
++{
++	int i;
++
++	for (i = 0; i < AV3A_CHANNEL_LAYOUT_SIZE; i++) {
++		if (ff_av3a_channels_map_table[i].channel_number_index ==
++		    channel_config)
++			return &ff_av3a_channels_map_table[i];
++	}
++	return NULL;
++}
++
++static int arcdav3a_build_layout(AVChannelLayout *layout,
++				 unsigned long channels,
++				 unsigned long channel_config,
++				 const AVS3SpatialStreamInfo *spatial)
++{
++	const Av3aChannelConfigMap *config =
++		arcdav3a_channel_config(channel_config);
++	int bed_channels = channels;
++	int i;
++	int ret;
++
++	memset(layout, 0, sizeof(*layout));
++	if (spatial && spatial->format == AVS3_SPATIAL_FORMAT_HOA) {
++		int expected = (spatial->hoa_order + 1) *
++			(spatial->hoa_order + 1);
++
++		if (spatial->hoa_order < 1 || channels != expected)
++			return AVERROR_INVALIDDATA;
++		if (spatial->hoa_ordering ==
++			    AVS3_SPATIAL_HOA_ORDERING_ACN &&
++		    spatial->hoa_normalization == AVS3_SPATIAL_HOA_SN3D) {
++			layout->order = AV_CHANNEL_ORDER_AMBISONIC;
++			layout->nb_channels = channels;
++			layout->u.mask = 0;
++			return 0;
++		}
++		ret = av_channel_layout_custom_init(layout, channels);
++		if (ret < 0)
++			return ret;
++		for (i = 0; i < channels; i++) {
++			layout->u.map[i].id = AV_CHAN_UNKNOWN;
++			snprintf(layout->u.map[i].name,
++				 sizeof(layout->u.map[i].name),
++				 "HOA%d", i);
++		}
++		return 0;
++	}
++
++	if (spatial)
++		bed_channels = spatial->bed_channels;
++	if (bed_channels < 0 || bed_channels > channels)
++		return AVERROR_INVALIDDATA;
++
++	if ((!spatial || spatial->format == AVS3_SPATIAL_FORMAT_CHANNELS) &&
++	    channels == 1) {
++		*layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
++		return 0;
++	}
++	if ((!spatial || spatial->format == AVS3_SPATIAL_FORMAT_CHANNELS) &&
++	    channels == 2) {
++		*layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
++		return 0;
++	}
++	if (channel_config == CHANNEL_CONFIG_MC_22_2 && channels == 24 &&
++	    (!spatial || spatial->format == AVS3_SPATIAL_FORMAT_CHANNELS)) {
++		*layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_22POINT2;
++		return 0;
++	}
++
++	ret = av_channel_layout_custom_init(layout, channels);
++	if (ret < 0)
++		return ret;
++
++	if (config && config->channel_layout &&
++	    config->channels == bed_channels) {
++		for (i = 0; i < bed_channels; i++)
++			layout->u.map[i].id = config->channel_layout[i];
++	} else {
++		for (i = 0; i < bed_channels; i++)
++			layout->u.map[i].id = AV_CHAN_UNKNOWN;
++	}
++	for (i = bed_channels; i < channels; i++) {
++		layout->u.map[i].id = AV_CHAN_UNKNOWN;
++		snprintf(layout->u.map[i].name,
++			 sizeof(layout->u.map[i].name),
++			 "OBJ%d", i - bed_channels + 1);
++	}
++
++	return 0;
++}
++
+ static int arcdav3a_set_layout(AVCodecContext *avctx, AVFrame *frame,
+-			       unsigned long channels, unsigned long channel_config)
++			       unsigned long channels,
++			       unsigned long channel_config,
++			       const AVS3SpatialStreamInfo *spatial)
+ {
+-	AVChannelLayout layout = {
+-		.order = AV_CHANNEL_ORDER_UNSPEC,
+-		.nb_channels = channels,
+-	};
+-	ChannelNumConfig config = (ChannelNumConfig)channel_config;
++	AVChannelLayout layout;
+ 	int ret;
+ 
+-	if (channels == 1)
+-		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
+-	else if (channels == 2)
+-		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+-	else if (config == CHANNEL_CONFIG_MC_5_1_4 && channels == 10)
+-		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_5POINT1POINT4_BACK;
+-	else if (config == CHANNEL_CONFIG_MC_7_1_2 && channels == 10)
+-		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT2;
+-	else if (config == CHANNEL_CONFIG_MC_7_1_4 && channels == 12)
+-		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK;
+-	else if (config == CHANNEL_CONFIG_HOA_ORDER3 && channels == 16)
+-		layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_HEXADECAGONAL;
++	ret = arcdav3a_build_layout(&layout, channels, channel_config, spatial);
++	if (ret < 0)
++		return ret;
+ 
+ 	av_channel_layout_uninit(&frame->ch_layout);
+ 	ret = av_channel_layout_copy(&frame->ch_layout, &layout);
+-	if (ret < 0)
++	if (ret < 0) {
++		av_channel_layout_uninit(&layout);
+ 		return ret;
++	}
+ 
++	av_channel_layout_uninit(&avctx->ch_layout);
++	ret = av_channel_layout_copy(&avctx->ch_layout, &layout);
++	av_channel_layout_uninit(&layout);
++	return ret;
++}
++
++static int arcdav3a_set_binaural_layout(AVCodecContext *avctx,
++					AVFrame *frame)
++{
++	AVChannelLayout layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_BINAURAL;
++	int ret;
++
++	av_channel_layout_uninit(&frame->ch_layout);
++	ret = av_channel_layout_copy(&frame->ch_layout, &layout);
++	if (ret < 0)
++		return ret;
+ 	av_channel_layout_uninit(&avctx->ch_layout);
+ 	return av_channel_layout_copy(&avctx->ch_layout, &layout);
+ }
+@@ -342,12 +1038,16 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 	{
+ 		// if(avpkt.size > 0)
+ 		//     memcpy(pbIn, avpkt.data, avpkt.size);//此处可以不copy  dav3a_decode_frame内部会copy
+-		char* pbIn = avpkt->data;
++		uint8_t* pbIn = avpkt->data;
+ 		int size = avpkt->size;
+ 		while (size > 0)//
+ 		{
+ 			unsigned long  lenConsumed = 0;
+ 			int sampleSize;
++			const uint8_t *frame_data;
++			unsigned long frame_data_size;
++			const AVS3SpatialStreamInfo *spatial_ptr = NULL;
++			int rendered;
+ 			memset(h->out_frame.pOutData, 0, MAX_VIVID_SIZE*sizeof(unsigned char));
+ 			
+ 			ret = dav3a_decode_frame(avctx, pbIn, size, &lenConsumed, &h->out_frame);
+@@ -358,13 +1058,6 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 			size -= lenConsumed;
+ 			//printf("!!!jl: lenConsumed:%d  size=%d h->out_frame.nlen=%d\n", lenConsumed, size, h->out_frame.nlen);
+ 			
+-			if (h->out_frame.pMeta && memcmp(h->out_frame.pMeta, &h->m_LastMetaData, sizeof(h->m_LastMetaData)) != 0)//metadata发生变化
+-			{
+-				memcpy(&h->m_LastMetaData, h->out_frame.pMeta, sizeof(h->m_LastMetaData));//更新meta data
+-				h->m_bGotMD = true;
+-			}
+-
+-
+             /*if(h->out_frame.nlen > 0)
+ 			{
+ 				fwrite(h->out_frame.pOutData, 1, h->out_frame.nlen, fpout);
+@@ -376,18 +1069,33 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 			if (!h->out_frame.nChannel)
+ 				return AVERROR_INVALIDDATA;
+ 
+-			frm->format = AV_SAMPLE_FMT_S16;
+-			sampleSize = h->out_frame.nChannel * av_get_bytes_per_sample(frm->format);
+-			if (h->out_frame.nlen % sampleSize)
++			frame_data = (const uint8_t *)h->out_frame.pOutData;
++			frame_data_size = h->out_frame.nlen;
++			rendered = arcdav3a_render_binaural(
++				avctx, &h->out_frame, &frame_data,
++				&frame_data_size);
++			if (rendered < 0)
++				return rendered;
++
++			frm->format = rendered ? AV_SAMPLE_FMT_FLT : AV_SAMPLE_FMT_S16;
++			sampleSize = (rendered ? 2 : h->out_frame.nChannel) *
++				av_get_bytes_per_sample(frm->format);
++			if (frame_data_size % sampleSize)
+ 				return AVERROR_INVALIDDATA;
+-			frm->nb_samples = h->out_frame.nlen / sampleSize;
++			frm->nb_samples = frame_data_size / sampleSize;
+ 			frm->sample_rate = h->out_frame.nSamplerate;
+-			ret = arcdav3a_set_layout(avctx, frm,
+-						 h->out_frame.nChannel,
+-						 h->out_frame.nChCfg);
++			if (!rendered && h->out_frame.have_spatial_info)
++				spatial_ptr = &h->out_frame.spatial_info;
++			if (rendered)
++				ret = arcdav3a_set_binaural_layout(avctx, frm);
++			else
++				ret = arcdav3a_set_layout(
++					avctx, frm, h->out_frame.nChannel,
++					h->out_frame.nChCfg, spatial_ptr);
+ 			if (ret < 0)
+ 				return ret;
+ 			avctx->sample_rate = frm->sample_rate;
++			avctx->sample_fmt = frm->format;
+ 
+ 			av_log(avctx, AV_LOG_DEBUG, " before ff_get_buffer! h->out_frame.nlen %ld frm->nb_samples %d\n", h->out_frame.nlen, frm->nb_samples);
+ 			ret = ff_get_buffer(avctx, frm, 0);//will copy frm->ch_layout from avctx->ch_layout
+@@ -399,11 +1107,11 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 			if(h->out_frame.nlen > 0)
+ 			{
+ 				av_log(avctx, AV_LOG_DEBUG, "begin copy buffer!\n");
+-				int actualCopySize = FFMIN(frm->nb_samples * sampleSize, h->out_frame.nlen);
+-				if(actualCopySize != h->out_frame.nlen){
+-					av_log(avctx, AV_LOG_WARNING, "actualCopySize %d != h->out_frame.nlen %d\n", actualCopySize, h->out_frame.nlen);
++				int actualCopySize = FFMIN(frm->nb_samples * sampleSize, frame_data_size);
++				if(actualCopySize != frame_data_size){
++					av_log(avctx, AV_LOG_WARNING, "actualCopySize %d != frame_data_size %lu\n", actualCopySize, frame_data_size);
+ 				}
+-				memcpy(frm->data[0], h->out_frame.pOutData, actualCopySize);
++				memcpy(frm->data[0], frame_data, actualCopySize);
+ 				av_log(avctx, AV_LOG_DEBUG, "end copy buffer!\n");
+ 				/*if(fpout)
+ 				{
+@@ -432,6 +1140,7 @@ static av_cold int arcdav3a_decode_close(AVCodecContext *avctx)
+ 	}
+ 	if (h->m_hAvs3)
+ 		avs3_destroy_decoder(h->m_hAvs3);
++	arcdav3a_destroy_renderer(h);
+ 	av_log(avctx, AV_LOG_DEBUG, "avs3_destroy_decoder end!\n");
+     h->m_hAvs3 = NULL;
+ 	if(h->m_pBuffer)
+@@ -439,18 +1148,49 @@ static av_cold int arcdav3a_decode_close(AVCodecContext *avctx)
+ 	av_log(avctx, AV_LOG_DEBUG, "free h->m_pBuffer end!\n");
+ 	if(h->out_frame.pOutData)
+ 	    av_freep(&h->out_frame.pOutData);
++	av_freep(&h->spatial_frames);
++	h->spatial_frame_capacity = 0;
++	h->spatial_frame_count = 0;
+ 	av_log(avctx, AV_LOG_DEBUG, "free out_frame.pOutData end!\n");
+ 	av_log(avctx, AV_LOG_DEBUG, "arcdav3a_decode_close end!\n");
+     return 0;
+ }
+  
+ 
+-const FFCodec ff_libarcdav3a_decoder = 
++#define OFFSET(x) offsetof(arcdav3a_context, x)
++#define DEC (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_AUDIO_PARAM)
++
++static const AVOption arcdav3a_options[] = {
++	{ "av3a_render", "AV3A object/HOA rendering mode",
++	  OFFSET(spatial_render), AV_OPT_TYPE_INT,
++	  { .i64 = AV3A_RENDER_NATIVE }, AV3A_RENDER_NATIVE,
++	  AV3A_RENDER_BINAURAL, DEC, .unit = "av3a_render" },
++	{ "native", "preserve decoded transport channels unchanged",
++	  0, AV_OPT_TYPE_CONST, { .i64 = AV3A_RENDER_NATIVE },
++	  0, 0, DEC, .unit = "av3a_render" },
++	{ "off", "alias for native transport-channel output",
++	  0, AV_OPT_TYPE_CONST, { .i64 = AV3A_RENDER_NATIVE },
++	  0, 0, DEC, .unit = "av3a_render" },
++	{ "binaural", "force binaural rendering for spatial AV3A streams",
++	  0, AV_OPT_TYPE_CONST, { .i64 = AV3A_RENDER_BINAURAL },
++	  0, 0, DEC, .unit = "av3a_render" },
++	{ NULL },
++};
++
++static const AVClass arcdav3a_class = {
++	.class_name = "libarcdav3a decoder",
++	.item_name  = av_default_item_name,
++	.option     = arcdav3a_options,
++	.version    = LIBAVUTIL_VERSION_INT,
++};
++
++const FFCodec ff_libarcdav3a_decoder =
+ {
+     .p.name           = "libarcdav3a",
+     CODEC_LONG_NAME("AV3a decoder by ArcVideo"),
+     .p.type           = AVMEDIA_TYPE_AUDIO,
+     .p.id             = AV_CODEC_ID_AV3A,
++	.p.priv_class     = &arcdav3a_class,
+ 	.p.capabilities   = AV_CODEC_CAP_CHANNEL_CONF | AV_CODEC_CAP_DR1,
+ 	.caps_internal    = FF_CODEC_CAP_INIT_CLEANUP,
+ 	.priv_data_size   = sizeof(arcdav3a_context),
