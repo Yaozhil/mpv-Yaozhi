@@ -471,7 +471,7 @@ jobs:
           strings -a artifact-check/mpv.exe > artifact-check/mpv.strings
           grep -qi schannel artifact-check/mpv.strings
           grep -qi libarcdav3a artifact-check/mpv.strings
-          grep -Fq 'SDL 2.0+ audio output' artifact-check/mpv.strings
+          grep -Fq 'SDL Audio' artifact-check/mpv.strings
           grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
 
           ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
