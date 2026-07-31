@@ -305,7 +305,7 @@ jobs:
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
           grep -Fq "GIT_TAG $MPV_COMMIT" packages/mpv.cmake
-          grep -Fq '^audio-device=auto' "$GITHUB_WORKSPACE/portable_config/mpv.conf"
+          grep -Fqx 'audio-device=auto' "$GITHUB_WORKSPACE/portable_config/mpv.conf"
 
       - name: Restore reusable build cache
         uses: actions/cache@v5
