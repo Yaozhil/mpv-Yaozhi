@@ -118,6 +118,8 @@ jobs:
             packages/avs3-audiodec-9000-static-library.patch
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-stage2.patch" \
             packages/avs3-audiodec-9001-spatial-metadata.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-build.patch" \
+            packages/avs3-renderer-build.patch
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-hardening.patch" \
             packages/avs3-renderer-hardening.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
@@ -295,6 +297,11 @@ jobs:
           grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
           grep -Fq 'av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
             packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-renderer-build.patch' packages/avs3-audiodec.cmake
+          grep -Fq 'add_library(RendererCore STATIC' \
+            packages/avs3-renderer-build.patch
+          grep -Fq 'install(TARGETS RendererCore avs3_samplerate' \
+            packages/avs3-renderer-build.patch
           grep -Fq 'avs3-renderer-hardening.patch' packages/avs3-audiodec.cmake
           grep -Fq 'avs3-normalize-source-eol.py' packages/avs3-audiodec.cmake
           grep -Fq -- '-DAVS3_BUILD_RENDERER=ON' packages/avs3-audiodec.cmake

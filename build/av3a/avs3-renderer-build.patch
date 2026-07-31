@@ -1,0 +1,119 @@
+diff --git a/av3adecoder/CMakeLists.txt b/av3adecoder/CMakeLists.txt
+index e32c5ff..383c8fc 100644
+--- a/av3adecoder/CMakeLists.txt
++++ b/av3adecoder/CMakeLists.txt
+@@ -1,9 +1,23 @@
+ cmake_minimum_required(VERSION 3.19)
+ 
+ project(AVS3AudioDec LANGUAGES C)
+ 
++option(AVS3_BUILD_RENDERER
++    "Build the optional AV3A binaural renderer"
++    ON
++)
++
++if(AVS3_BUILD_RENDERER)
++    enable_language(CXX)
++    set(RENDERER_ROOT
++        "${CMAKE_CURRENT_SOURCE_DIR}/../av3a_binaural_render/AudioDecoder/av3a_binaural_render"
++        CACHE PATH
++        "Path to the AV3A binaural renderer sources"
++    )
++endif()
++
+ file(GLOB AVS3_DECODER_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/avs3Decoder/src/*.c"
+ )
+ file(GLOB AVS3_COMMON_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/libavs3_common/*.c"
+@@ -19,10 +33,53 @@ add_library(AVS3AudioDec STATIC
+     ${AVS3_DECODER_SOURCES}
+     ${AVS3_COMMON_SOURCES}
+     ${AVS3_DEBUG_SOURCES}
+ )
+ 
++if(AVS3_BUILD_RENDERER)
++    add_library(avs3_samplerate STATIC
++        "${RENDERER_ROOT}/ext/libsamplerate/samplerate.c"
++        "${RENDERER_ROOT}/ext/libsamplerate/src_linear.c"
++        "${RENDERER_ROOT}/ext/libsamplerate/src_sinc.c"
++        "${RENDERER_ROOT}/ext/libsamplerate/src_zoh.c"
++    )
++    target_compile_definitions(avs3_samplerate PRIVATE
++        HAVE_STDBOOL_H=1
++    )
++
++    add_library(RendererCore STATIC
++        "${RENDERER_ROOT}/avs3_audio.cpp"
++        "${RENDERER_ROOT}/core/listener.cpp"
++        "${RENDERER_ROOT}/core/sound_source.cpp"
++        "${RENDERER_ROOT}/core/ambisonic_encoder.cpp"
++        "${RENDERER_ROOT}/core/ambisonic_binaural_decoder.cpp"
++        "${RENDERER_ROOT}/ambisonics/SHEval.cpp"
++        "${RENDERER_ROOT}/core/ambisonic_rotator.cpp"
++        "${RENDERER_ROOT}/core/fft_manager.cpp"
++        "${RENDERER_ROOT}/core/ramp_processor.cpp"
++        "${RENDERER_ROOT}/core/spherical_harmonic_hrir.cpp"
++        "${RENDERER_ROOT}/core/static_convolver.cpp"
++        "${RENDERER_ROOT}/ext/pffft/pffft.c"
++        "${RENDERER_ROOT}/ext/hrtf_database/hrtf_assets.cpp"
++        "${RENDERER_ROOT}/ext/simd/simd_utils.cc"
++    )
++
++    target_compile_features(RendererCore PRIVATE cxx_std_14)
++    target_include_directories(RendererCore
++        PUBLIC
++            "${RENDERER_ROOT}"
++        PRIVATE
++            "${RENDERER_ROOT}/Eigen"
++            "${RENDERER_ROOT}/ext/eigen-3.3.7"
++            "${RENDERER_ROOT}/ext/pffft"
++            "${RENDERER_ROOT}/ext/hrtf_database"
++            "${RENDERER_ROOT}/ext/simd"
++            "${RENDERER_ROOT}/ext/libsamplerate"
++    )
++    target_link_libraries(RendererCore PUBLIC avs3_samplerate)
++endif()
++
+ target_compile_features(AVS3AudioDec PRIVATE c_std_99)
+ target_compile_definitions(AVS3AudioDec PRIVATE
+     AVS3_AUDIODEC_LIBRARY=1
+ )
+ target_compile_options(AVS3AudioDec PRIVATE
+@@ -42,12 +99,18 @@ set_target_properties(AVS3AudioDec PROPERTIES
+ )
+ 
+ install(TARGETS AVS3AudioDec
+     ARCHIVE DESTINATION lib
+ )
++if(AVS3_BUILD_RENDERER)
++    install(TARGETS RendererCore avs3_samplerate
++        ARCHIVE DESTINATION lib
++    )
++endif()
+ install(FILES
+     avs3Decoder/include/avs3_decoder_interface.h
++    avs3Decoder/include/avs3_spatial_metadata.h
+     avs3Decoder/include/avs3_prot_dec.h
+     avs3Decoder/include/avs3_stat_dec.h
+     DESTINATION include/avs3a
+ )
+ install(DIRECTORY libavs3_common/
+@@ -56,10 +119,17 @@ install(DIRECTORY libavs3_common/
+ )
+ install(DIRECTORY libavs3_debug/
+     DESTINATION include/avs3a
+     FILES_MATCHING PATTERN "*.h"
+ )
++if(AVS3_BUILD_RENDERER)
++    install(FILES
++        "${RENDERER_ROOT}/avs3_audio.h"
++        "${RENDERER_ROOT}/avs3_audio_types.h"
++        DESTINATION include/avs3-renderer
++    )
++endif()
+ 
+ if(NOT CMAKE_CROSSCOMPILING)
+     message(WARNING
+         "AVS3AudioDec is intended to be built with the same target toolchain "
+         "as FFmpeg.")

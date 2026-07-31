@@ -18,6 +18,10 @@ ExternalProject_Add(avs3-audiodec
         COMMAND ${EXEC} git apply
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-audiodec-9001-spatial-metadata.patch
         COMMAND ${EXEC} git apply --check
+        ${CMAKE_CURRENT_SOURCE_DIR}/avs3-renderer-build.patch
+        COMMAND ${EXEC} git apply
+        ${CMAKE_CURRENT_SOURCE_DIR}/avs3-renderer-build.patch
+        COMMAND ${EXEC} git apply --check
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-renderer-hardening.patch
         COMMAND ${EXEC} git apply
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-renderer-hardening.patch
