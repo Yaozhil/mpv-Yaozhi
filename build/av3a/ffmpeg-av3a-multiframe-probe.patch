@@ -1,0 +1,72 @@
+diff --git a/libavformat/av3adec.c b/libavformat/av3adec.c
+index ac9baf9..ecabe20 100644
+--- a/libavformat/av3adec.c
++++ b/libavformat/av3adec.c
+@@ -343,20 +343,64 @@ static int av3a_get_packet_size(AVFormatContext *s)
+     return packet_bytes;
+ }
+ 
++#define AV3A_PROBE_FRAMES 3
++
++static int av3a_probe_frame_size(const uint8_t *buf, int buf_size)
++{
++    int64_t denominator;
++    int64_t numerator;
++    int64_t packet_bits;
++    AATFHeaderInfo hdf;
++
++    if (buf_size < AV3A_MAX_NBYTES_HEADER + 7 ||
++        av3a_read_aatf_frame_header(buf, &hdf) < 0 ||
++        hdf.total_bitrate <= 0 || hdf.sampling_rate <= 0)
++        return AVERROR_INVALIDDATA;
++
++    numerator = hdf.total_bitrate * AV3A_AUDIO_FRAME_SIZE;
++    if (hdf.sampling_rate == 44100) {
++        packet_bits = numerator / hdf.sampling_rate;
++        return (packet_bits + 7) / 8;
++    }
++
++    denominator = hdf.sampling_rate * 8LL;
++    return (numerator + denominator - 1) / denominator;
++}
++
+ static int av3a_probe(const AVProbeData *p)
+ {
++    int offset = 0;
+     uint16_t frame_sync_word;
+-    uint16_t lval = ((uint16_t)(p->buf[0]));
+-    uint16_t rval = ((uint16_t)(p->buf[1]));
++    uint16_t lval;
++    uint16_t rval;
++
++    if (p->buf_size < 2)
++        return 0;
++
++    lval = p->buf[0];
++    rval = p->buf[1];
+     frame_sync_word = ((lval << 8) | rval) >> 4;
+ 
+     if (frame_sync_word == AV3A_AUDIO_SYNC_WORD && av_match_ext(p->filename, "av3a")) {
+         return AVPROBE_SCORE_MAX;
+     }
+ 
+-    return 0;
++    for (int frames = 0; frames < AV3A_PROBE_FRAMES; frames++) {
++        int frame_size;
++        int remaining = p->buf_size - offset;
++
++        frame_size = av3a_probe_frame_size(p->buf + offset, remaining);
++        if (frame_size < AV3A_MAX_NBYTES_HEADER + 7 ||
++            frame_size > remaining)
++            return 0;
++        offset += frame_size;
++    }
++
++    return AVPROBE_SCORE_EXTENSION + 1;
+ }
+ 
++#undef AV3A_PROBE_FRAMES
++
+ static int av3a_read_header(AVFormatContext *s)
+ {
+     int ret = 0;

@@ -231,6 +231,9 @@ Minimum verification for Stage 1:
 - `ffmpeg -i sample.av3a -f wav out.wav` produces valid PCM WAV.
 - `mpv.com --no-config sample.av3a --ao=pcm --ao-pcm-file=out.wav` exits successfully.
 - sample inside MPEG-TS is detected through stream type `0xd5`.
+- legacy/test MPEG-TS that incorrectly labels AV3A as stream type `0x04` is
+  reclassified only after three consecutive AV3A headers match computed frame
+  boundaries; ordinary MPEG audio must remain MPEG audio.
 - sample inside MP4 is detected through `av3a`.
 - ordinary AAC/AC3/EAC3/TrueHD/DTS playback is unchanged.
 - existing HDR/image-subtitle mpv patch still applies and `mpv.com --no-config --list-options` still exposes the expected custom options.
