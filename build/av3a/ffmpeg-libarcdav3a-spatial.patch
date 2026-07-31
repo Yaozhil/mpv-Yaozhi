@@ -1089,7 +1089,7 @@ index 508ea1b..8c44e5b 100644
 +static int arcdav3a_set_binaural_layout(AVCodecContext *avctx,
 +					AVFrame *frame)
 +{
-+	AVChannelLayout layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_BINAURAL;
++	AVChannelLayout layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
 +	int ret;
 +
 +	av_channel_layout_uninit(&frame->ch_layout);

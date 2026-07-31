@@ -109,6 +109,8 @@ jobs:
 
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
             packages/mpv-9000-image-subs-colorspace.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \
+            packages/mpv-9001-avchannel-spatial-layout.patch
 
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
             packages/avs3-audiodec.cmake
@@ -287,6 +289,10 @@ jobs:
           fi
           grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
           grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
+          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' \
+            packages/mpv-9001-avchannel-spatial-layout.patch
+          grep -Fq 'AV_CHANNEL_ORDER_AMBISONIC' \
+            packages/mpv-9001-avchannel-spatial-layout.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
@@ -514,3 +520,64 @@ jobs:
           path: artifact/*
           if-no-files-found: error
           retention-days: 7
+
+  validate-windows:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download custom mpv
+        uses: actions/download-artifact@v6
+        with:
+          name: mpv-hdr-pgs-av3a-x86_64
+          path: artifact
+
+      - name: Verify AV3A playback on Windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifact = Join-Path $env:GITHUB_WORKSPACE "artifact"
+
+          Get-Content -LiteralPath (Join-Path $artifact "SHA256SUMS.txt") |
+            ForEach-Object {
+              if ($_ -notmatch "^([0-9a-f]{64})\s+(.+)$") {
+                throw "Invalid SHA256SUMS entry: $_"
+              }
+              $expected = $matches[1].ToUpperInvariant()
+              $path = Join-Path $artifact $matches[2]
+              $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+              if ($actual -ne $expected) {
+                throw "SHA-256 mismatch for $path"
+              }
+            }
+
+          $archive = Get-ChildItem -LiteralPath $artifact -Filter "mpv-x86_64-*.7z" |
+            Select-Object -First 1
+          if (-not $archive) {
+            throw "mpv release archive not found"
+          }
+
+          $mpvDir = Join-Path $artifact "mpv"
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$mpvDir" $archive.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip extraction failed with exit code $LASTEXITCODE"
+          }
+
+          $mpv = Join-Path $mpvDir "mpv.com"
+          $aoHelp = & $mpv --no-config --ao=help 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "mpv --ao=help failed"
+          }
+          $aoText = ($aoHelp | ForEach-Object { "$_" }) -join "`n"
+          foreach ($required in @("wasapi", "sdl", "SDL Audio")) {
+            if ($aoText -notmatch [regex]::Escape($required)) {
+              throw "Missing audio output marker: $required"
+            }
+          }
+
+          & (Join-Path $artifact "verify-stage2.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a")

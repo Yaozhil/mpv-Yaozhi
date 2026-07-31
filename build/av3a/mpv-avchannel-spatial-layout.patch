@@ -1,0 +1,91 @@
+From e32bae6e6ffeadcc4606165fbc4538022a61f341 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 31 Jul 2026 23:55:26 +0800
+Subject: [PATCH] audio: preserve custom and ambisonic channel order
+
+---
+ audio/chmap_avchannel.c | 23 ++++++++++++++++++++++-
+ test/chmap.c            | 25 +++++++++++++++++++++++++
+ 2 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/audio/chmap_avchannel.c b/audio/chmap_avchannel.c
+index ebf33bd..0efe9c9 100644
+--- a/audio/chmap_avchannel.c
++++ b/audio/chmap_avchannel.c
+@@ -33,8 +33,29 @@ bool mp_chmap_from_av_layout(struct mp_chmap *dst, const AVChannelLayout *src)
+     case AV_CHANNEL_ORDER_NATIVE:
+         mp_chmap_from_lavc(dst, src->u.mask);
+         return dst->num == src->nb_channels;
++    case AV_CHANNEL_ORDER_CUSTOM:
++        if (src->nb_channels <= 0 || src->nb_channels > MP_NUM_CHANNELS)
++            return false;
++
++        dst->num = src->nb_channels;
++        for (int n = 0; n < src->nb_channels; n++) {
++            enum AVChannel channel = src->u.map[n].id;
++
++            if (channel >= 0 && channel < 64) {
++                dst->speaker[n] = channel;
++            } else {
++                // Preserve unsupported object/HOA transport channels by
++                // position instead of rejecting, reordering, or downmixing.
++                dst->speaker[n] = MP_SPEAKER_ID_NA;
++            }
++        }
++        return mp_chmap_is_valid(dst);
++    case AV_CHANNEL_ORDER_AMBISONIC:
++        // mp_chmap cannot express ACN/SN3D semantics. Keep the transport
++        // channel count and order without pretending these are speakers.
++        mp_chmap_set_unknown(dst, src->nb_channels);
++        return dst->num == src->nb_channels;
+     default:
+-        // TODO: handle custom layouts
+         return false;
+     }
+ }
+diff --git a/test/chmap.c b/test/chmap.c
+index d6b69d2..f89575f 100644
+--- a/test/chmap.c
++++ b/test/chmap.c
+@@ -149,6 +149,30 @@ static void test_av_channel_layout_to_mp_chmap(void)
+     assert_false(anything_failed);
+ }
+ 
++static void test_non_native_av_channel_layouts(void)
++{
++    struct mp_chmap mp_layout = {0};
++    AVChannelLayout custom_layout = {0};
++
++    assert_int_equal(av_channel_layout_custom_init(&custom_layout, 4), 0);
++    custom_layout.u.map[0].id = AV_CHAN_FRONT_LEFT;
++    custom_layout.u.map[1].id = AV_CHAN_FRONT_RIGHT;
++    custom_layout.u.map[2].id = AV_CHAN_UNKNOWN;
++    custom_layout.u.map[3].id = AV_CHAN_UNKNOWN;
++
++    assert_true(mp_chmap_from_av_layout(&mp_layout, &custom_layout));
++    assert_string_equal(mp_chmap_to_str(&mp_layout), "fl-fr-na-na");
++    av_channel_layout_uninit(&custom_layout);
++
++    AVChannelLayout ambisonic_layout = {
++        .order = AV_CHANNEL_ORDER_AMBISONIC,
++        .nb_channels = 4,
++    };
++
++    assert_true(mp_chmap_from_av_layout(&mp_layout, &ambisonic_layout));
++    assert_string_equal(mp_chmap_to_str(&mp_layout), "unknown4");
++}
++
+ int main(void)
+ {
+     struct mp_chmap a;
+@@ -207,6 +231,7 @@ int main(void)
+ 
+     test_av_channel_layout_to_mp_chmap();
+     test_mp_chmap_to_av_channel_layout();
++    test_non_native_av_channel_layouts();
+ 
+     return 0;
+ }
+-- 
+2.54.0.windows.1
+

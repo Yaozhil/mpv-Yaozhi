@@ -55,9 +55,11 @@ keeping native WASAPI first in mpv's Windows AO selection order and leaving
 the release configuration on `audio-device=auto`. Selecting SDL does not
 perform object/HOA rendering and does not change the decoded channel layout.
 
-`tests/hoa-order1-128k.av3a` is a 32-frame, 48 kHz, first-order ACN/N3D HOA
+`tests/hoa-order1-128k.av3a` is a 94-frame, 48 kHz, first-order ACN/N3D HOA
 validation stream. `tests/verify-stage2.ps1` checks that the decoder option
 defaults to `native`, verifies the first decoded frame metadata, then requires
 native decoding to produce the original four 16-bit transport channels and
 explicit binaural rendering to produce two float channels with the same sample
-count.
+count. The Windows validation also compares mpv PCM output hashes against the
+FFmpeg reference outputs, proving that neither native transport channels nor
+binaural stereo are dropped, reordered, or downmixed in the mpv audio chain.

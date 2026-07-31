@@ -8,10 +8,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$expectedBytes = 32 * 1024 * 4 * 2
+$expectedFrames = 94
+$expectedBytes = $expectedFrames * 1024 * 4 * 2
 $work = Join-Path $env:TEMP ("av3a-stage2-" + [guid]::NewGuid().ToString("N"))
 $nativePcm = Join-Path $work "native-s16le.pcm"
 $binauralPcm = Join-Path $work "binaural-f32le.pcm"
+$mpvNativePcm = Join-Path $work "mpv-native-s16le.pcm"
+$mpvBinauralPcm = Join-Path $work "mpv-binaural-f32le.pcm"
 
 function Invoke-Checked {
     param(
@@ -19,9 +22,22 @@ function Invoke-Checked {
         [string[]]$Arguments
     )
 
-    $output = & $Executable @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Executable failed with exit code $LASTEXITCODE`n$($output -join "`n")"
+    # Windows PowerShell 5.1 wraps native stderr lines as error records. With
+    # ErrorActionPreference=Stop, normal FFmpeg diagnostics would terminate the
+    # verifier before the native exit code can be checked.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $Executable @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    $output = @($output | ForEach-Object { "$_" })
+    if ($exitCode -ne 0) {
+        throw "$Executable failed with exit code $exitCode`n$($output -join "`n")"
     }
     return $output
 }
@@ -51,11 +67,38 @@ function Assert-Contains {
     }
 }
 
+function Assert-NotContains {
+    param(
+        [string[]]$Output,
+        [string]$Pattern,
+        [string]$Description
+    )
+
+    $text = ($Output | ForEach-Object { "$_" }) -join "`n"
+    if ($text -match $Pattern) {
+        throw "Unexpected $Description in command output`n$text"
+    }
+}
+
+function Assert-SameHash {
+    param(
+        [string]$ExpectedPath,
+        [string]$ActualPath
+    )
+
+    $expected = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExpectedPath).Hash
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ActualPath).Hash
+    if ($actual -ne $expected) {
+        throw "PCM hash mismatch: expected $expected from $ExpectedPath, got $actual from $ActualPath"
+    }
+}
+
 function Assert-DecodeFormat {
     param(
         [string]$Mode,
         [string]$SampleFormat,
-        [int]$Channels
+        [int]$Channels,
+        [string]$ChannelLayoutPattern
     )
 
     $output = Invoke-Checked $FFmpegPath @(
@@ -79,6 +122,7 @@ function Assert-DecodeFormat {
     foreach ($expectation in @(
         @{ Pattern = "\bfmt:$([regex]::Escape($SampleFormat))\b"; Name = "sample format $SampleFormat" },
         @{ Pattern = "\bchannels:$Channels\b"; Name = "$Channels channels" },
+        @{ Pattern = $ChannelLayoutPattern; Name = "expected channel layout" },
         @{ Pattern = "\brate:48000\b"; Name = "48 kHz sample rate" },
         @{ Pattern = "\bnb_samples:1024\b"; Name = "1024 samples per frame" }
     )) {
@@ -98,8 +142,8 @@ try {
     Assert-Contains $decoderHelp "\bav3a_render\b" "av3a_render decoder option"
     Assert-Contains $decoderHelp "\(default native\)" "native decoder default"
 
-    Assert-DecodeFormat "native" "s16" 4
-    Assert-DecodeFormat "binaural" "flt" 2
+    Assert-DecodeFormat "native" "s16" 4 "\bchlayout:4 channels\b"
+    Assert-DecodeFormat "binaural" "flt" 2 "\bchlayout:stereo\b"
 
     Invoke-Checked $FFmpegPath @(
         "-hide_banner", "-loglevel", "warning", "-y",
@@ -124,25 +168,46 @@ try {
     Assert-Size $binauralPcm $expectedBytes
 
     if ($MpvPath) {
-        Invoke-Checked $MpvPath @(
+        $nativeMpvOutput = Invoke-Checked $MpvPath @(
             "--no-config",
             "--vo=null",
-            "--ao=null",
+            "--ao=pcm",
+            "--ao-pcm-waveheader=no",
+            "--ao-pcm-file=$mpvNativePcm",
             "--audio-display=no",
+            "--audio-format=s16",
+            "--audio-samplerate=48000",
+            "--audio-channels=unknown4",
             "--ad-lavc-o=av3a_render=native",
             $SamplePath
-        ) | Out-Null
-        Invoke-Checked $MpvPath @(
+        )
+        Assert-NotContains $nativeMpvOutput `
+            "Converting libavcodec frame to mpv frame failed" `
+            "libavcodec-to-mpv frame conversion failure"
+        Assert-Size $mpvNativePcm $expectedBytes
+        Assert-SameHash $nativePcm $mpvNativePcm
+
+        $binauralMpvOutput = Invoke-Checked $MpvPath @(
             "--no-config",
             "--vo=null",
-            "--ao=null",
+            "--ao=pcm",
+            "--ao-pcm-waveheader=no",
+            "--ao-pcm-file=$mpvBinauralPcm",
             "--audio-display=no",
+            "--audio-format=float",
+            "--audio-samplerate=48000",
+            "--audio-channels=stereo",
             "--ad-lavc-o=av3a_render=binaural",
             $SamplePath
-        ) | Out-Null
+        )
+        Assert-NotContains $binauralMpvOutput `
+            "Cannot open Libavresample context|libswresample failed to initialize" `
+            "binaural resampler initialization failure"
+        Assert-Size $mpvBinauralPcm $expectedBytes
+        Assert-SameHash $binauralPcm $mpvBinauralPcm
     }
 
-    Write-Output "AV3A stage-two validation passed: native=4ch/s16, binaural=2ch/f32"
+    Write-Output "AV3A stage-two validation passed: native=4ch/s16, binaural=stereo/f32, mpv PCM hashes match FFmpeg"
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
