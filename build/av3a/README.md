@@ -63,3 +63,6 @@ explicit binaural rendering to produce two float channels with the same sample
 count. The Windows validation also compares mpv PCM output hashes against the
 FFmpeg reference outputs, proving that neither native transport channels nor
 binaural stereo are dropped, reordered, or downmixed in the mpv audio chain.
+For this diagnostic path, mpv's raw PCM writer accepts unknown channel layouts
+without assigning a speaker mask; WAV output keeps the normal WaveExtensible
+layout restrictions.

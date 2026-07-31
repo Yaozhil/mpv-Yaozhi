@@ -1,12 +1,8 @@
-From e32bae6e6ffeadcc4606165fbc4538022a61f341 Mon Sep 17 00:00:00 2001
+From 08455e7a33b4a5e3969314517f6c582d0207c7d4 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
-Date: Fri, 31 Jul 2026 23:55:26 +0800
-Subject: [PATCH] audio: preserve custom and ambisonic channel order
+Date: Fri, 31 Jul 2026 23:59:00 +0800
+Subject: [PATCH] audio: preserve spatial transport channel order
 
----
- audio/chmap_avchannel.c | 23 ++++++++++++++++++++++-
- test/chmap.c            | 25 +++++++++++++++++++++++++
- 2 files changed, 47 insertions(+), 1 deletion(-)
 
 diff --git a/audio/chmap_avchannel.c b/audio/chmap_avchannel.c
 index ebf33bd..0efe9c9 100644
@@ -43,6 +39,22 @@ index ebf33bd..0efe9c9 100644
          return false;
      }
  }
+diff --git a/audio/out/ao_pcm.c b/audio/out/ao_pcm.c
+index 585b1ef..323fd89 100644
+--- a/audio/out/ao_pcm.c
++++ b/audio/out/ao_pcm.c
+@@ -145,4 +145,10 @@ static int init(struct ao *ao)
+     struct mp_chmap_sel sel = {0};
+-    mp_chmap_sel_add_waveext(&sel);
++    if (priv->waveheader) {
++        mp_chmap_sel_add_waveext(&sel);
++    } else {
++        // Raw PCM has no channel mask. Preserve unknown/object/HOA transport
++        // channel order instead of forcing a speaker layout and resampling.
++        mp_chmap_sel_add_any(&sel);
++    }
+     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
+         return -1;
 diff --git a/test/chmap.c b/test/chmap.c
 index d6b69d2..f89575f 100644
 --- a/test/chmap.c
@@ -88,4 +100,3 @@ index d6b69d2..f89575f 100644
  }
 -- 
 2.54.0.windows.1
-
