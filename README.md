@@ -96,13 +96,13 @@
 
 ## 安装
 
-1. 下载整合包：[mpv-yaozhi-2026.7.29.zip](https://github.com/Yaozhil/mpv-Yaozhi/releases/download/%E6%9D%B3%E7%9F%A5mpv%E6%95%B4%E5%90%88%E5%8C%85/Yaozhi-mpv-7.29+.zip)，解压即可使用<br>
+1. 下载整合包：[mpv-yaozhi-2026.8.1.zip](https://github.com/Yaozhil/mpv-Yaozhi/releases/download/%E6%9D%B3%E7%9F%A5mpv%E6%95%B4%E5%90%88%E5%8C%85/Yaozhi-mpv-8.1.zip)，解压即可使用<br>
 
 2. 打开配置助手，按需配置即可（会自动获取显卡信息）<br>
 
     注：整合内已有 `杳知配置助手5.0`
 
-- 配置助手下载：[杳知配置助手5.0（MPV）.zip](https://github.com/user-attachments/files/30500056/5.0.MPV.zip)<br>
+- 配置助手下载：[杳知配置助手5.0（MPV）.zip](https://github.com/user-attachments/files/30610276/5.0.MPV.zip)<br>
 
 - 配置助手教程：把`杳知配置助手5.0（MPV）.exe` 放到 mpv 根目录，与 `mpv.exe` 同级即可
 
@@ -112,6 +112,7 @@
 - 原创 进度条左下角视频标签显示：播放时直接显示解码、画面、编码、音频和码率状态
 - 原创 音乐模式：支持列表循环、随机防重复、单曲循环，音乐文件最小化不暂停
 - 原创 播放核心重构：自编译 mpv 核心，加入 HDR 图形字幕补丁，并恢复 Windows Schannel 网络兼容
+- 原创 独家支持解码 AV3A / Audio Vivid 格式音频，兼容 SDL 音频输出
 - 原创 新增专业起播格式徽章：自动识别画面标准与当前音轨，在实际画面安全区短暂显示
 - 原创 新增本地片头片尾跳过功能
 - 原创 新增纯本地化自定义片头片尾设置工具（剪刀图标）
