@@ -263,6 +263,11 @@ jobs:
           sed -i \
             "s/GIT_TAG SDL2/GIT_TAG $SDL2_COMMIT/" \
             packages/libsdl2.cmake
+          # A pinned commit is checked out detached. Leaving GIT_REMOTE_NAME
+          # set makes winbuild's force-update helper try to resolve @{u}.
+          sed -i \
+            '/^[[:space:]]*GIT_REMOTE_NAME origin$/d' \
+            packages/libsdl2.cmake
 
           # The Windows release must use Schannel so certificate verification
           # follows the Windows trust store, matching the proven 7/17 build.
@@ -285,6 +290,10 @@ jobs:
           grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
           grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
+          if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
+            echo "::error::pinned SDL2 still uses branch-only force-update"
+            exit 1
+          fi
           grep -n 'PATCH_COMMAND.*sdl2-9000' packages/libsdl2.cmake
           grep -Fq 'WASAPI_ApplySpatialSpeakerMask' \
             packages/sdl2-9000-spatial-speaker-mask.patch
