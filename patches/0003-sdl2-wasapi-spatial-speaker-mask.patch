@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Sun, 2 Aug 2026 23:55:00 +0800
+Subject: [PATCH] wasapi: normalize 5.1.4 and 7.1.4 speaker masks
+
+SDL2's public audio specification carries only a channel count.  On the
+Windows WASAPI backend, preserve deterministic speaker semantics for the
+10- and 12-channel spatial layouts used by this build by supplying the
+matching WAVEFORMATEXTENSIBLE channel mask.
+
+The mask bit order makes interleaved samples map one-to-one as follows:
+
+10ch: FL FR FC LFE SL SR TFL TFR TBL TBR
+12ch: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR
+---
+ src/audio/wasapi/SDL_wasapi.c | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/src/audio/wasapi/SDL_wasapi.c b/src/audio/wasapi/SDL_wasapi.c
+index bfd90db..276f49a 100644
+--- a/src/audio/wasapi/SDL_wasapi.c
++++ b/src/audio/wasapi/SDL_wasapi.c
+@@ -49,6 +49,36 @@
+ static const IID SDL_IID_IAudioRenderClient = { 0xf294acfc, 0x3146, 0x4483, { 0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2 } };
+ static const IID SDL_IID_IAudioCaptureClient = { 0xc8adbd64, 0xe71e, 0x48a0, { 0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17 } };
+ 
++static void WASAPI_ApplySpatialSpeakerMask(WAVEFORMATEX *waveformat)
++{
++    WAVEFORMATEXTENSIBLE *extensible;
++    DWORD channel_mask = 0;
++
++    if (waveformat->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
++        return;
++    }
++
++    if (waveformat->nChannels == 10) {
++        channel_mask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
++                       SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
++                       SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT |
++                       SPEAKER_TOP_FRONT_LEFT | SPEAKER_TOP_FRONT_RIGHT |
++                       SPEAKER_TOP_BACK_LEFT | SPEAKER_TOP_BACK_RIGHT;
++    } else if (waveformat->nChannels == 12) {
++        channel_mask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
++                       SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
++                       SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
++                       SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT |
++                       SPEAKER_TOP_FRONT_LEFT | SPEAKER_TOP_FRONT_RIGHT |
++                       SPEAKER_TOP_BACK_LEFT | SPEAKER_TOP_BACK_RIGHT;
++    }
++
++    if (channel_mask) {
++        extensible = (WAVEFORMATEXTENSIBLE *)waveformat;
++        extensible->dwChannelMask = channel_mask;
++    }
++}
++
+ 
+ static void WASAPI_DetectDevices(void)
+ {
+@@ -436,6 +466,7 @@ int WASAPI_PrepDevice(_THIS, const SDL_bool updatestream)
+     }
+ 
+     SDL_assert(waveformat != NULL);
++    WASAPI_ApplySpatialSpeakerMask(waveformat);
+     this->hidden->waveformat = waveformat;
+ 
+     this->spec.channels = (Uint8)waveformat->nChannels;
+-- 
+2.51.0
+
+
