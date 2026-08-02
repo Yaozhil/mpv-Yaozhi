@@ -13,11 +13,11 @@ The mask bit order makes interleaved samples map one-to-one as follows:
 10ch: FL FR FC LFE SL SR TFL TFR TBL TBR
 12ch: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR
 ---
- src/audio/wasapi/SDL_wasapi.c | 31 +++++++++++++++++++++++++++++++
- 1 file changed, 31 insertions(+)
+ src/audio/wasapi/SDL_wasapi.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
 
 diff --git a/src/audio/wasapi/SDL_wasapi.c b/src/audio/wasapi/SDL_wasapi.c
-index bfd90db..276f49a 100644
+index bfd90db..5e91689 100644
 --- a/src/audio/wasapi/SDL_wasapi.c
 +++ b/src/audio/wasapi/SDL_wasapi.c
 @@ -49,6 +49,36 @@
@@ -57,15 +57,16 @@ index bfd90db..276f49a 100644
  
  static void WASAPI_DetectDevices(void)
  {
-@@ -436,6 +466,7 @@ int WASAPI_PrepDevice(_THIS, const SDL_bool updatestream)
+@@ -436,6 +466,9 @@ int WASAPI_PrepDevice(_THIS, const SDL_bool updatestream)
      }
  
      SDL_assert(waveformat != NULL);
-+    WASAPI_ApplySpatialSpeakerMask(waveformat);
++    if (!this->iscapture) {
++        WASAPI_ApplySpatialSpeakerMask(waveformat);
++    }
      this->hidden->waveformat = waveformat;
  
      this->spec.channels = (Uint8)waveformat->nChannels;
 -- 
 2.51.0
-
 
