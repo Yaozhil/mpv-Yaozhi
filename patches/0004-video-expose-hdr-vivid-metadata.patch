@@ -1,0 +1,91 @@
+From 4cde5bcb389d74aff8a2f466cb947eedc963e443 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 2 Aug 2026 17:00:00 +0800
+Subject: [PATCH] video: expose HDR Vivid metadata presence
+
+FFmpeg already attaches parsed HDR Vivid dynamic metadata to decoded frames
+as AV_FRAME_DATA_DYNAMIC_HDR_VIVID. Preserve the presence flag across mpv's
+image parameter conversions and expose it as video-params/hdr-vivid so scripts
+and user interfaces can identify the format without guessing from filenames.
+
+This does not add HDR Vivid rendering or tone mapping.
+---
+ player/command.c | 1 +
+ video/mp_image.c | 6 ++++++
+ video/mp_image.h | 2 ++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/player/command.c b/player/command.c
+index be8e885..3aa7777 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -2567,6 +2567,7 @@ static int property_imgparams(const struct mp_image_params *p, int action, void
+         {"scene-max-g", SUB_PROP_FLOAT(hdr->scene_max[1]), .unavailable = !has_hdr10plus},
+         {"scene-max-b", SUB_PROP_FLOAT(hdr->scene_max[2]), .unavailable = !has_hdr10plus},
+         {"scene-avg",   SUB_PROP_FLOAT(hdr->scene_avg),    .unavailable = !has_hdr10plus},
++        {"hdr-vivid",   SUB_PROP_BOOL(p->hdr_vivid)},
+         {"max-pq-y",    SUB_PROP_FLOAT(hdr->max_pq_y),     .unavailable = !has_cie_y},
+         {"avg-pq-y",    SUB_PROP_FLOAT(hdr->avg_pq_y),     .unavailable = !has_cie_y},
+         {"prim-red-x",   SUB_PROP_FLOAT(hdr->prim.red.x),  .unavailable = !custom_prim },
+diff --git a/video/mp_image.c b/video/mp_image.c
+index 1ce0555..e61688e 100644
+--- a/video/mp_image.c
++++ b/video/mp_image.c
+@@ -881,6 +881,7 @@ bool mp_image_params_equal(const struct mp_image_params *p1,
+            p1->vflip == p2->vflip &&
+            p1->rotate == p2->rotate &&
+            p1->stereo3d == p2->stereo3d &&
++           p1->hdr_vivid == p2->hdr_vivid &&
+            mp_rect_equals(&p1->crop, &p2->crop);
+ }
+ 
+@@ -892,6 +893,7 @@ bool mp_image_params_static_equal(const struct mp_image_params *p1,
+     struct mp_image_params b = *p2;
+     a.repr.dovi = b.repr.dovi = NULL;
+     a.color.hdr = b.color.hdr = (struct pl_hdr_metadata){0};
++    a.hdr_vivid = b.hdr_vivid = false;
+     return mp_image_params_equal(&a, &b);
+ }
+ 
+@@ -900,6 +902,7 @@ void mp_image_params_update_dynamic(struct mp_image_params *dst,
+                                     bool has_peak_detect_values)
+ {
+     dst->repr.dovi = src->repr.dovi;
++    dst->hdr_vivid = src->hdr_vivid;
+     // Don't overwrite peak-detected HDR metadata if available.
+     float max_pq_y = dst->color.hdr.max_pq_y;
+     float avg_pq_y = dst->color.hdr.avg_pq_y;
+@@ -1136,6 +1139,7 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
+         dst->params.light = p->light;
+         dst->params.no_dovi = p->no_dovi;
+         dst->params.no_enhancement_layer = p->no_enhancement_layer;
++        dst->params.hdr_vivid = p->hdr_vivid;
+ #if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 11, 100)
+         dst->params.repr.alpha = p->repr.alpha;
+ #endif
+@@ -1167,6 +1171,8 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
+     AVFrameSideData *mdm = av_frame_get_side_data(src, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+     AVFrameSideData *clm = av_frame_get_side_data(src, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+     AVFrameSideData *dhp = av_frame_get_side_data(src, AV_FRAME_DATA_DYNAMIC_HDR_PLUS);
++    dst->params.hdr_vivid = dst->params.hdr_vivid ||
++        av_frame_get_side_data(src, AV_FRAME_DATA_DYNAMIC_HDR_VIVID);
+     pl_map_hdr_metadata(&dst->params.color.hdr, &(struct pl_av_hdr_metadata) {
+         .mdm = (void *)(mdm ? mdm->data : NULL),
+         .clm = (void *)(clm ? clm->data : NULL),
+diff --git a/video/mp_image.h b/video/mp_image.h
+index f5c1562..879bc0d 100644
+--- a/video/mp_image.h
++++ b/video/mp_image.h
+@@ -63,6 +63,8 @@ struct mp_image_params {
+     int rotate;
+     enum mp_stereo3d_mode stereo3d; // image is encoded with this mode
+     struct mp_rect crop;        // crop applied on image
++    // Decoded frame carries HDR Vivid dynamic metadata.
++    bool hdr_vivid;
+     // Flags for f_enhancement_pair.c to not inherit flags from EL.
+     bool no_dovi;
+     bool no_enhancement_layer;
+-- 
+2.50.1.windows.1
+
+
