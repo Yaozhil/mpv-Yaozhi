@@ -9,6 +9,7 @@ on:
       - "build/av3a/**"
       - "patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
       - "patches/0002-ao-wasapi-preserve-height-channel-layouts.patch"
+      - "patches/0003-sdl2-wasapi-spatial-speaker-mask.patch"
   workflow_dispatch:
 
 permissions:
@@ -106,6 +107,23 @@ jobs:
               text = text.replace(anchor, anchor + option, 1)
 
           path.write_text(text)
+
+          sdl2 = Path("packages/libsdl2.cmake")
+          text = sdl2.read_text()
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9000-spatial-speaker-mask.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9000-spatial-speaker-mask.patch\n"
+          )
+          if "sdl2-9000-spatial-speaker-mask.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate SDL2 update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+          sdl2.write_text(text)
           PY
 
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
@@ -114,6 +132,8 @@ jobs:
             packages/mpv-9001-avchannel-spatial-layout.patch
           cp "$GITHUB_WORKSPACE/patches/0002-ao-wasapi-preserve-height-channel-layouts.patch" \
             packages/mpv-9002-wasapi-height-channels.patch
+          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
+            packages/sdl2-9000-spatial-speaker-mask.patch
 
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
             packages/avs3-audiodec.cmake
@@ -265,6 +285,9 @@ jobs:
           grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
           grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
+          grep -n 'PATCH_COMMAND.*sdl2-9000' packages/libsdl2.cmake
+          grep -Fq 'WASAPI_ApplySpatialSpeakerMask' \
+            packages/sdl2-9000-spatial-speaker-mask.patch
           if grep -E 'list\(APPEND removed .*"curl"' packages/CMakeLists.txt; then
             echo "::error::curl is still excluded from the mpv dependency graph"
             exit 1
@@ -352,11 +375,13 @@ jobs:
             src_packages/curl \
             src_packages/davs2 \
             src_packages/ffmpeg \
+            src_packages/libsdl2 \
             src_packages/mpv \
             build64/packages/avs3-audiodec-prefix \
             build64/packages/curl-prefix \
             build64/packages/davs2-prefix \
             build64/packages/ffmpeg-prefix \
+            build64/packages/libsdl2-prefix \
             build64/packages/mpv-prefix \
             build64/packages/mpv-release-prefix \
             build64/packages/mpv-packaging-prefix
