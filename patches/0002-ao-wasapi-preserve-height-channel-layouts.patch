@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Sun, 2 Aug 2026 23:30:00 +0800
+Subject: [PATCH] ao_wasapi: preserve representable height channel layouts
+
+WAVEFORMATEXTENSIBLE can describe layouts such as 5.1.4 and 7.1.4 with
+its 32-bit channel mask.  Do not reduce every layout above eight channels
+to 7.1 before IAudioClient::IsFormatSupported gets a chance to probe it.
+
+The shared-mode path already falls back to the device mix format when an
+exact layout is rejected, while the exclusive-mode path already searches
+the standard layouts.  Keep the old fallback only for channel maps which
+cannot be represented by the WAVEFORMATEXTENSIBLE DWORD mask.
+---
+ audio/out/ao_wasapi_utils.c | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/audio/out/ao_wasapi_utils.c b/audio/out/ao_wasapi_utils.c
+index a1e116b6c..b8a7f40f0 100644
+--- a/audio/out/ao_wasapi_utils.c
++++ b/audio/out/ao_wasapi_utils.c
+@@ -203,11 +203,10 @@ static void set_waveformat(WAVEFORMATEXTENSIBLE *wformat,
+ 
+     uint64_t chans = mp_chmap_to_waveext(channels);
+     wformat->dwChannelMask = chans;
+ 
+-    if (wformat->Format.nChannels > 8 || wformat->dwChannelMask != chans) {
+-        // IAudioClient::IsFormatSupported tend to fallback to stereo for closest
+-        // format match when there are more channels. Remix to standard layout.
+-        // Also if input channel mask has channels outside 32-bits override it
++    if (wformat->dwChannelMask != chans) {
++        // If the input channel mask has channels outside 32 bits, override it
+         // and hope for the best...
++        // Representable layouts above 8 channels are probed as-is.
+         wformat->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
+         wformat->Format.nChannels = 8;
+     }
+-- 
+2.51.0
+
