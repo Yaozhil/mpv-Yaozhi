@@ -8,6 +8,7 @@ on:
       - ".github/workflows/build-mpv-hdr-pgs.yml"
       - "build/av3a/**"
       - "patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
+      - "patches/0002-ao-wasapi-preserve-height-channel-layouts.patch"
   workflow_dispatch:
 
 permissions:
@@ -111,6 +112,8 @@ jobs:
             packages/mpv-9000-image-subs-colorspace.patch
           cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \
             packages/mpv-9001-avchannel-spatial-layout.patch
+          cp "$GITHUB_WORKSPACE/patches/0002-ao-wasapi-preserve-height-channel-layouts.patch" \
+            packages/mpv-9002-wasapi-height-channels.patch
 
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
             packages/avs3-audiodec.cmake
@@ -295,6 +298,8 @@ jobs:
             packages/mpv-9001-avchannel-spatial-layout.patch
           grep -Fq 'mp_chmap_sel_add_any' \
             packages/mpv-9001-avchannel-spatial-layout.patch
+          grep -Fq 'Representable layouts above 8 channels are probed as-is' \
+            packages/mpv-9002-wasapi-height-channels.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
@@ -333,7 +338,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch') }}
+          key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'patches/*.patch') }}
           restore-keys: |
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
