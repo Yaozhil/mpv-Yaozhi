@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Mon, 3 Aug 2026 03:05:00 +0800
+Subject: [PATCH] ao_sdl: preserve Windows 5.1.4 and 7.1.4 layouts
+
+SDL2 reports only the obtained channel count to applications.  The generic
+SDL output selector therefore reduced explicit layouts above eight channels
+to 7.1 before opening the device.  On a 10- or 12-channel WASAPI endpoint,
+SDL then expanded that eight-channel stream back to the device channel count,
+folding height channels into the bed and leaving some output slots silent.
+
+Whitelist the two spatial layouts whose Windows speaker masks are supplied by
+the bundled SDL2 backend.  This keeps mpv's interleaved samples in exact
+WAVEFORMATEXTENSIBLE order from the audio filter through SDL:
+
+5.1.4: FL FR FC LFE SL SR TFL TFR TBL TBR
+7.1.4: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR
+---
+ audio/out/ao_sdl.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/audio/out/ao_sdl.c b/audio/out/ao_sdl.c
+index 6bc346c11..5e6127955 100644
+--- a/audio/out/ao_sdl.c
++++ b/audio/out/ao_sdl.c
+@@ -104,6 +104,22 @@ static int init(struct ao *ao)
+     }
+ 
+     struct mp_chmap_sel sel = {0};
++#ifdef _WIN32
++    // SDL exposes only a channel count.  Keep these layouts explicit so mpv
++    // does not downmix them to 7.1 before the patched WASAPI backend applies
++    // its matching WAVEFORMATEXTENSIBLE speaker mask.
++    struct mp_chmap spatial_layout;
++    if (mp_chmap_from_str(&spatial_layout,
++                          bstr0("fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr")))
++    {
++        mp_chmap_sel_add_map(&sel, &spatial_layout);
++    }
++    if (mp_chmap_from_str(&spatial_layout,
++                          bstr0("fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr")))
++    {
++        mp_chmap_sel_add_map(&sel, &spatial_layout);
++    }
++#endif
+     mp_chmap_sel_add_waveext_def(&sel);
+     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels)) {
+         uninit(ao);
+-- 
+2.51.0
+

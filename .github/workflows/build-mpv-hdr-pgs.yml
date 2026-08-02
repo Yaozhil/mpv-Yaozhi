@@ -11,6 +11,7 @@ on:
       - "patches/0002-ao-wasapi-preserve-height-channel-layouts.patch"
       - "patches/0003-sdl2-wasapi-spatial-speaker-mask.patch"
       - "patches/0004-video-expose-hdr-vivid-metadata.patch"
+      - "patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch"
   workflow_dispatch:
 
 permissions:
@@ -135,6 +136,8 @@ jobs:
             packages/mpv-9002-wasapi-height-channels.patch
           cp "$GITHUB_WORKSPACE/patches/0004-video-expose-hdr-vivid-metadata.patch" \
             packages/mpv-9003-hdr-vivid-metadata.patch
+          cp "$GITHUB_WORKSPACE/patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch" \
+            packages/mpv-9004-sdl-spatial-channel-layouts.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
 
@@ -339,6 +342,8 @@ jobs:
             packages/mpv-9003-hdr-vivid-metadata.patch
           grep -Fq 'video-params/hdr-vivid' \
             packages/mpv-9003-hdr-vivid-metadata.patch
+          grep -Fq 'fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' \
+            packages/mpv-9004-sdl-spatial-channel-layouts.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
@@ -641,6 +646,44 @@ jobs:
             if ($aoText -notmatch [regex]::Escape($required)) {
               throw "Missing audio output marker: $required"
             }
+          }
+
+          # SDL only exposes a channel count to mpv.  The dummy backend makes
+          # negotiation deterministic and catches an accidental 7.1 fold before
+          # the Windows WASAPI endpoint applies the matching 12-channel mask.
+          $sdlSpatialSample = Join-Path $artifact "sdl-7.1.4-silence.raw"
+          [IO.File]::WriteAllBytes(
+            $sdlSpatialSample,
+            (New-Object byte[] (48000 * 12 * 2 / 10))
+          )
+          $previousSdlDriver = $env:SDL_AUDIODRIVER
+          $env:SDL_AUDIODRIVER = "dummy"
+          try {
+            $sdlSpatialOutput = & $mpv `
+              --no-config `
+              --demuxer=rawaudio `
+              --demuxer-rawaudio-format=s16le `
+              '--demuxer-rawaudio-channels=fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' `
+              --demuxer-rawaudio-rate=48000 `
+              '--audio-channels=fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' `
+              --vo=null `
+              --ao=sdl `
+              --length=0.05 `
+              --msg-level=all=warn,ao/sdl=trace `
+              $sdlSpatialSample 2>&1
+            $sdlSpatialExit = $LASTEXITCODE
+          } finally {
+            $env:SDL_AUDIODRIVER = $previousSdlDriver
+          }
+          if ($sdlSpatialExit -ne 0) {
+            throw "SDL 7.1.4 negotiation probe failed"
+          }
+          $sdlSpatialText = ($sdlSpatialOutput | ForEach-Object { "$_" }) -join "`n"
+          if ($sdlSpatialText -notmatch "requested format: 48000 Hz, 12 channels") {
+            throw "SDL reduced 7.1.4 to fewer than 12 interleaved channels"
+          }
+          if ($sdlSpatialText -match "result: 7\.1") {
+            throw "SDL still negotiated the legacy 7.1 fallback"
           }
 
           $hdrVividSample = Join-Path $artifact "hdr_vivid_h265_sample.hevc"
