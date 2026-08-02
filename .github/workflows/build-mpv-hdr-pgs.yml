@@ -10,6 +10,7 @@ on:
       - "patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
       - "patches/0002-ao-wasapi-preserve-height-channel-layouts.patch"
       - "patches/0003-sdl2-wasapi-spatial-speaker-mask.patch"
+      - "patches/0004-video-expose-hdr-vivid-metadata.patch"
   workflow_dispatch:
 
 permissions:
@@ -132,6 +133,8 @@ jobs:
             packages/mpv-9001-avchannel-spatial-layout.patch
           cp "$GITHUB_WORKSPACE/patches/0002-ao-wasapi-preserve-height-channel-layouts.patch" \
             packages/mpv-9002-wasapi-height-channels.patch
+          cp "$GITHUB_WORKSPACE/patches/0004-video-expose-hdr-vivid-metadata.patch" \
+            packages/mpv-9003-hdr-vivid-metadata.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
 
@@ -332,6 +335,10 @@ jobs:
             packages/mpv-9001-avchannel-spatial-layout.patch
           grep -Fq 'Representable layouts above 8 channels are probed as-is' \
             packages/mpv-9002-wasapi-height-channels.patch
+          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' \
+            packages/mpv-9003-hdr-vivid-metadata.patch
+          grep -Fq 'video-params/hdr-vivid' \
+            packages/mpv-9003-hdr-vivid-metadata.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
@@ -529,6 +536,7 @@ jobs:
           grep -qi libarcdav3a artifact-check/mpv.strings
           grep -Fq 'SDL Audio' artifact-check/mpv.strings
           grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
+          grep -Fq 'hdr-vivid' artifact-check/mpv.strings
 
           ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
           test -f "$ffmpeg_exe"
@@ -633,6 +641,33 @@ jobs:
             if ($aoText -notmatch [regex]::Escape($required)) {
               throw "Missing audio output marker: $required"
             }
+          }
+
+          $hdrVividSample = Join-Path $artifact "hdr_vivid_h265_sample.hevc"
+          Invoke-WebRequest `
+            -Uri "https://fate-suite.ffmpeg.org/hevc/hdr_vivid_h265_sample.hevc" `
+            -OutFile $hdrVividSample
+          $expectedHdrVividSha = `
+            "F03A633D537C8B34B3FA81EC17C986A5E05E13F22C4B43ADCF1DF0CECE9DCBAC"
+          $actualHdrVividSha = `
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrVividSample).Hash
+          if ($actualHdrVividSha -ne $expectedHdrVividSha) {
+            throw "HDR Vivid FATE sample SHA-256 mismatch"
+          }
+
+          $hdrVividOutput = & $mpv `
+            --no-config `
+            --vo=null `
+            --ao=null `
+            --frames=1 `
+            '--term-playing-msg=HDR_VIVID=${video-params/hdr-vivid}' `
+            $hdrVividSample 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "HDR Vivid FATE sample playback failed"
+          }
+          $hdrVividText = ($hdrVividOutput | ForEach-Object { "$_" }) -join "`n"
+          if ($hdrVividText -notmatch "HDR_VIVID=yes") {
+            throw "mpv did not expose video-params/hdr-vivid"
           }
 
           & (Join-Path $artifact "verify-stage2.ps1") `
