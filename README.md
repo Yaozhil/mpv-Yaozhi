@@ -37,8 +37,8 @@
 
 播放器会在首帧和画面边界稳定后，自动识别画面标准与当前选中的音轨，并在实际视频画面的右上安全区短暂显示。默认淡入、停留 4 秒后淡出，不会变成常驻水印。
 
-- **画面格式**：Dolby Vision、HDR10+、HDR10、HLG、SDR。
-- **音频格式**：Dolby Atmos、DTS:X、Dolby TrueHD、DTS-HD、AC-4、MPEG-H，以及 FLAC、PCM、AAC 等常见格式。
+- **画面格式**：Dolby Vision、HDR10+、HDR10、HLG、SDR等
+- **音频格式**：AV3A、Audio Vivid、AVS3、AudioDolby Atmos、DTS:X、Dolby TrueHD、DTS-HD、AC-4、MPEG-H，以及 FLAC、PCM、AAC 等常见格式。
 - **智能定位**：适配上下/左右黑边，并识别蓝光 ISO 中编码进视频帧的黑边。
 - **当前音轨优先**：多音轨文件按当前选中音轨识别；切换音轨后会重新显示，避免串标。
 - **可自由控制**：右键菜单「其它 > 开/关 起播格式标签」可随时切换，状态会自动保存。
@@ -96,13 +96,13 @@
 
 ## 安装
 
-1. 下载整合包：[mpv-yaozhi-2026.8.1+.zip](https://github.com/Yaozhil/mpv-Yaozhi/releases/download/%E6%9D%B3%E7%9F%A5mpv%E6%95%B4%E5%90%88%E5%8C%85/Yaozhi-mpv-8.1+.zip)，解压即可使用<br>
+1. 下载整合包：[mpv-yaozhi-2026.8.3.zip](https://github.com/Yaozhil/mpv-Yaozhi/releases/download/%E6%9D%B3%E7%9F%A5mpv%E6%95%B4%E5%90%88%E5%8C%85/Yaozhi-mpv-8.3.7z)，解压即可使用<br>
 
 2. 打开配置助手，按需配置即可（会自动获取显卡信息）<br>
 
     注：整合内已有 `杳知配置助手5.0`
 
-- 配置助手下载：[杳知配置助手5.0（MPV）.zip](https://github.com/user-attachments/files/30610276/5.0.MPV.zip)<br>
+- 配置助手下载：[杳知配置助手5.0（MPV）.zip](https://github.com/user-attachments/files/30642776/5.0.MPV.zip)<br>
 
 - 配置助手教程：把`杳知配置助手5.0（MPV）.exe` 放到 mpv 根目录，与 `mpv.exe` 同级即可
 
@@ -112,7 +112,11 @@
 - 原创 进度条左下角视频标签显示：播放时直接显示解码、画面、编码、音频和码率状态
 - 原创 音乐模式：支持列表循环、随机防重复、单曲循环，音乐文件最小化不暂停
 - 原创 播放核心重构：自编译 mpv 核心，加入 HDR 图形字幕补丁，并恢复 Windows Schannel 网络兼容
-- 原创 独家支持解码 AV3A / Audio Vivid 格式音频，兼容 SDL 音频输出
+- 原创 独家支持解码 AV3A / Audio Vivid / AVS3 Audio 格式音频
+- 原创 新增 SDL 5.1.4 / 7.1.4 高度声道原生输出
+- 原创 支持 10/12 声道精确映射，实现各扬声器通道一一对应输出
+    - 5.1.4：FL-FR-FC-LFE-SL-SR-TFL-TFR-TBL-TBR 精确映射
+    - 7.1.4：FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR 精确映射
 - 原创 新增专业起播格式徽章：自动识别画面标准与当前音轨，在实际画面安全区短暂显示
 - 原创 新增本地片头片尾跳过功能
 - 原创 新增纯本地化自定义片头片尾设置工具（剪刀图标）
