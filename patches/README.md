@@ -94,7 +94,8 @@ WASAPI 前以 `Unsupported number of audio channels` 拒绝；其他大于 8 声
 
 - 5.1.4、7.1.4、9.1.4 等 FFmpeg 标准位序布局使用 native mask；
 - 完整但非标准位序的扬声器集合继续使用 custom layout，并按扬声器标签重排；
-- 对象、HOA、`NA` 和真正未知的 transport channels 继续走原有位置保序路径；
+- 对象、HOA、`NA` 和真正未知的 transport channels 使用输入/输出对称的
+  unspecified layout，继续按位置保序，不再伪造默认 native 输出 mask；
 - 逻辑只依据解码后的声道标签，不按 WV、WAV、Opus、AV3A 等格式名写死。
 
 项目把 9.1.6 作为扬声器集合基准，并按标签做子集：

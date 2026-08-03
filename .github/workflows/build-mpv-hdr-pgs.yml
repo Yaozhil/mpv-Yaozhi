@@ -367,6 +367,8 @@ jobs:
             packages/mpv-9005-swresample-native-layout.patch
           grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \
             packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'mp_chmap_to_av_layout(&out_layout, &map_out)' \
+            packages/mpv-9005-swresample-native-layout.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake

@@ -46,6 +46,41 @@ function Get-Sha256 {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
 }
 
+function Write-S16Probe {
+    param(
+        [string]$Path,
+        [int]$ChannelCount,
+        [double[]]$Frequencies,
+        [int]$SampleRate,
+        [double]$Duration
+    )
+
+    $stream = [IO.File]::Open(
+        $Path,
+        [IO.FileMode]::Create,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None
+    )
+    $writer = New-Object IO.BinaryWriter $stream
+    try {
+        $frameCount = [int]($SampleRate * $Duration)
+        for ($frame = 0; $frame -lt $frameCount; $frame++) {
+            $time = $frame / [double]$SampleRate
+            for ($channel = 0; $channel -lt $ChannelCount; $channel++) {
+                $value = [int][Math]::Round(
+                    0.15 * [int16]::MaxValue *
+                    [Math]::Sin(2.0 * [Math]::PI *
+                        $Frequencies[$channel] * $time)
+                )
+                $writer.Write([int16]$value)
+            }
+        }
+    } finally {
+        $writer.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Assert-ExactPcm {
     param(
         [string]$Label,
@@ -235,3 +270,35 @@ foreach ($case in $cases) {
 
     Write-Host "$name WAV/WavPack/Opus channel-order validation passed"
 }
+
+$customName = "9.1.6-custom"
+$customCount = 16
+$customLayout =
+    "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr-tsl-tsr-wl-wr"
+$customFrequencies = New-Object double[] $customCount
+for ($channel = 0; $channel -lt $customCount; $channel++) {
+    $customFrequencies[$channel] = 220.0 + 97.0 * $channel
+}
+$customInput = Join-Path $WorkDir "$customName-input.s16"
+$customOutput = Join-Path $WorkDir "$customName-mpv.s32"
+$customLog = Join-Path $WorkDir "$customName-mpv.log"
+Remove-Item -LiteralPath $customInput, $customOutput, $customLog `
+    -Force -ErrorAction SilentlyContinue
+Write-S16Probe -Path $customInput -ChannelCount $customCount `
+    -Frequencies $customFrequencies -SampleRate $sampleRate `
+    -Duration $duration
+Invoke-Checked -Label "$customName raw PCM conversion" `
+    -Exe $MpvPath -LogPath $customLog -Arguments @(
+        "--no-config", "--audio-display=no", "--vo=null",
+        "--demuxer=rawaudio", "--demuxer-rawaudio-format=s16le",
+        "--demuxer-rawaudio-channels=$customLayout",
+        "--demuxer-rawaudio-rate=$sampleRate",
+        "--ao=pcm", "--ao-pcm-waveheader=no",
+        "--ao-pcm-file=$customOutput", "--audio-format=s32",
+        "--audio-channels=$customLayout",
+        "--msg-level=all=warn,swresample=trace", $customInput
+    )
+Assert-ChannelFrequencies -Label $customName -Path $customOutput `
+    -ChannelCount $customCount -Frequencies $customFrequencies `
+    -SampleRate $sampleRate
+Write-Host "$customName explicit custom-order validation passed"

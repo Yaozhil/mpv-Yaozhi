@@ -18,9 +18,12 @@ Only keep the old no-remix fallback for unknown or incomplete layouts such as
 object, HOA, and NA transport channels. Reordered layouts containing a
 complete set of real speakers remain explicit, so a 9.1.6 speaker set can be
 normalized and reordered by labels instead of guessed from its channel count.
+When positional layouts are intentionally kept unknown, describe both sides
+as unspecified instead of pairing an unspecified input with a fabricated
+native output mask.
 ---
- filters/f_swresample.c | 12 ++++++++++--
- 1 file changed, 10 insertions(+), 2 deletions(-)
+ filters/f_swresample.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
 
 diff --git a/filters/f_swresample.c b/filters/f_swresample.c
 index b9b0758b7..7fc99bec6 100644
@@ -43,17 +46,22 @@ index b9b0758b7..7fc99bec6 100644
      {
          mp_chmap_set_unknown(&map_in, map_in.num);
          mp_chmap_set_unknown(&map_out, map_out.num);
-@@ -217,7 +221,11 @@ static bool configure_lavrr(struct priv *p, bool verbose)
+@@ -217,7 +221,15 @@ static bool configure_lavrr(struct priv *p, bool verbose)
          mp_aframe_set_chmap(p->pool_fmt, &map_out);
  
      AVChannelLayout in_layout, out_layout;
 -    mp_chmap_to_av_layout_custom(&in_layout, &map_in);
+-    mp_chmap_to_av_layout(&out_layout, &out_lavc);
 +    if (!mp_chmap_is_unknown(&map_in) && mp_chmap_is_lavc(&map_in)) {
 +        mp_chmap_to_av_layout(&in_layout, &map_in);
 +    } else {
 +        mp_chmap_to_av_layout_custom(&in_layout, &map_in);
 +    }
-     mp_chmap_to_av_layout(&out_layout, &out_lavc);
++    if (mp_chmap_is_unknown(&map_out)) {
++        mp_chmap_to_av_layout(&out_layout, &map_out);
++    } else {
++        mp_chmap_to_av_layout(&out_layout, &out_lavc);
++    }
      av_opt_set_chlayout(p->avrctx, "in_chlayout",  &in_layout, 0);
      av_opt_set_chlayout(p->avrctx, "out_chlayout", &out_layout, 0);
 -- 
