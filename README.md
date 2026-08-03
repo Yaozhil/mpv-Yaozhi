@@ -1,169 +1,176 @@
-# Yaozhi-MPV 整合包
+<div align="center">
 
-Windows mpv 的自制 UI 整合包，基于 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 整理并更新<br>加入个人维护的 uosc 布局、快捷键菜单、弹幕、片头片尾标记、AList/OpenList 网盘入口、起播格式徽章、进度条左下角视频标签、音乐模式、HDR 图形特效字幕增强和中文统计信息体验
+<h1>mpv-Yaozhi</h1>
 
-所有发布版都已做通用化处理。
+**面向 Windows 的高画质、沉浸声与中文交互一体化 mpv 播放方案**
 
-> 上游参考：<br>
->`dyphire/mpv-config` 是 Windows下mpv 配置项目<br>
->`yosh-wang/mpv-stats.lua-zh-chinese-translation-` 提供中文版 stats.lua 思路与同步说明<br>
->`yosh-wang/auto_bluray-ISO-`提供圆盘ISO思路并深度优化
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D4?logo=windows11&logoColor=white)](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest)
+[![Architecture](https://img.shields.io/badge/Architecture-x86--64-4C8BF5)](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest)
+[![mpv](https://img.shields.io/badge/mpv-0.41.0--851--g857379320-691B9A?logo=mpv&logoColor=white)](https://github.com/mpv-player/mpv)
+[![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE.md)
 
-## UI 预览
+[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) · [查看特色功能](#核心能力) · [使用说明](#快速开始) · [问题反馈](https://github.com/Yaozhil/mpv-Yaozhi/issues)
 
-![主界面标注](docs/images/ui-annotated.png)
+</div>
 
-### 底栏细节
+mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 持续维护。项目不仅整理配置与脚本，还提供针对 Windows 播放链路定制的 mpv 核心，重点改善 HDR/Dolby Vision、图形字幕、AV3A / Audio Vivid、多声道 PCM、音频源码直通、HTTPS 网盘播放与中文界面体验。
+
+> 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版。
+
+## 界面预览
+
+![mpv-Yaozhi 主界面](docs/images/ui-annotated.png)
+
+<details>
+<summary>查看更多界面截图</summary>
+
+### 底栏与媒体信息
 
 ![底栏细节](docs/images/player-bar-annotated.png)
 
-### 网盘登录面板
+### 杳知功能菜单
 
-![网盘登录面板](docs/images/alist-login-annotated.png)
+![杳知菜单](docs/images/yaozhi-menu-showcase.png)
 
-### 杳知菜单展示
+</details>
 
-![杳知菜单展示](docs/images/yaozhi-menu-showcase.png)
+## 核心能力
 
+| 领域 | 主要能力 |
+| --- | --- |
+| 播放核心 | 自维护 Windows x86-64 mpv 核心；D3D11、`gpu-next`、Schannel/libcurl 与定制补丁链 |
+| HDR 与 Dolby Vision | HDR10、HDR10+、HLG、Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4 播放；HDR Vivid 元数据识别 |
+| 图形字幕 | 修正 HDR/Dolby Vision 下 PGS、VobSub、DVB 字幕偏色；支持 150–400 nits 独立亮度档位 |
+| 沉浸声音频 | AV3A / Audio Vivid / AVS3 Audio 解码；5.1.4 / 7.1.4 PCM 高度声道布局；对象与 HOA 双耳渲染模式 |
+| 音频源码直通 | AC-3、E-AC-3、Dolby TrueHD、DTS、DTS-HD HRA/MA；支持相应载荷中的 Dolby Atmos 与 DTS:X |
+| 中文交互 | 深度定制 uosc、中文统计信息、弹幕、片头片尾、音乐模式、播放历史与专业起播格式标识 |
+| 网络与媒体库 | AList/OpenList、HTTPS 媒体直链、Windows 系统证书链、签名 URL 历史记录与本地蓝光 ISO |
 
-### 杳知配置助手5.0
+## 重点增强
 
-![杳知配置助手3.0](docs/images/%E6%9D%B3%E7%9F%A5%E9%85%8D%E7%BD%AE%E5%8A%A9%E6%89%8B3.0%E6%88%AA%E5%9B%BE.png)
+### 专业起播格式标识
 
+播放器会在首帧与画面边界稳定后识别当前画面标准和选中音轨，并在真实视频画面的右上安全区短暂显示。标识支持上下/左右黑边定位、多音轨切换刷新，以及“彩色徽章 / 透明白图标”两种样式。
 
-## 原创新功能 1：专业起播格式徽章
+- **画面标识**：Dolby Vision、HDR Vivid、HDR10+、HDR10、HLG、SDR
+- **音频标识**：Audio Vivid、Dolby Atmos、DTS:X、TrueHD、DTS-HD、AC-4、MPEG-H、FLAC、PCM、AAC 等
+- **菜单路径**：`杳知 > 起播格式标签`
 
-> 像专业播放器一样，在起播阶段一眼确认片源规格。
+![实际播放中的起播格式标识](docs/images/startup-format-badges-playback.png)
 
-播放器会在首帧和画面边界稳定后，自动识别画面标准与当前选中的音轨，并在实际视频画面的右上安全区短暂显示。默认淡入、停留 4 秒后淡出，不会变成常驻水印。
+![开场画面中的起播格式标识](docs/images/startup-format-badges-opening.png)
 
-- **画面格式**：Dolby Vision、HDR10+、HDR10、HLG、SDR等
-- **音频格式**：AV3A、Audio Vivid、AVS3、AudioDolby Atmos、DTS:X、Dolby TrueHD、DTS-HD、AC-4、MPEG-H，以及 FLAC、PCM、AAC 等常见格式。
-- **智能定位**：适配上下/左右黑边，并识别蓝光 ISO 中编码进视频帧的黑边。
-- **当前音轨优先**：多音轨文件按当前选中音轨识别；切换音轨后会重新显示，避免串标。
-- **可自由控制**：右键菜单「其它 > 开/关 起播格式标签」可随时切换，状态会自动保存。
+### HDR 图形字幕增强
 
-### 实际播放效果
+- 在 `gpu-next` 路径中独立处理 PGS、VobSub、DVB 等图形字幕色彩空间，避免错误继承 HDR 视频色彩造成偏红或偏色。
+- 提供 150 / 203 / 250 / 300 / 400 nits 亮度档位，仅影响图形字幕，不改变视频画面、ASS/文本字幕与 OSD。
+- Dolby Vision 继续由播放器内部完成解码、重塑与显示适配，不通过牺牲视频色彩正确性换取字幕修复。
 
-![有字幕播放场景中的 Dolby Vision 和 Dolby Atmos 起播格式徽章](docs/images/startup-format-badges-playback.png)
+### AV3A / Audio Vivid
 
-### 起播画面与完整 UI
+- 自主集成 AV3A（Audio Vivid / AVS3 Audio）解码链路，支持常见 MP4、MPEG-TS 与独立音频数据。
+- `native` 模式保留可用的传输声道与 PCM，不擅自将对象通道映射成扬声器位置。
+- `binaural` 模式可将对象音频、床层加对象及 HOA 内容渲染为双声道耳机输出。
+- AV3A / Audio Vivid 是播放器解码后输出 PCM，不属于 S/PDIF 源码直通格式。
 
-![绿色电影开头标场景中的 Dolby Vision 和 Dolby Atmos 起播格式徽章](docs/images/startup-format-badges-opening.png)
+### 5.1.4 / 7.1.4 高度声道输出
 
-## 近期新增原创功能
+SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的 `WAVEFORMATEXTENSIBLE` speaker mask，避免退化为缺少扬声器语义的 `unknown10` / `unknown12`。
 
-> 以下功能属于本维护版围绕真实观影、追剧和听歌场景做的原创增强。这里使用「原创功能」标注，表达更稳，也比难以证明的「首创」更适合公开说明。
+| 布局 | 声道顺序 |
+| --- | --- |
+| 5.1.4（10ch） | `FL-FR-FC-LFE-SL-SR-TFL-TFR-TBL-TBR` |
+| 7.1.4（12ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR` |
 
-### 原创功能 2：HDR / PGS 图形特效字幕增强
+10/12 声道设备打开已通过 Windows 自动回归，并完成真实多声道设备测试片复测。实际扬声器输出仍取决于声卡、驱动、HDMI/eARC 链路、回音壁或功放对相应布局的支持。
 
-针对 HDR、Dolby Vision 片源下 PGS / VobSub / DVB 等图形字幕容易偏色、过亮或过暗的问题，本维护版对播放核心和菜单做了定制增强：
+### 音频源码直通
 
-- **PGS 图形字幕色彩修正**：在 `gpu-next` 路径下单独控制图形字幕色彩空间，避免图形字幕错误继承 HDR 视频色彩导致偏红、偏色。
-- **HDR 图形字幕亮度调节**：右键菜单提供 150 / 203 / 250 / 300 / 400 nits 档位，只调整图形字幕参考亮度，不影响视频画面、ASS 字幕和 OSD。
-- **精准菜单状态**：可在「杳知 > HDR 图形字幕亮度」查看当前支持状态和字幕检测状态。
+- 支持 Dolby Digital（AC-3）、Dolby Digital Plus（E-AC-3）、Dolby TrueHD、DTS、DTS-HD HRA/MA。
+- Dolby Atmos 可随 E-AC-3 / TrueHD 载荷传输，DTS:X 可随 DTS-HD 载荷传输。
+- 提供“全部直通、仅 Dolby、仅 DTS、关闭直通”四种模式。
+- 设备拒绝当前码流时可自动退出不兼容状态，恢复普通 PCM 输出，避免后续播放持续无声或卡住。
+- **菜单路径**：`杳知 > 音频直通`
 
-### 原创功能 3：音乐模式
+### 中文播放体验
 
-针对用户把 mpv 当音乐播放器使用的场景，新增「杳知 > 音乐模式」：
+- 统一使用 uosc 主菜单、右键菜单、播放列表与字幕内容选择。
+- 底栏直接显示解码方式、画面规格、编码、音频、码率及网络状态。
+- 支持中文弹幕搜索与加载、片头片尾查询/手动标记、章节显示和自动跳过。
+- 音乐模式提供列表循环、单曲循环、随机防重复以及最小化继续播放。
+- 最近播放支持本地文件、网络盘和签名 URL；临时离线不会导致历史记录被批量清除。
 
-- **后台播放**：音乐文件最小化后不自动暂停，影视文件仍保持最小化暂停逻辑。
-- **列表循环**：按播放列表顺序循环。
-- **随机循环**：后台使用 Fisher-Yates 洗牌队列，尽量避免随机重复，同时不打乱前台播放列表显示。
-- **单曲循环**：只循环当前歌曲，退出音乐模式后恢复普通播放逻辑。
-- **进入提示**：进入音乐模式时显示简洁的自建 UI 风格提示。
+## 快速开始
 
-### 原创功能 4：进度条左下角视频标签显示
+### 系统要求
 
-播放时在进度条左下角显示关键媒体标签，把原本需要打开统计面板才能确认的信息，直接压缩到日常播放界面里：
+- Windows 10 / 11 64 位
+- 支持 Direct3D 11 的显卡与较新的显卡驱动
+- HDR、音频源码直通及 5.1.4/7.1.4 输出需要对应的显示器、声卡、HDMI/eARC 设备或功放支持
 
-- **一眼看懂片源状态**：显示解码方式、画面规格、视频编码、音频格式、码率或网络状态等关键信息。
-- **贴合底栏布局**：标签跟随 uosc 进度条区域排布，不遮挡字幕和画面主体。
-- **轻量常驻**：适合日常扫一眼确认播放状态，不需要频繁打开 stats 面板。
+### 安装
 
-### 原创功能 5：播放核心重构
+1. 前往 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 下载最新整合包。
+2. 将压缩包完整解压到可写目录，不要直接在压缩软件中运行。
+3. 双击 `mpv.exe`，或把媒体文件拖入播放器。
+4. 按需运行与 `mpv.exe` 同级的“杳知配置助手”，自动识别硬件并选择推荐配置。
+5. 如需双击媒体文件直接播放，可运行根目录的 `注册视频文件关联.cmd`；关联写入当前用户，不依赖固定安装路径。
 
-本维护版不只整理配置，也维护了适配本整合包的自编译 mpv 播放核心：
+> 完整整合包已自带播放器核心和 `portable_config`。普通用户无需另外安装 mpv，也不需要手动复制脚本。
 
-- **HDR 图形字幕核心补丁**：加入图形字幕色彩空间与 HDR 亮度控制能力。
-- **Windows 网络兼容修复**：发布核心使用 Schannel / Windows 原生证书链，修复部分网盘、外置播放器、HTTPS 媒体链接在 OpenSSL 构建下证书校验失败的问题。
-- **完整发布验证**：围绕 D3D11、`gpu-next`、HDR 图形字幕、网络播放、便携配置加载做回归验证，减少“能启动但不能播”的发布风险。
+## 能力边界
 
-### 原创功能 6：新增 支持音频直通 / 透传功能
+为避免把“识别、解码、渲染与直通”混为一谈，以下边界请特别注意：
 
-- **支持音频格式**：AC3、EAC3、DTS、DTS-HD、Dolby TrueHD 等，码流交给回音壁或功放解码
+| 能力 | 当前状态 |
+| --- | --- |
+| Dolby Vision | 支持播放器内部处理并输出适合显示设备的 HDR10/PQ 或 SDR；不宣传原生 Dolby Vision 元数据透传 |
+| HDR Vivid | 当前用于帧元数据识别与界面标识；尚未接入专用动态色调映射或显示端透传 |
+| AV3A / Audio Vivid | 支持解码与 PCM 输出；对象/HOA 的扬声器级渲染不等同于普通 `channelmap`，当前显式空间渲染模式为双耳输出 |
+| Dolby Atmos / DTS:X 源码直通 | 依赖原始音轨载荷、Windows 默认输出设备及回音壁/功放支持 |
+| 5.1.4 / 7.1.4 PCM | 软件声道顺序与 Windows speaker mask 已验证；终端设备必须支持对应的 10/12 声道布局 |
+| 远程 ISO | 当前 AList/OpenList 远程 ISO 不作为正式能力；建议下载到本地后播放 |
 
+## 验证状态
 
-## 安装
+当前发布核心为 `mpv v0.41.0-851-g857379320`，主要验证包括：
 
-1. 下载整合包：[mpv-yaozhi-2026.8.3.zip](https://github.com/Yaozhil/mpv-Yaozhi/releases/download/%E6%9D%B3%E7%9F%A5mpv%E6%95%B4%E5%90%88%E5%8C%85/Yaozhi-mpv-8.3.7z)，解压即可使用<br>
+- Windows SDL 5.1.4（10ch）与 7.1.4（12ch）实际打开及具名布局校验
+- 真实 7.1.4 测试片逐声道设备复测
+- AV3A 常规多声道、对象音频、HOA、native 与 binaural 链路回归
+- HDR Vivid FATE 样本识别，以及 SDR + Audio Vivid 不误标 HDR Vivid
+- HTTPS Range、重定向、Windows Schannel 系统证书链与完整便携配置回归
 
-2. 打开配置助手，按需配置即可（会自动获取显卡信息）<br>
-
-    注：整合内已有 `杳知配置助手5.0`
-
-- 配置助手下载：[杳知配置助手5.0（MPV）.zip](https://github.com/user-attachments/files/30642776/5.0.MPV.zip)<br>
-
-- 配置助手教程：把`杳知配置助手5.0（MPV）.exe` 放到 mpv 根目录，与 `mpv.exe` 同级即可
-
-## 主要特色
-
-- 原创 HDR / PGS 图形特效字幕增强：修复 HDR 场景下图形字幕偏色，并提供独立亮度调节
-- 原创 进度条左下角视频标签显示：播放时直接显示解码、画面、编码、音频和码率状态
-- 原创 音乐模式：支持列表循环、随机防重复、单曲循环，音乐文件最小化不暂停
-- 原创 播放核心重构：自编译 mpv 核心，加入 HDR 图形字幕补丁，并恢复 Windows Schannel 网络兼容
-- 原创 独家支持解码 AV3A / Audio Vivid / AVS3 Audio 格式音频
-- 原创 新增 SDL 5.1.4 / 7.1.4 高度声道原生输出
-- 原创 支持 10/12 声道精确映射，实现各扬声器通道一一对应输出
-    - 5.1.4：FL-FR-FC-LFE-SL-SR-TFL-TFR-TBL-TBR 精确映射
-    - 7.1.4：FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR 精确映射
-- 原创 新增专业起播格式徽章：自动识别画面标准与当前音轨，在实际画面安全区短暂显示
-- 原创 新增本地片头片尾跳过功能
-- 原创 新增纯本地化自定义片头片尾设置工具（剪刀图标）
-- 原创 新增 AList/OpenList 登录弹窗和网盘图标（AList 相关适配）
-- 原创 新增 支持音频直通 / 透传功能
-- 原创 重写文件浏览器鼠标操作，支持鼠标悬停高亮提示
-- 新增适配本地 ISO 视频格式播放
-- 常用 UI 操作、播放控制、文件管理、字幕、音轨和播放列表快捷键整理
-- 集成弹幕相关配置
-- uosc 中文界面与菜单体验优化
-- 中文化 stats，方便查看解码、HDR、帧耗时和音频状态
-
-详细说明见 [独特功能说明](docs/unique-features.md)。
-
-## 目录说明
+## 项目结构
 
 ```text
-portable_config/
-├─ mpv.conf              # mpv 主配置，通用硬件默认值
-├─ input.conf            # 快捷键与菜单预设
-├─ scripts/README.md     # 脚本同步说明
-├─ script-opts/          # 脚本选项示例
-├─ shaders/README.md     # shader 同步说明
-└─ fonts/README.md       # 字体说明，不附带字体文件
-docs/
-├─ unique-features.md    # 本维护版特色说明
-├─ release-check.md      # 发布前检查
-└─ images/               # UI 展示图
+portable_config/        mpv 配置、脚本、菜单、字体与着色器
+docs/                   功能说明、发布检查与界面图片
+LICENSE.md              本项目自有代码与文档的 MIT 许可证
 ```
 
-## 许可与来源说明
+自定义核心的 mpv / SDL2 补丁、AV3A 构建集成与 Windows 自动回归位于 [`codex/hdr-pgs-core-fix`](https://github.com/Yaozhil/mpv-Yaozhi/tree/codex/hdr-pgs-core-fix) 维护分支；稳定整合包通过 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 发布。
 
-本仓库整理自个人使用配置，并参考以下项目结构或思路：
+## 反馈问题
 
+提交 [Issue](https://github.com/Yaozhil/mpv-Yaozhi/issues) 时，建议提供：
+
+- Windows 版本、显卡型号与驱动版本
+- 播放器版本（运行 `mpv.com --version`）
+- 音频设备、连接方式及 Windows 扬声器布局
+- 可复现的文件格式、音视频编码和操作步骤
+- `portable_config/files/mpv.log` 中与问题相关的片段
+
+请勿公开包含网盘账号、签名 URL、访问令牌或私人文件路径的完整日志。
+
+## 来源与许可
+
+本项目参考或集成了以下项目及社区成果：
+
+- [mpv-player/mpv](https://github.com/mpv-player/mpv)
 - [dyphire/mpv-config](https://github.com/dyphire/mpv-config)
 - [yosh-wang/mpv-stats.lua-zh-chinese-translation-](https://github.com/yosh-wang/mpv-stats.lua-zh-chinese-translation-)
 - [yosh-wang/auto_bluray-ISO-](https://github.com/yosh-wang/auto_bluray-ISO-)
-- mpv 社区脚本与相关开源项目
+- uosc、FFmpeg、libplacebo、SDL2 及其他随项目保留来源说明的开源组件
 
-各脚本、shader 与第三方组件的版权和许可归原作者所有。
-
-若上游项目自带 LICENSE / README，本仓库会尽量保留原始说明。
-
-## 免责声明
-
-本配置主要面向 Windows mpv 用户。不同 mpv 构建、显卡驱动、系统版本和脚本依赖环境可能导致体验不同。
-
-建议直接使用整合包，解压即用。
-
-如遇问题，反馈即可。
+本仓库自有代码与文档采用 [MIT License](LICENSE.md)。第三方脚本、着色器、字体、二进制组件与资源继续遵循各自的许可证和版权声明。
