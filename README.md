@@ -1,6 +1,6 @@
 # Yaozhi-MPV 整合包
 
-面向 Windows mpv 的自制 UI 整合包，基于 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 整理并更新<br>加入个人维护的 uosc 布局、快捷键菜单、弹幕、片头片尾标记、AList/OpenList 网盘入口、起播格式徽章、进度条左下角视频标签、音乐模式、HDR 图形特效字幕增强和中文统计信息体验
+Windows mpv 的自制 UI 整合包，基于 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 整理并更新<br>加入个人维护的 uosc 布局、快捷键菜单、弹幕、片头片尾标记、AList/OpenList 网盘入口、起播格式徽章、进度条左下角视频标签、音乐模式、HDR 图形特效字幕增强和中文统计信息体验
 
 所有发布版都已做通用化处理。
 
