@@ -363,7 +363,9 @@ jobs:
             packages/mpv-9003-hdr-vivid-metadata.patch
           grep -Fq 'fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' \
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
-          grep -Fq 'complete_speaker_input' \
+          grep -Fq 'native_equal_layout' \
+            packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'mp_chmap_equals(&map_in, &map_out) && !native_equal_layout' \
             packages/mpv-9005-swresample-native-layout.patch
           grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \
             packages/mpv-9005-swresample-native-layout.patch
