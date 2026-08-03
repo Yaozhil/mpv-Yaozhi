@@ -154,8 +154,10 @@ function Assert-Sample {
     $nativeBytes = [long]$ExpectedFrames * 1024 * $NativeChannels * 2
     $binauralBytes = [long]$ExpectedFrames * 1024 * 2 * 4
     $nativePcm = Join-Path $work "$Name-native-s16le.pcm"
+    $nativeS32Pcm = Join-Path $work "$Name-native-s32le.pcm"
     $binauralPcm = Join-Path $work "$Name-binaural-f32le.pcm"
     $mpvNativePcm = Join-Path $work "$Name-mpv-native-s16le.pcm"
+    $mpvNativeS32Pcm = Join-Path $work "$Name-mpv-native-s32le.pcm"
     $mpvBinauralPcm = Join-Path $work "$Name-mpv-binaural-f32le.pcm"
 
     Assert-DecodeFormat $InputPath "native" "s16" $NativeChannels $NativeLayoutPattern
@@ -171,6 +173,17 @@ function Assert-Sample {
         $nativePcm
     ) | Out-Null
     Assert-Size $nativePcm $nativeBytes
+
+    Invoke-Checked $FFmpegPath @(
+        "-hide_banner", "-loglevel", "warning", "-y",
+        "-av3a_render", "native",
+        "-i", $InputPath,
+        "-map", "0:a:0",
+        "-c:a", "pcm_s32le",
+        "-f", "s32le",
+        $nativeS32Pcm
+    ) | Out-Null
+    Assert-Size $nativeS32Pcm ($nativeBytes * 2)
 
     Invoke-Checked $FFmpegPath @(
         "-hide_banner", "-loglevel", "warning", "-y",
@@ -207,6 +220,24 @@ function Assert-Sample {
         "native audio conversion"
     Assert-Size $mpvNativePcm $nativeBytes
     Assert-SameHash $nativePcm $mpvNativePcm
+
+    $nativeS32MpvOutput = Invoke-Checked $MpvPath @(
+        "--no-config",
+        "--vo=null",
+        "--ao=pcm",
+        "--ao-pcm-waveheader=no",
+        "--ao-pcm-file=$mpvNativeS32Pcm",
+        "--audio-display=no",
+        "--audio-format=s32",
+        "--audio-samplerate=48000",
+        "--ad-lavc-o=av3a_render=native",
+        $InputPath
+    )
+    Assert-NotContains $nativeS32MpvOutput `
+        "Cannot open Libavresample context|libswresample failed to initialize" `
+        "native s16-to-s32 resampler initialization failure"
+    Assert-Size $mpvNativeS32Pcm ($nativeBytes * 2)
+    Assert-SameHash $nativeS32Pcm $mpvNativeS32Pcm
 
     $binauralMpvOutput = Invoke-Checked $MpvPath @(
         "--no-config",

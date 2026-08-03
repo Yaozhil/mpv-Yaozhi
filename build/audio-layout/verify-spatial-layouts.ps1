@@ -101,6 +101,37 @@ function Assert-ExactPcm {
     }
 }
 
+function Assert-S16ToS32Exact {
+    param(
+        [string]$Label,
+        [string]$InputPath,
+        [string]$OutputPath,
+        [int]$ChannelCount
+    )
+
+    $input = [IO.File]::ReadAllBytes($InputPath)
+    $output = [IO.File]::ReadAllBytes($OutputPath)
+    if (($input.Length % (2 * $ChannelCount)) -ne 0) {
+        throw "$Label input is not valid interleaved s16 PCM"
+    }
+    if ($output.Length -ne ($input.Length * 2)) {
+        throw "$Label PCM length mismatch: $($output.Length) != $($input.Length * 2)"
+    }
+
+    $sampleCount = [int]($input.Length / 2)
+    for ($sample = 0; $sample -lt $sampleCount; $sample++) {
+        $expected = [int32](
+            [int64][BitConverter]::ToInt16($input, $sample * 2) * 65536
+        )
+        $actual = [BitConverter]::ToInt32($output, $sample * 4)
+        if ($actual -ne $expected) {
+            $frame = [int]($sample / $ChannelCount)
+            $channel = $sample % $ChannelCount
+            throw "$Label sample mismatch at frame $frame channel $channel"
+        }
+    }
+}
+
 function Assert-ChannelFrequencies {
     param(
         [string]$Label,
@@ -125,9 +156,15 @@ function Assert-ChannelFrequencies {
 
     for ($channel = 0; $channel -lt $ChannelCount; $channel++) {
         $samples = New-Object double[] $sampleCount
+        $sumSquares = 0.0
         for ($n = 0; $n -lt $sampleCount; $n++) {
             $offset = (($start + $n) * $ChannelCount + $channel) * 4
             $samples[$n] = [BitConverter]::ToInt32($bytes, $offset)
+            $sumSquares += $samples[$n] * $samples[$n]
+        }
+        $rms = [Math]::Sqrt($sumSquares / $sampleCount)
+        if ($rms -lt 1000000.0) {
+            throw "$Label channel $channel is silent or too weak"
         }
 
         $magnitudes = New-Object double[] $Frequencies.Count
@@ -151,10 +188,50 @@ function Assert-ChannelFrequencies {
         if ($best -ne $channel) {
             throw "$Label channel $channel contains probe $best instead of $channel"
         }
-        if ($magnitudes[$best] -lt ($magnitudes[$second] * 1.5)) {
+        if ($magnitudes[$best] -lt ($magnitudes[$second] * 3.0)) {
             throw "$Label channel $channel probe separation is too weak"
         }
     }
+}
+
+function Test-RawLayoutConversion {
+    param(
+        [string]$Name,
+        [string]$Layout,
+        [int]$ChannelCount,
+        [double[]]$Frequencies,
+        [int]$SampleRate,
+        [double]$Duration,
+        [string]$WorkDir,
+        [string]$MpvPath
+    )
+
+    $input = Join-Path $WorkDir "$Name-input.s16"
+    $output = Join-Path $WorkDir "$Name-mpv.s32"
+    $log = Join-Path $WorkDir "$Name-mpv.log"
+    Remove-Item -LiteralPath $input, $output, $log `
+        -Force -ErrorAction SilentlyContinue
+
+    Write-S16Probe -Path $input -ChannelCount $ChannelCount `
+        -Frequencies $Frequencies -SampleRate $SampleRate `
+        -Duration $Duration
+    $durationText = $Duration.ToString(
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    Invoke-Checked -Label "$Name raw PCM conversion" `
+        -Exe $MpvPath -LogPath $log -Arguments @(
+            "--no-config", "--audio-display=no", "--vo=null",
+            "--demuxer=rawaudio", "--demuxer-rawaudio-format=s16le",
+            "--demuxer-rawaudio-channels=$Layout",
+            "--demuxer-rawaudio-rate=$SampleRate",
+            "--ao=pcm", "--ao-pcm-waveheader=no",
+            "--ao-pcm-file=$output", "--audio-format=s32",
+            "--audio-channels=$Layout", "--length=$durationText",
+            "--msg-level=all=warn,swresample=trace", $input
+        )
+    Assert-S16ToS32Exact -Label $Name -InputPath $input `
+        -OutputPath $output -ChannelCount $ChannelCount
+    Write-Host "$Name exact positional conversion passed"
 }
 
 $sampleRate = 48000
@@ -256,6 +333,9 @@ foreach ($case in $cases) {
             )
         Assert-ExactPcm -Label "$name $extension" `
             -ExpectedPath $referencePath -ActualPath $mpvOutputPath
+        Assert-ChannelFrequencies -Label "$name $extension" `
+            -Path $mpvOutputPath -ChannelCount $channelCount `
+            -Frequencies $frequencies -SampleRate $sampleRate
     }
 
     # Opus mapping family 255 carries channel positions only. Validate it only
@@ -285,34 +365,57 @@ foreach ($case in $cases) {
     Write-Host "$name WAV/WavPack/Opus channel-order validation passed"
 }
 
-$customName = "9.1.6-custom"
-$customCount = 16
-$customLayout =
-    "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr-tsl-tsr-wl-wr"
-$customFrequencies = New-Object double[] $customCount
-for ($channel = 0; $channel -lt $customCount; $channel++) {
-    $customFrequencies[$channel] = 220.0 + 97.0 * $channel
+foreach ($case in $cases) {
+    $channelCount = [int]$case.Count
+    $frequencies = New-Object double[] $channelCount
+    for ($channel = 0; $channel -lt $channelCount; $channel++) {
+        $frequencies[$channel] = 220.0 + 97.0 * $channel
+    }
+    Test-RawLayoutConversion `
+        -Name "$(($case.Name -replace '\.', '-'))-canonical" `
+        -Layout ([string]$case.MpvLayout) `
+        -ChannelCount $channelCount -Frequencies $frequencies `
+        -SampleRate $sampleRate -Duration $duration `
+        -WorkDir $WorkDir -MpvPath $MpvPath
 }
-$customInput = Join-Path $WorkDir "$customName-input.s16"
-$customOutput = Join-Path $WorkDir "$customName-mpv.s32"
-$customLog = Join-Path $WorkDir "$customName-mpv.log"
-Remove-Item -LiteralPath $customInput, $customOutput, $customLog `
-    -Force -ErrorAction SilentlyContinue
-Write-S16Probe -Path $customInput -ChannelCount $customCount `
-    -Frequencies $customFrequencies -SampleRate $sampleRate `
-    -Duration $duration
-Invoke-Checked -Label "$customName raw PCM conversion" `
-    -Exe $MpvPath -LogPath $customLog -Arguments @(
-        "--no-config", "--audio-display=no", "--vo=null",
-        "--demuxer=rawaudio", "--demuxer-rawaudio-format=s16le",
-        "--demuxer-rawaudio-channels=$customLayout",
-        "--demuxer-rawaudio-rate=$sampleRate",
-        "--ao=pcm", "--ao-pcm-waveheader=no",
-        "--ao-pcm-file=$customOutput", "--audio-format=s32",
-        "--audio-channels=$customLayout",
-        "--msg-level=all=warn,swresample=trace", $customInput
-    )
-Assert-ChannelFrequencies -Label $customName -Path $customOutput `
-    -ChannelCount $customCount -Frequencies $customFrequencies `
-    -SampleRate $sampleRate
-Write-Host "$customName explicit custom-order validation passed"
+
+$rawCases = @(
+    @{
+        Name = "9-1-6-custom"
+        Layout =
+            "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr-tsl-tsr-wl-wr"
+        Count = 16
+    },
+    @{
+        Name = "top-front-custom"
+        Layout = "tfr-tfl"
+        Count = 2
+    },
+    @{
+        Name = "side-custom"
+        Layout = "sr-sl"
+        Count = 2
+    },
+    @{
+        Name = "unknown4"
+        Layout = "unknown4"
+        Count = 4
+    },
+    @{
+        Name = "front-na"
+        Layout = "fl-fr-na"
+        Count = 3
+    }
+)
+foreach ($rawCase in $rawCases) {
+    $channelCount = [int]$rawCase.Count
+    $frequencies = New-Object double[] $channelCount
+    for ($channel = 0; $channel -lt $channelCount; $channel++) {
+        $frequencies[$channel] = 401.0 + 211.0 * $channel
+    }
+    Test-RawLayoutConversion `
+        -Name ([string]$rawCase.Name) -Layout ([string]$rawCase.Layout) `
+        -ChannelCount $channelCount -Frequencies $frequencies `
+        -SampleRate $sampleRate -Duration $duration `
+        -WorkDir $WorkDir -MpvPath $MpvPath
+}
