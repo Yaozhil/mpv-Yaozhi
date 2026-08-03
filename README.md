@@ -55,7 +55,7 @@ mpv-Yaozhi 针对 Windows 播放链路重构 mpv 核心，重点改善 HDR/Dolby
 播放器会在首帧与画面边界稳定后识别当前画面标准和选中音轨，并在真实视频画面的右上安全区短暂显示。标识支持上下/左右黑边定位、多音轨切换刷新，以及“彩色徽章 / 透明白图标”两种样式。
 
 - **画面标识**：Dolby Vision、HDR Vivid、HDR10+、HDR10、HLG、SDR
-- **音频标识**：AV3A（Audio Vivid / AVS3 Audio）、Dolby Atmos、DTS:X、TrueHD、DTS-HD、AC-4、MPEG-H、FLAC、PCM、AAC 等
+- **音频标识**：Audio Vivid 、Dolby Atmos、DTS:X、TrueHD、DTS-HD、AC-4、MPEG-H、FLAC、PCM、AAC 等
 - **菜单路径**：`杳知 > 起播格式标签`
 
 ![实际播放中的起播格式标识](docs/images/startup-format-badges-playback.png)
