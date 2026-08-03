@@ -12,6 +12,7 @@ on:
       - "patches/0003-sdl2-wasapi-spatial-speaker-mask.patch"
       - "patches/0004-video-expose-hdr-vivid-metadata.patch"
       - "patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch"
+      - "patches/0006-sdl2-allow-spatial-channel-counts.patch"
   workflow_dispatch:
 
 permissions:
@@ -119,6 +120,12 @@ jobs:
               "        COMMAND ${EXEC} git apply "
               "${CMAKE_CURRENT_SOURCE_DIR}/"
               "sdl2-9000-spatial-speaker-mask.patch\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9001-spatial-channel-counts.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9001-spatial-channel-counts.patch\n"
           )
           if "sdl2-9000-spatial-speaker-mask.patch" not in text:
               anchor = '    UPDATE_COMMAND ""\n'
@@ -140,6 +147,8 @@ jobs:
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
+          cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
+            packages/sdl2-9001-spatial-channel-counts.patch
 
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
             packages/avs3-audiodec.cmake
@@ -301,8 +310,14 @@ jobs:
             exit 1
           fi
           grep -n 'PATCH_COMMAND.*sdl2-9000' packages/libsdl2.cmake
+          grep -Fq 'sdl2-9001-spatial-channel-counts.patch' \
+            packages/libsdl2.cmake
           grep -Fq 'WASAPI_ApplySpatialSpeakerMask' \
             packages/sdl2-9000-spatial-speaker-mask.patch
+          grep -Fq 'orig->channels != 10' \
+            packages/sdl2-9001-spatial-channel-counts.patch
+          grep -Fq 'orig->channels != 12' \
+            packages/sdl2-9001-spatial-channel-counts.patch
           if grep -E 'list\(APPEND removed .*"curl"' packages/CMakeLists.txt; then
             echo "::error::curl is still excluded from the mpv dependency graph"
             exit 1
@@ -649,43 +664,73 @@ jobs:
           }
 
           # SDL only exposes a channel count to mpv.  The dummy backend makes
-          # negotiation deterministic and catches an accidental 7.1 fold before
-          # the Windows WASAPI endpoint applies the matching 12-channel mask.
-          $sdlSpatialSample = Join-Path $artifact "sdl-7.1.4-silence.raw"
-          [IO.File]::WriteAllBytes(
-            $sdlSpatialSample,
-            (New-Object byte[] (48000 * 12 * 2 / 10))
+          # negotiation deterministic and must successfully open both spatial
+          # layouts.  This catches mpv layout folds as well as SDL's historical
+          # public eight-channel limit before the Windows WASAPI endpoint applies
+          # the matching WAVEFORMATEXTENSIBLE speaker mask.
+          $sdlSpatialCases = @(
+            @{
+              Name = "5.1.4"
+              Count = 10
+              Layout = "fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr"
+            },
+            @{
+              Name = "7.1.4"
+              Count = 12
+              Layout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr"
+            }
           )
           $previousSdlDriver = $env:SDL_AUDIODRIVER
           $env:SDL_AUDIODRIVER = "dummy"
           try {
-            $sdlSpatialOutput = & $mpv `
-              --no-config `
-              --demuxer=rawaudio `
-              --demuxer-rawaudio-format=s16le `
-              '--demuxer-rawaudio-channels=fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' `
-              --demuxer-rawaudio-rate=48000 `
-              '--audio-channels=fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' `
-              --vo=null `
-              --ao=sdl `
-              --length=0.05 `
-              --msg-level=all=warn,ao/sdl=trace `
-              $sdlSpatialSample 2>&1
-            $sdlSpatialExit = $LASTEXITCODE
+            foreach ($spatialCase in $sdlSpatialCases) {
+              $channelCount = [int]$spatialCase.Count
+              $layout = [string]$spatialCase.Layout
+              $sample = Join-Path $artifact "sdl-$($spatialCase.Name)-silence.raw"
+              [IO.File]::WriteAllBytes(
+                $sample,
+                (New-Object byte[] (48000 * $channelCount * 2 / 10))
+              )
+              $sdlSpatialOutput = & $mpv `
+                --no-config `
+                --demuxer=rawaudio `
+                --demuxer-rawaudio-format=s16le `
+                "--demuxer-rawaudio-channels=$layout" `
+                --demuxer-rawaudio-rate=48000 `
+                "--audio-channels=$layout" `
+                --vo=null `
+                --ao=sdl `
+                --length=0.05 `
+                --msg-level=all=warn,ao/sdl=trace `
+                $sample 2>&1
+              $sdlSpatialExit = $LASTEXITCODE
+              $sdlSpatialText = `
+                ($sdlSpatialOutput | ForEach-Object { "$_" }) -join "`n"
+
+              if ($sdlSpatialExit -ne 0) {
+                throw "SDL $($spatialCase.Name) open failed:`n$sdlSpatialText"
+              }
+              $expectedResult = "result: $layout"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedResult)) {
+                throw "SDL changed the $($spatialCase.Name) channel layout"
+              }
+              $expectedRequested = `
+                "requested format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedRequested)) {
+                throw "SDL requested the wrong $($spatialCase.Name) channel count"
+              }
+              $expectedObtained = `
+                "obtained format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedObtained)) {
+                throw "SDL did not open $($spatialCase.Name) with $channelCount channels"
+              }
+              if ($sdlSpatialText -match "Unsupported number of audio channels") {
+                throw "SDL still rejects $($spatialCase.Name) before opening the device"
+              }
+            }
           } finally {
             $env:SDL_AUDIODRIVER = $previousSdlDriver
           }
-          $sdlSpatialText = ($sdlSpatialOutput | ForEach-Object { "$_" }) -join "`n"
-          if ($sdlSpatialText -notmatch "requested format: 48000 Hz, 12 channels") {
-            throw "SDL reduced 7.1.4 to fewer than 12 interleaved channels"
-          }
-          if ($sdlSpatialText -match "result: 7\.1") {
-            throw "SDL still negotiated the legacy 7.1 fallback"
-          }
-          # SDL's Windows dummy backend rejects more than eight channels after
-          # mpv has already completed its channel-layout selection.  A non-zero
-          # exit is therefore expected in CI; the two assertions above are the
-          # contract this probe is intended to verify.
 
           $hdrVividSample = Join-Path $artifact "hdr_vivid_h265_sample.hevc"
           Invoke-WebRequest `
@@ -720,4 +765,3 @@ jobs:
             -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a") `
             -ObjectSamplePath (Join-Path $artifact "bed-object-moving.av3a") `
             -MetadataProbePath (Join-Path $artifact "object-metadata-probe.exe")
-

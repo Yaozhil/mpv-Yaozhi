@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Mon, 3 Aug 2026 09:10:00 +0800
+Subject: [PATCH] audio: allow 10- and 12-channel spatial output
+
+SDL2 rejects every requested audio layout above eight channels in the
+public prepare_audiospec() path, before the Windows WASAPI backend can
+apply its WAVEFORMATEXTENSIBLE speaker mask.  This makes the dedicated
+5.1.4 and 7.1.4 WASAPI support unreachable and reports:
+
+    Unsupported number of audio channels.
+
+Keep the existing safety limit for all other non-standard counts, but
+allow the two spatial layouts supported by the bundled backend:
+
+10ch: FL FR FC LFE SL SR TFL TFR TBL TBR
+12ch: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR
+---
+ src/audio/SDL_audio.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/audio/SDL_audio.c b/src/audio/SDL_audio.c
+index 421adbc..baa6fad 100644
+--- a/src/audio/SDL_audio.c
++++ b/src/audio/SDL_audio.c
+@@ -1284,7 +1284,8 @@ static int prepare_audiospec(const SDL_AudioSpec *orig, SDL_AudioSpec *prepared)
+         } else {
+             prepared->channels = 2;
+         }
+-    } else if (orig->channels > 8) {
++    } else if (orig->channels > 8 && orig->channels != 10 &&
++               orig->channels != 12) {
+         SDL_SetError("Unsupported number of audio channels.");
+         return 0;
+     }
+-- 
+2.51.0
