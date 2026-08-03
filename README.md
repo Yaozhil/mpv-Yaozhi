@@ -13,9 +13,10 @@
 
 </div>
 
-mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 持续维护。项目不仅整理配置与脚本，还提供针对 Windows 播放链路定制的 mpv 核心，重点改善 HDR/Dolby Vision、图形字幕、AV3A / Audio Vivid、多声道 PCM、音频源码直通、HTTPS 网盘播放与中文界面体验。
+mpv-Yaozhi 整合包整理懒人配置与自动化脚本，并针对 Windows 播放链路重构 mpv 核心，重点改善 HDR/Dolby Vision、图形字幕、AV3A / Audio Vivid、多声道 PCM、音频源码直通、HTTPS 网盘播放与中文界面体验
+项目基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 并持续维护
 
-> 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版。
+> 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版
 
 ## 界面预览
 
@@ -62,43 +63,43 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 ### HDR 图形字幕增强
 
-- 在 `gpu-next` 路径中独立处理 PGS、VobSub、DVB 等图形字幕色彩空间，避免错误继承 HDR 视频色彩造成偏红或偏色。
-- 提供 150 / 203 / 250 / 300 / 400 nits 亮度档位，仅影响图形字幕，不改变视频画面、ASS/文本字幕与 OSD。
-- Dolby Vision 继续由播放器内部完成解码、重塑与显示适配，不通过牺牲视频色彩正确性换取字幕修复。
+- 在 `gpu-next` 路径中独立处理 PGS、VobSub、DVB 等图形字幕色彩空间，避免错误继承 HDR 视频色彩造成偏红或偏色
+- 提供 150 / 203 / 250 / 300 / 400 nits 亮度档位，仅影响图形字幕，不改变视频画面、ASS/文本字幕与 OSD
+- Dolby Vision 继续由播放器内部完成解码、重塑与显示适配，不通过牺牲视频色彩正确性换取字幕修复
 
 ### AV3A / Audio Vivid
 
-- 自主集成 AV3A（Audio Vivid / AVS3 Audio）解码链路，支持常见 MP4、MPEG-TS 与独立音频数据。
-- `native` 模式保留可用的传输声道与 PCM，不擅自将对象通道映射成扬声器位置。
-- `binaural` 模式可将对象音频、床层加对象及 HOA 内容渲染为双声道耳机输出。
-- AV3A / Audio Vivid 是播放器解码后输出 PCM，不属于 S/PDIF 源码直通格式。
+- 自主集成 AV3A（Audio Vivid / AVS3 Audio）解码链路，支持常见 MP4、MPEG-TS 与独立音频数据
+- `native` 模式保留可用的传输声道与 PCM，不擅自将对象通道映射成扬声器位置
+- `binaural` 模式可将对象音频、床层加对象及 HOA 内容渲染为双声道耳机输出
+- AV3A / Audio Vivid 是播放器解码后输出 PCM，不属于 S/PDIF 源码直通格式
 
 ### 5.1.4 / 7.1.4 高度声道输出
 
-SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的 `WAVEFORMATEXTENSIBLE` speaker mask，避免退化为缺少扬声器语义的 `unknown10` / `unknown12`。
+SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的 `WAVEFORMATEXTENSIBLE` speaker mask，避免退化为缺少扬声器语义的 `unknown10` / `unknown12`
 
 | 布局 | 声道顺序 |
 | --- | --- |
 | 5.1.4（10ch） | `FL-FR-FC-LFE-SL-SR-TFL-TFR-TBL-TBR` |
 | 7.1.4（12ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR` |
 
-10/12 声道设备打开已通过 Windows 自动回归，并完成真实多声道设备测试片复测。实际扬声器输出仍取决于声卡、驱动、HDMI/eARC 链路、回音壁或功放对相应布局的支持。
+10/12 声道设备打开已通过 Windows 自动回归，并完成真实多声道设备测试片复测。实际扬声器输出仍取决于声卡、驱动、HDMI/eARC 链路、回音壁或功放对相应布局的支持
 
 ### 音频源码直通
 
-- 支持 Dolby Digital（AC-3）、Dolby Digital Plus（E-AC-3）、Dolby TrueHD、DTS、DTS-HD HRA/MA。
-- Dolby Atmos 可随 E-AC-3 / TrueHD 载荷传输，DTS:X 可随 DTS-HD 载荷传输。
-- 提供“全部直通、仅 Dolby、仅 DTS、关闭直通”四种模式。
-- 设备拒绝当前码流时可自动退出不兼容状态，恢复普通 PCM 输出，避免后续播放持续无声或卡住。
+- 支持 Dolby Digital（AC-3）、Dolby Digital Plus（E-AC-3）、Dolby TrueHD、DTS、DTS-HD HRA/MA
+- Dolby Atmos 可随 E-AC-3 / TrueHD 载荷传输，DTS:X 可随 DTS-HD 载荷传输
+- 提供“全部直通、仅 Dolby、仅 DTS、关闭直通”四种模式
+- 设备拒绝当前码流时可自动退出不兼容状态，恢复普通 PCM 输出，避免后续播放持续无声或卡住
 - **菜单路径**：`杳知 > 音频直通`
 
 ### 中文播放体验
 
-- 统一使用 uosc 主菜单、右键菜单、播放列表与字幕内容选择。
-- 底栏直接显示解码方式、画面规格、编码、音频、码率及网络状态。
-- 支持中文弹幕搜索与加载、片头片尾查询/手动标记、章节显示和自动跳过。
-- 音乐模式提供列表循环、单曲循环、随机防重复以及最小化继续播放。
-- 最近播放支持本地文件、网络盘和签名 URL；临时离线不会导致历史记录被批量清除。
+- 统一使用 uosc 主菜单、右键菜单、播放列表与字幕内容选择
+- 底栏直接显示解码方式、画面规格、编码、音频、码率及网络状态
+- 支持中文弹幕搜索与加载、片头片尾查询/手动标记、章节显示和自动跳过
+- 音乐模式提供列表循环、单曲循环、随机防重复以及最小化继续播放
+- 最近播放支持本地文件、网络盘和签名 URL；临时离线不会导致历史记录被批量清除
 
 ## 快速开始
 
@@ -112,11 +113,10 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 
 1. 前往 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 下载最新整合包。
 2. 将压缩包完整解压到可写目录，不要直接在压缩软件中运行。
-3. 双击 `mpv.exe`，或把媒体文件拖入播放器。
-4. 按需运行与 `mpv.exe` 同级的“杳知配置助手”，自动识别硬件并选择推荐配置。
-5. 如需双击媒体文件直接播放，可运行根目录的 `注册视频文件关联.cmd`；关联写入当前用户，不依赖固定安装路径。
+3. 可按需运行与 `mpv.exe` 同级的“杳知配置助手”，自动识别硬件并选择推荐配置。
+4. 如需双击媒体文件直接播放，可运行根目录的 `注册视频文件关联.cmd`；关联写入当前用户，不依赖固定安装路径。
 
-> 完整整合包已自带播放器核心和 `portable_config`。普通用户无需另外安装 mpv，也不需要手动复制脚本。
+> 整合包内已自带播放器核心和 `portable_config`。普通用户无需另外安装 mpv，也不需要手动复制脚本。
 
 ## 能力边界
 
@@ -124,7 +124,7 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 
 | 能力 | 当前状态 |
 | --- | --- |
-| Dolby Vision | 支持播放器内部处理并输出适合显示设备的 HDR10/PQ 或 SDR；不宣传原生 Dolby Vision 元数据透传 |
+| Dolby Vision | 支持播放器内部处理并输出适合显示设备的 HDR10/PQ 或 SDR |
 | HDR Vivid | 当前用于帧元数据识别与界面标识；尚未接入专用动态色调映射或显示端透传 |
 | AV3A / Audio Vivid | 支持解码与 PCM 输出；对象/HOA 的扬声器级渲染不等同于普通 `channelmap`，当前显式空间渲染模式为双耳输出 |
 | Dolby Atmos / DTS:X 源码直通 | 依赖原始音轨载荷、Windows 默认输出设备及回音壁/功放支持 |
@@ -149,7 +149,7 @@ docs/                   功能说明、发布检查与界面图片
 LICENSE.md              本项目自有代码与文档的 MIT 许可证
 ```
 
-自定义核心的 mpv / SDL2 补丁、AV3A 构建集成与 Windows 自动回归位于 [`codex/hdr-pgs-core-fix`](https://github.com/Yaozhil/mpv-Yaozhi/tree/codex/hdr-pgs-core-fix) 维护分支；稳定整合包通过 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 发布。
+稳定整合包通过 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 发布。
 
 ## 反馈问题
 
