@@ -29,15 +29,18 @@
 右键菜单提供“自动判断 / 随视频（HDR 原生）/ SDR·sRGB”手动覆盖，处理
 调色板制作不规范或封装来源不明的 DIY 字幕。
 
-`image-subs-hdr-peak=<sdr|10-10000>`
+`image-subs-hdr-peak=<sdr|video|video-static|video-dynamic|10-10000>`
 
-- 在 `auto`/`sdr` 的 SDR sRGB 路径中独立控制图形字幕参考白亮度。
+- `video` 路径必须使用 `video`，完整保留正片 HDR 元数据，不能再被
+  203 nit 等 SDR 参考白覆盖。
+- 在 `auto` 选择到 `sdr` 或手动 `sdr` 的 SDR sRGB 路径中，数值档位
+  独立控制图形字幕参考白亮度。
 - `sdr` 或 `203` 为标准 SDR 白；数值档位不会改变字幕色相、色域或视频输出。
 - `video`、`video-static`、`video-dynamic` 在 SDR sRGB 路径中安全回退到 203 nit。
 
-本配置包默认使用 `203`，并通过“杳知 > HDR 图形字幕色彩与亮度”提供
-150/203/250/300/400 nit 持久化档位。该设置只影响 PGS、VobSub、DVB
-等图形字幕，不影响 ASS、文本字幕、OSD 或视频。
+本配置包核心默认使用 `video`；脚本只在 SDR 图形字幕路径应用持久化的
+150/203/250/300/400 nit 档位。该设置只影响 PGS、VobSub、DVB 等图形
+字幕，不影响 ASS、文本字幕、OSD 或视频。
 
 ## 验收矩阵
 
