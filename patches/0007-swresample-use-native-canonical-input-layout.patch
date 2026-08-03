@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Mon, 3 Aug 2026 18:00:00 +0800
+Subject: [PATCH] swresample: preserve complete speaker layouts
+
+Keep complete speaker semantics when configuring libswresample instead of
+replacing every equal input/output layout with unknown channels. Canonical
+layouts such as 5.1.4 and 7.1.4 can then use a native AVChannelLayout, while
+complete non-canonical layouts continue to use the existing custom layout and
+plane reorder path.
+
+This matters when a planar decoder output is converted to packed PCM.
+Treating 12-channel input as unspecified while giving swresample a native
+output layout can make it infer a different default input layout and route
+planes to the wrong output channels.
+
+Only keep the old no-remix fallback for unknown or incomplete layouts such as
+object, HOA, and NA transport channels. Reordered layouts containing a
+complete set of real speakers remain explicit, so a 9.1.6 speaker set can be
+normalized and reordered by labels instead of guessed from its channel count.
+---
+ filters/f_swresample.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/filters/f_swresample.c b/filters/f_swresample.c
+index b9b0758b7..7fc99bec6 100644
+--- a/filters/f_swresample.c
++++ b/filters/f_swresample.c
+@@ -156,11 +156,15 @@ static bool configure_lavrr(struct priv *p, bool verbose)
+     struct mp_chmap map_in = p->in_channels;
+     struct mp_chmap map_out = p->out_channels;
+ 
++    bool complete_speaker_input =
++        !mp_chmap_is_unknown(&map_in) &&
++        av_popcount64(mp_chmap_to_lavc_unchecked(&map_in)) == map_in.num;
++
+     // Try not to do any remixing if at least one is "unknown". Some corner
+     // cases also benefit from disabling all channel handling logic if the
+     // src/dst layouts are the same (like fl-fr-na -> fl-fr-na).
+     if (mp_chmap_is_unknown(&map_in) || mp_chmap_is_unknown(&map_out) ||
+-        mp_chmap_equals(&map_in, &map_out))
++        (mp_chmap_equals(&map_in, &map_out) && !complete_speaker_input))
+     {
+         mp_chmap_set_unknown(&map_in, map_in.num);
+         mp_chmap_set_unknown(&map_out, map_out.num);
+@@ -217,7 +221,11 @@ static bool configure_lavrr(struct priv *p, bool verbose)
+         mp_aframe_set_chmap(p->pool_fmt, &map_out);
+ 
+     AVChannelLayout in_layout, out_layout;
+-    mp_chmap_to_av_layout_custom(&in_layout, &map_in);
++    if (!mp_chmap_is_unknown(&map_in) && mp_chmap_is_lavc(&map_in)) {
++        mp_chmap_to_av_layout(&in_layout, &map_in);
++    } else {
++        mp_chmap_to_av_layout_custom(&in_layout, &map_in);
++    }
+     mp_chmap_to_av_layout(&out_layout, &out_lavc);
+     av_opt_set_chlayout(p->avrctx, "in_chlayout",  &in_layout, 0);
+     av_opt_set_chlayout(p->avrctx, "out_chlayout", &out_layout, 0);
+-- 
+2.54.0.windows.1

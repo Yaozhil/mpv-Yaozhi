@@ -13,6 +13,8 @@ on:
       - "patches/0004-video-expose-hdr-vivid-metadata.patch"
       - "patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch"
       - "patches/0006-sdl2-allow-spatial-channel-counts.patch"
+      - "patches/0007-swresample-use-native-canonical-input-layout.patch"
+      - "build/audio-layout/**"
   workflow_dispatch:
 
 permissions:
@@ -145,6 +147,8 @@ jobs:
             packages/mpv-9003-hdr-vivid-metadata.patch
           cp "$GITHUB_WORKSPACE/patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch" \
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
+          cp "$GITHUB_WORKSPACE/patches/0007-swresample-use-native-canonical-input-layout.patch" \
+            packages/mpv-9005-swresample-native-layout.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
@@ -359,6 +363,10 @@ jobs:
             packages/mpv-9003-hdr-vivid-metadata.patch
           grep -Fq 'fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' \
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
+          grep -Fq 'complete_speaker_input' \
+            packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \
+            packages/mpv-9005-swresample-native-layout.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
@@ -397,7 +405,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'patches/*.patch') }}
+          key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
           restore-keys: |
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
@@ -587,6 +595,9 @@ jobs:
           cp \
             build/av3a/tests/verify-stage2.ps1 \
             artifact/
+          cp \
+            build/audio-layout/verify-spatial-layouts.ps1 \
+            artifact/
           (
             cd artifact
             sha256sum \
@@ -596,6 +607,7 @@ jobs:
               bed-object-moving.av3a \
               object-metadata-probe.exe \
               verify-stage2.ps1 \
+              verify-spatial-layouts.ps1 \
               > SHA256SUMS.txt
           )
 
@@ -619,7 +631,7 @@ jobs:
           name: mpv-hdr-pgs-av3a-x86_64
           path: artifact
 
-      - name: Verify AV3A playback on Windows
+      - name: Verify spatial audio and AV3A playback on Windows
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -662,6 +674,11 @@ jobs:
               throw "Missing audio output marker: $required"
             }
           }
+
+          & (Join-Path $artifact "verify-spatial-layouts.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -WorkDir (Join-Path $artifact "spatial-layout-validation")
 
           # SDL only exposes a channel count to mpv.  The dummy backend makes
           # negotiation deterministic and must successfully open both spatial
