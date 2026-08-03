@@ -165,18 +165,24 @@ $cases = @(
         Count = 10
         FFmpegLayout = "FL+FR+FC+LFE+SL+SR+TFL+TFR+TBL+TBR"
         MpvLayout = "fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr"
+        WavPackLayout = "fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr"
     },
     @{
         Name = "7.1.4"
         Count = 12
         FFmpegLayout = "FL+FR+FC+LFE+BL+BR+SL+SR+TFL+TFR+TBL+TBR"
         MpvLayout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr"
+        WavPackLayout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr"
     },
     @{
         Name = "9.1.4"
         Count = 14
         FFmpegLayout = "FL+FR+FC+LFE+BL+BR+SL+SR+TFL+TFR+TBL+TBR+TSL+TSR"
         MpvLayout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr-tsl-tsr"
+        # WavPack v4 cannot carry TSL/TSR speaker IDs. FFmpeg therefore reads
+        # this 14-channel file using its mask-compatible 9.1.4 alias.
+        WavPackLayout =
+            "fl-fr-fc-lfe-bl-br-flc-frc-sl-sr-tfl-tfr-tbl-tbr"
     },
     @{
         Name = "9.1.6"
@@ -187,6 +193,10 @@ $cases = @(
             "FL+FR+FC+LFE+BL+BR+SL+SR+TFL+TFR+TBL+TBR+WL+WR+TSL+TSR"
         MpvLayout =
             "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr-wl-wr-tsl-tsr"
+        # The generated WavPack stream has no assignable 16-channel speaker
+        # mask, so FFmpeg applies its own 9.1.6 default on decode.
+        WavPackLayout =
+            "fl-fr-fc-lfe-bl-br-flc-frc-sl-sr-tfl-tfr-tbl-tbr-tsl-tsr"
     }
 )
 
@@ -220,6 +230,10 @@ foreach ($case in $cases) {
 
     foreach ($source in @($wavPath, $wvPath)) {
         $extension = [IO.Path]::GetExtension($source).TrimStart(".")
+        $outputLayout = [string]$case.MpvLayout
+        if ($extension -eq "wv") {
+            $outputLayout = [string]$case.WavPackLayout
+        }
         $referencePath = "$prefix-$extension-reference.s32"
         $mpvOutputPath = "$prefix-$extension-mpv.s32"
         $mpvLog = "$prefix-$extension-mpv.log"
@@ -237,7 +251,7 @@ foreach ($case in $cases) {
                 "--no-config", "--audio-display=no", "--vo=null",
                 "--ao=pcm", "--ao-pcm-waveheader=no",
                 "--ao-pcm-file=$mpvOutputPath", "--audio-format=s32",
-                "--audio-channels=$($case.MpvLayout)",
+                "--audio-channels=$outputLayout",
                 "--msg-level=all=warn,swresample=trace", $source
             )
         Assert-ExactPcm -Label "$name $extension" `
