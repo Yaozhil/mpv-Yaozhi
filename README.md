@@ -9,7 +9,7 @@
 [![mpv](https://img.shields.io/badge/mpv-0.41.0--851--g857379320-691B9A?logo=mpv&logoColor=white)](https://github.com/mpv-player/mpv)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE.md)
 
-[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) · [查看特色功能](#核心能力) · [使用说明](#快速开始) · [问题反馈](https://github.com/Yaozhil/mpv-Yaozhi/issues)
+[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) · [查看特色功能](#核心能力) · [问题反馈](https://github.com/Yaozhil/mpv-Yaozhi/issues)
 
 </div>
 
