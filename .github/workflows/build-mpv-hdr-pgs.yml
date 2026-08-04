@@ -744,19 +744,6 @@ jobs:
           grep -Fq 'force binaural rendering for spatial AV3A streams' \
             artifact-check/ffmpeg.strings
 
-          ffmpeg_src=winbuild/mpv-winbuild-cmake/src_packages/ffmpeg
-          grep -Fq 'const FFCodec ff_webp_anim_decoder' \
-            "$ffmpeg_src/libavcodec/webp.c"
-          grep -Fq 'const FFInputFormat ff_webp_anim_demuxer' \
-            "$ffmpeg_src/libavformat/webp_anim_dec.c"
-          grep -Fq 'int numTimeSlots = fl960 ? 15 : 16;' \
-            "$ffmpeg_src/libavcodec/aacsbr_template.c"
-          if grep -Fq 'SBR with 960 frame length' \
-            "$ffmpeg_src/libavcodec/aac/aacdec.c"; then
-            echo "::error::HE-AAC 960 is still rejected in the patched source"
-            exit 1
-          fi
-
           mkdir artifact
           cp "$archive" artifact/
           cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe

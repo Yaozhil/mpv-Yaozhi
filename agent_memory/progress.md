@@ -6,8 +6,9 @@
 - 已从 FFmpeg 官方提交提取并重做 `build/ffmpeg9/ffmpeg-animated-webp-backport.patch` 与 `build/ffmpeg9/ffmpeg-he-aac-960-backport.patch`；两者在固定 `llawsxx/FFmpeg@18c01ad424ca7712ef9a9d46953308efc75c4776` 上单独及完整补丁链顺序均通过 `git apply --check`。
 - Animated WebP 回归使用内嵌 188 字节、三帧 RGBA WebP：旧核心稳定因 `ANIM/ANMF` unsupported 失败；候选必须由 FFmpeg `webp_anim` demux/decoder 和 mpv 各自解出 3/3 帧。
 - HE-AAC 960 门禁要求 SBR 传播 `fl960`、使用 15 个 QMF time slots，并在源代码及最终 FFmpeg 二进制中移除旧的 `SBR with 960 frame length` 未实现路径。
-- 工作流已接入补丁复制/应用、源码与二进制断言、Windows 专项脚本、Artifact 清单和缓存键；本地 PowerShell AST、YAML、补丁链及旧核心负对照通过。
-- 下一步：提交并推送，等待 Linux 交叉构建与 Windows 运行时验收；全绿前不部署正式核心。
+- 工作流已接入补丁复制/应用、二进制断言、Windows 专项脚本、Artifact 清单和缓存键；本地 PowerShell AST、YAML、补丁链及旧核心负对照通过。
+- 首轮 CI `30915256699` 已成功编译含 `webp_anim` 且移除旧 HE-AAC 960 拒绝路径的二进制，但构建系统安装后会自动还原源码，导致新增的构建后源码检查误报失败；已删除该无效检查，保留补丁预检、最终二进制断言与 Windows 实际播放回归。
+- 下一步：推送门禁修正并等待 Linux 交叉构建与 Windows 运行时验收；全绿前不部署正式核心。
 
 ## 成功标准
 
