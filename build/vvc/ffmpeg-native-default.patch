@@ -1,0 +1,48 @@
+diff --git a/configure b/configure
+index 0000000..0000000 100755
+--- a/configure
++++ b/configure
+@@ -299,5 +299,6 @@ External library support:
+   --enable-libvorbis       enable Vorbis en/decoding via libvorbis,
+                            native implementation exists [no]
+   --enable-libvpx          enable VP8 and VP9 de/encoding via libvpx [no]
++  --enable-libvvdec        enable H.266/VVC decoding via vvdec [no]
+   --enable-libvvenc        enable H.266/VVC encoding via vvenc [no]
+   --enable-libwebp         enable WebP encoding via libwebp [no]
+@@ -2105,4 +2105,5 @@ EXTERNAL_LIBRARY_LIST="
+     libvorbis
+     libvpx
++    libvvdec
+     libvvenc
+     libwebp
+@@ -3837,4 +3837,6 @@ libvpx_vp8_encoder_deps="libvpx"
+ libvpx_vp9_decoder_deps="libvpx"
+ libvpx_vp9_encoder_deps="libvpx"
++libvvdec_decoder_deps="libvvdec"
++libvvdec_decoder_select="vvc_mp4toannexb_bsf"
+ libvvenc_encoder_deps="libvvenc"
+ libwebp_encoder_deps="libwebp"
+@@ -7440,2 +7440,3 @@ enabled libvpx            && {
++enabled libvvdec          && require_pkg_config libvvdec "libvvdec >= 1.6.0" "vvdec/vvdec.h" vvdec_get_version
+ enabled libvvenc          && require_pkg_config libvvenc "libvvenc >= 1.6.1" "vvenc/vvenc.h" vvenc_get_version
+ enabled libwebp           && {
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+index 0000000..0000000 100644
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -1222,4 +1222,5 @@ OBJS-$(CONFIG_LIBVPX_VP8_DECODER)         += libvpxdec.o
+ OBJS-$(CONFIG_LIBVPX_VP8_ENCODER)         += libvpxenc.o
+ OBJS-$(CONFIG_LIBVPX_VP9_DECODER)         += libvpxdec.o
+ OBJS-$(CONFIG_LIBVPX_VP9_ENCODER)         += libvpxenc.o
++OBJS-$(CONFIG_LIBVVDEC_DECODER)           += libvvdec.o
+ OBJS-$(CONFIG_LIBVVENC_ENCODER)           += libvvenc.o
+diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
+index 0000000..0000000 100644
+--- a/libavcodec/allcodecs.c
++++ b/libavcodec/allcodecs.c
+@@ -393,4 +393,5 @@ extern const FFCodec ff_vp9_v4l2m2m_decoder;
+ extern const FFCodec ff_vqa_decoder;
+ extern const FFCodec ff_vqc_decoder;
++extern const FFCodec ff_libvvdec_decoder;
+ extern const FFCodec ff_vvc_decoder;
+ extern const FFCodec ff_wbmp_decoder;
