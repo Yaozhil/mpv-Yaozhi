@@ -32,8 +32,11 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 > **自编译核心能力**
 
 > 支持 AV3A / Audio Vivid / AVS3 Audio、HDR Vivid 元数据识别
+
 > 支持解码 Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4
+
 > 完全覆盖 5.1.4 / 7.1.4 / 9.1.4、9.1.6 常用空间布局
+
 > 以上能力依赖本项目自编译 mpv / FFmpeg / SDL2 和定制补丁链，是本维护版区别于普通配置整合的核心部分。
 
 ## 界面预览
