@@ -17,6 +17,7 @@ mpv-Yaozhi 针对 Windows 播放链路重构 mpv 核心，重点改善 HDR/Dolby
 
 > 此版本应该是目前 对多声道支持最好的MPV版本了
 
+
 项目基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 并持续维护
 
 > 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版
