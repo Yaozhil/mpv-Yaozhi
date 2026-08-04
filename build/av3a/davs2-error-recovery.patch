@@ -1,0 +1,93 @@
+diff --git a/source/common/cu.cc b/source/common/cu.cc
+index 00aa8b2..0ce1977 100644
+--- a/source/common/cu.cc
++++ b/source/common/cu.cc
+@@ -1312,8 +1312,9 @@ int decode_lcu_parse(davs2_t *h, int i_level, int pix_x, int pix_y)
+             int sub_pix_x = pix_x + ((i & 1) << i_level_next);
+             int sub_pix_y = pix_y + ((i >> 1) << i_level_next);
+ 
+-            if (sub_pix_x < h->i_width && sub_pix_y < h->i_height) {
+-                decode_lcu_parse(h, i_level_next, sub_pix_x, sub_pix_y);
++            if (sub_pix_x < h->i_width && sub_pix_y < h->i_height &&
++                decode_lcu_parse(h, i_level_next, sub_pix_x, sub_pix_y) < 0) {
++                return -1;
+             }
+         }
+     } else {
+@@ -1355,8 +1356,10 @@ int decode_lcu_recon(davs2_t *h, davs2_row_rec_t *row_rec, int i_level, int pix_
+             int sub_pix_x = pix_x + ((i &  1) << i_level_next);
+             int sub_pix_y = pix_y + ((i >> 1) << i_level_next);
+ 
+-            if (sub_pix_x < h->i_width && sub_pix_y < h->i_height) {
+-                decode_lcu_recon(h, row_rec, i_level_next, sub_pix_x, sub_pix_y);
++            if (sub_pix_x < h->i_width && sub_pix_y < h->i_height &&
++                decode_lcu_recon(h, row_rec, i_level_next,
++                                 sub_pix_x, sub_pix_y) < 0) {
++                return -1;
+             }
+         }
+     } else {
+@@ -1367,9 +1370,12 @@ int decode_lcu_recon(davs2_t *h, davs2_row_rec_t *row_rec, int i_level, int pix_
+             h->decoding_error = 1;
+             davs2_log(h, DAVS2_LOG_WARNING, "invalid CU (%3d, %3d), POC %3d",
+                      pix_x, pix_y, h->i_poc);
+-            return 0;
++            return -1;
++        }
++        if (cu_recon(h, row_rec, p_cu, pix_x, pix_y) < 0) {
++            h->decoding_error = 1;
++            return -1;
+         }
+-        cu_recon(h, row_rec, p_cu, pix_x, pix_y);
+     }
+ 
+     return 0;
+diff --git a/source/common/decoder.cc b/source/common/decoder.cc
+index 49b58cd..c4a938a 100644
+--- a/source/common/decoder.cc
++++ b/source/common/decoder.cc
+@@ -80,7 +80,7 @@ static void init_frame(davs2_t *h)
+     memset(h->p_dirpred, PDIR_INVALID, num_spu * sizeof(int8_t));
+ 
+     /* 2, clear mv buffer (set all MVs to zero) */
+-    gf_davs2.fast_memzero(h->p_ref_idx, num_spu * sizeof(ref_idx_t));
++    memset(h->p_ref_idx, INVALID_REF, num_spu * sizeof(ref_idx_t));
+     // gf_davs2.fast_memzero(h->p_tmv_1st, num_spu * sizeof(mv_t));
+     // gf_davs2.fast_memzero(h->p_tmv_2nd, num_spu * sizeof(mv_t));
+ 
+@@ -435,7 +435,11 @@ static int decode_one_lcu_row(davs2_t *h, davs2_bs_t *bs, int i_lcu_y)
+         }
+ 
+         /* decode one lcu */
+-        decode_lcu_parse(h, h->i_lcu_level, h->lcu.i_pix_x, h->lcu.i_pix_y);
++        if (decode_lcu_parse(h, h->i_lcu_level,
++                             h->lcu.i_pix_x, h->lcu.i_pix_y) < 0) {
++            h->decoding_error = 1;
++            break;
++        }
+ 
+         /* cache CTU top border for intra prediction */
+         if (i_lcu_x == 0) {
+@@ -444,7 +448,11 @@ static int decode_one_lcu_row(davs2_t *h, davs2_bs_t *bs, int i_lcu_y)
+             memcpy(row_rec.ctu_border[2].rec_top + 1, h->intra_border[2], row_rec.ctu.i_ctu_w * sizeof(pel_t));
+         }
+ 
+-        decode_lcu_recon(h, &row_rec, h->i_lcu_level, h->lcu.i_pix_x, h->lcu.i_pix_y);
++        if (decode_lcu_recon(h, &row_rec, h->i_lcu_level,
++                             h->lcu.i_pix_x, h->lcu.i_pix_y) < 0) {
++            h->decoding_error = 1;
++            break;
++        }
+         
+         rowrec_store_lcu_recon_samples(&row_rec);
+         /* cache top and left samples for intra prediction of next CTU */
+@@ -488,7 +496,8 @@ static int decode_one_lcu_row(davs2_t *h, davs2_bs_t *bs, int i_lcu_y)
+     }
+ 
+     /* save motion vectors for reference frame */
+-    if (h->rps.refered_by_others && h->i_frame_type != AVS2_I_SLICE) {
++    if (h->decoding_error == 0 && h->rps.refered_by_others &&
++        h->i_frame_type != AVS2_I_SLICE) {
+         save_mv_ref_info(h, i_lcu_y);
+     }
+ 
