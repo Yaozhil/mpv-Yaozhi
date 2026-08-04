@@ -22,7 +22,9 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 > [!TIP]
 > **近期重点新增**
-> 新增两项 FFmpeg 9.0 的实用播放能力：Animated WebP 动画图片播放、HE-AAC 960 / DAB+ 音频兼容
+> 新增两项 FFmpeg 9.0 的实用播放能力：
+1. Animated WebP 动画图片播放
+2. HE-AAC 960 / DAB+ 音频兼容
 > 新增支持：VVC / H.266、AVS2 / AVS3
 
 > [!IMPORTANT]
