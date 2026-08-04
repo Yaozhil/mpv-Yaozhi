@@ -16,6 +16,12 @@
 - `.github/workflows/build-mpv-hdr-pgs.yml`：Windows 静态 mpv 构建与回归入口。
 - `build/vvc/`：VVDEC 构建配方、FFmpeg wrapper、默认选择补丁和 Windows 验收脚本。
 - `build/av3a/`：AV3A、AVS2 及空间音频补丁链。
+- `build/ffmpeg9/`：从 FFmpeg 9.0 定向回移的 Animated WebP、HE-AAC 960 补丁及 Windows 播放验收脚本；不代表整套基线升级到 libavcodec 63。
+
+## 当前发布核心
+
+- GitHub Actions Run `30917292112` 全绿，根目录已部署 `mpv v0.41.0-852-g8d504e9c0`。
+- `mpv.exe` / `mpv.com` SHA-256 为 `96C67204828E96C0C5823B608BFDBF9B319E71877F4559CCE4D7BE3EEC6068AD`、`275C8CC28AC7C05DEDED009B48CE75C42F92E7B5BD753BEDE299FCC76753E351`。
 
 ## 已确认假设
 

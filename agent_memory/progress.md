@@ -1,14 +1,17 @@
 # 当前任务进度
 
-## FFmpeg 9.0 播放能力定向回移（2026-08-04，进行中）
+## FFmpeg 9.0 播放能力定向回移（2026-08-04，已完成）
 
 - 范围固定为 Animated WebP 解码/解封装和 HE-AAC 960（DAB+）解码，不迁移 FFmpeg 9.0 ABI，不引入 AMF FRC、`dovi_split` 或 SMPTE 2094-50 UI。
 - 已从 FFmpeg 官方提交提取并重做 `build/ffmpeg9/ffmpeg-animated-webp-backport.patch` 与 `build/ffmpeg9/ffmpeg-he-aac-960-backport.patch`；两者在固定 `llawsxx/FFmpeg@18c01ad424ca7712ef9a9d46953308efc75c4776` 上单独及完整补丁链顺序均通过 `git apply --check`。
 - Animated WebP 回归使用内嵌 188 字节、三帧 RGBA WebP：旧核心稳定因 `ANIM/ANMF` unsupported 失败；候选必须由 FFmpeg `webp_anim` demux/decoder 和 mpv 各自解出 3/3 帧。
 - HE-AAC 960 门禁要求 SBR 传播 `fl960`、使用 15 个 QMF time slots，并在源代码及最终 FFmpeg 二进制中移除旧的 `SBR with 960 frame length` 未实现路径。
-- 工作流已接入补丁复制/应用、二进制断言、Windows 专项脚本、Artifact 清单和缓存键；本地 PowerShell AST、YAML、补丁链及旧核心负对照通过。
-- 首轮 CI `30915256699` 已成功编译含 `webp_anim` 且移除旧 HE-AAC 960 拒绝路径的二进制，但构建系统安装后会自动还原源码，导致新增的构建后源码检查误报失败；已删除该无效检查，保留补丁预检、最终二进制断言与 Windows 实际播放回归。
-- 下一步：推送门禁修正并等待 Linux 交叉构建与 Windows 运行时验收；全绿前不部署正式核心。
+- 工作流已接入补丁复制/应用、二进制断言、Windows 专项脚本、Artifact 清单和缓存键；本地 PowerShell AST、YAML、完整补丁链及旧核心负对照通过。
+- 首轮 CI `30915256699` 已成功编译含 `webp_anim` 且移除旧 HE-AAC 960 拒绝路径的二进制，但构建系统安装后自动还原源码，导致构建后源码检查误报；删除无效检查后，Run `30917292112` 的 `build` 与 `validate-windows` 均成功。
+- 最终核心为 `mpv v0.41.0-852-g8d504e9c0`；`mpv.exe` / `mpv.com` SHA-256 分别为 `96C67204828E96C0C5823B608BFDBF9B319E71877F4559CCE4D7BE3EEC6068AD`、`275C8CC28AC7C05DEDED009B48CE75C42F92E7B5BD753BEDE299FCC76753E351`。
+- 候选与部署后均通过 Animated WebP 3/3 帧、AVS2 关闭 16/16、用户 AVS2/AVS3/VVC 实片、VVC 三解码路径、AV3A native/binaural/HOA/移动对象、5.1.4 至 9.1.6 多声道及完整配置 HTTPS 回归。
+- 根目录已部署新核心，旧核心备份在 `.codex-build/backups/pre-run-30917292112-core-20260804-223831/`；桌面公告已新增 `2026.8.4-3 更新`。
+- 当前没有可公开取得的独立 HE-AAC 960 / DAB+ 运行时样片；现有门禁覆盖官方上游实现的完整回移、15 个 QMF time slots、最终二进制移除旧拒绝路径和编译链接，不宣称完成第三方 DAB+ 样片实播。
 
 ## 成功标准
 
