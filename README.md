@@ -15,6 +15,8 @@
 
 mpv-Yaozhi 针对 Windows 播放链路重构 mpv 核心，重点改善 HDR/Dolby Vision、图形字幕、AV3A / Audio Vivid、多声道 PCM、音频源码直通、HTTPS 网盘播放与中文界面体验
 
+> 此版本应该是目前 对多声道支持最好的MPV版本了
+
 项目基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 并持续维护
 
 > 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版
