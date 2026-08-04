@@ -8,16 +8,9 @@
 [![Architecture](https://img.shields.io/badge/Architecture-x86--64-4C8BF5)](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest)
 [![mpv](https://img.shields.io/badge/mpv-0.41.0--852--g8d504e9c0-691B9A?logo=mpv&logoColor=white)](https://github.com/mpv-player/mpv)
 [![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Custom%20Build-7C3AED)](https://github.com/Yaozhil/mpv-Yaozhi/tree/codex/hdr-pgs-core-fix)
-[![Format Badges](https://img.shields.io/badge/Startup%20Badges-27%20Formats-2EA44F)](#专业起播格式标识)
-[![VVC](https://img.shields.io/badge/VVC%20%2F%20H.266-libvvdec%20%2B%20native-2EA44F)](#新格式速览)
-[![AV3A](https://img.shields.io/badge/AV3A-Audio%20Vivid-7C3AED)](#av3a--audio-vivid)
-[![Dolby Vision](https://img.shields.io/badge/Dolby%20Vision-P5%20%2F%20P7%20FEL%20%2F%20P8-7C3AED)](#能力边界)
-[![HDR Vivid](https://img.shields.io/badge/HDR%20Vivid-Metadata%20Badge-7C3AED)](#能力边界)
-[![Spatial PCM](https://img.shields.io/badge/Spatial%20PCM-5.1.4%20%2F%207.1.4-7C3AED)](#514--714-高度声道输出)
-[![Animated WebP](https://img.shields.io/badge/Animated%20WebP-FFmpeg%209%20Backport-2EA44F)](#新格式速览)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE.md)
 
-[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) · [新格式速览](#新格式速览) · [查看特色功能](#核心能力) · [使用说明](#快速开始) · [问题反馈](https://github.com/Yaozhil/mpv-Yaozhi/issues)
+[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) · [新格式与核心增强](#新格式与核心增强) · [查看特色功能](#核心能力) · [使用说明](#快速开始) · [问题反馈](https://github.com/Yaozhil/mpv-Yaozhi/issues)
 
 </div>
 
@@ -25,29 +18,17 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 > 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版。
 
-## 新格式速览
+## 新格式与核心增强
 
-为了方便区分近期新增内容和依赖本项目自编译核心的能力，下面统一使用三种颜色标记：
+> [!TIP]
+> **近期重点新增**
+>
+> VVC / H.266、AVS2 / AVS3、Animated WebP、HE-AAC 960 / DAB+，以及扩展到 27 种格式的专业起播标识。VVC 默认使用 Fraunhofer HHI `libvvdec`，同时保留 FFmpeg 原生 `vvc` 回退路径；Animated WebP 与 HE-AAC 960 / DAB+ 为 FFmpeg 9.0 能力的定向回移。
 
-| 标记 | 含义 |
-| --- | --- |
-| ![Integrated](https://img.shields.io/badge/Integrated-General-4C8BF5) | 整合包提供的常规播放、识别或交互能力 |
-| ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) | 近期重点新增、回移或明显增强的格式/识别项 |
-| ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 依赖本项目自编译 mpv / FFmpeg / SDL2 核心或定制补丁链 |
-
-| 格式 / 能力 | 标记 | 当前支持重点 |
-| --- | --- | --- |
-| VVC / H.266 | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 默认使用 Fraunhofer HHI `libvvdec`，并保留 FFmpeg 原生 `vvc` 回退路径 |
-| AVS2 / AVS3 视频 | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 覆盖 AVS2 10-bit、AVS3 软件解码及播放结束/切换文件稳定性回归 |
-| AV3A / Audio Vivid / AVS3 Audio | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 支持 MP4、MPEG-TS 与独立音频；提供 `native` PCM 保序和 `binaural` 双耳渲染 |
-| Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4 | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 播放器内部处理并输出 HDR10/PQ 或 SDR，不宣传原生 DV 元数据透传 |
-| HDR Vivid / Audio Vivid 起播标识 | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | HDR Vivid 优先读取核心帧元数据；Audio Vivid 识别 AV3A / AVS3 Audio 音轨 |
-| Animated WebP | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 定向回移 FFmpeg 9.0 动画 WebP 解码能力，无需整体升级 FFmpeg ABI |
-| HE-AAC 960 / DAB+ | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | 定向回移 960 transform / DAB+ 相关解码路径 |
-| 5.1.4 / 7.1.4 PCM 高度声道 | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | SDL/WASAPI 链路保留具名扬声器布局并写入 Windows speaker mask |
-| HDR / DV 图形字幕 | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) | UHD HDR/DV 内封 PGS 可随视频 HDR 链路处理；SDR 字幕保守走 sRGB |
-| Dolby Atmos / DTS:X 源码直通 | ![Integrated](https://img.shields.io/badge/Integrated-General-4C8BF5) | 随 E-AC-3 / TrueHD / DTS-HD 等原始载荷传输，最终取决于 HDMI/eARC 设备 |
-| 起播格式徽章 | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) | 右上角专业徽章扩展到 27 种格式，支持彩色徽章与透明白图标两套样式 |
+> [!IMPORTANT]
+> **自编译核心能力**
+>
+> AV3A / Audio Vivid / AVS3 Audio、HDR Vivid 元数据识别、Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4、HDR/DV 图形字幕，以及 5.1.4 / 7.1.4 PCM 高度声道。以上能力依赖本项目自编译 mpv / FFmpeg / SDL2 和定制补丁链，是本维护版区别于普通配置整合的核心部分。
 
 ## 界面预览
 
@@ -70,12 +51,12 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 | 领域 | 主要能力 |
 | --- | --- |
-| 播放核心 | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) 自维护 Windows x86-64 mpv 核心；D3D11、`gpu-next`、Schannel/libcurl 与定制补丁链 |
-| HDR 与 Dolby Vision | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) HDR10、HDR10+、HLG、Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4 播放；HDR Vivid 元数据识别 |
-| 图形字幕 | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) 按片源自动区分 UHD HDR/DV 内封 PGS 与 SDR 图形字幕；支持手动色彩覆盖及 150–400 nits 独立亮度档位 |
-| 沉浸声音频 | ![Yaozhi Core](https://img.shields.io/badge/Yaozhi%20Core-Required-7C3AED) AV3A / Audio Vivid / AVS3 Audio 解码；5.1.4 / 7.1.4 PCM 高度声道布局；对象与 HOA 双耳渲染模式 |
+| 播放核心 | 自维护 Windows x86-64 mpv 核心；D3D11、`gpu-next`、Schannel/libcurl 与定制补丁链 |
+| HDR 与 Dolby Vision | HDR10、HDR10+、HLG、Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4 播放；HDR Vivid 元数据识别 |
+| 图形字幕 | 按片源自动区分 UHD HDR/DV 内封 PGS 与 SDR 图形字幕；支持手动色彩覆盖及 150–400 nits 独立亮度档位 |
+| 沉浸声音频 | AV3A / Audio Vivid / AVS3 Audio 解码；5.1.4 / 7.1.4 PCM 高度声道布局；对象与 HOA 双耳渲染模式 |
 | 音频源码直通 | AC-3、E-AC-3、Dolby TrueHD、DTS、DTS-HD HRA/MA；支持相应载荷中的 Dolby Atmos 与 DTS:X |
-| 中文交互 | ![New](https://img.shields.io/badge/New-Enhanced-2EA44F) 深度定制 uosc、中文统计信息、弹幕、片头片尾、音乐模式、播放历史与专业起播格式标识 |
+| 中文交互 | 深度定制 uosc、中文统计信息、弹幕、片头片尾、音乐模式、播放历史与专业起播格式标识 |
 | 网络与媒体库 | AList/OpenList、HTTPS 媒体直链、Windows 系统证书链、签名 URL 历史记录与本地蓝光 ISO |
 
 ## 重点增强
