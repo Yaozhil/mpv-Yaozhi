@@ -1,0 +1,1318 @@
+diff --git a/configure b/configure
+index 2aa1cd6..343164a 100644
+--- a/configure
++++ b/configure
+@@ -3323,6 +3323,7 @@ vp9_decoder_select="videodsp vp9_parser cbs_vp9 vp9_superframe_split_bsf"
+ vvc_decoder_select="cabac cbs_h266 golomb videodsp vvc_sei"
+ wcmv_decoder_select="inflate_wrapper"
+ webp_decoder_select="vp8_decoder"
++webp_anim_decoder_select="vp8_decoder"
+ wmalossless_decoder_select="llauddsp"
+ wmapro_decoder_select="sinewin wma_freqs"
+ wmav1_decoder_select="sinewin wma_freqs"
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+index f98e5af..f4e96ce 100644
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -844,6 +844,7 @@ OBJS-$(CONFIG_WBMP_DECODER)            += wbmpdec.o
+ OBJS-$(CONFIG_WBMP_ENCODER)            += wbmpenc.o
+ OBJS-$(CONFIG_WCMV_DECODER)            += wcmv.o
+ OBJS-$(CONFIG_WEBP_DECODER)            += webp.o
++OBJS-$(CONFIG_WEBP_ANIM_DECODER)       += webp.o
+ OBJS-$(CONFIG_WEBVTT_DECODER)          += webvttdec.o ass.o
+ OBJS-$(CONFIG_WEBVTT_ENCODER)          += webvttenc.o ass_split.o
+ OBJS-$(CONFIG_WMALOSSLESS_DECODER)     += wmalosslessdec.o wma_common.o
+diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
+index 7b46c44..c6459d4 100644
+--- a/libavcodec/allcodecs.c
++++ b/libavcodec/allcodecs.c
+@@ -395,6 +395,7 @@ extern const FFCodec ff_vqc_decoder;
+ extern const FFCodec ff_vvc_decoder;
+ extern const FFCodec ff_wbmp_decoder;
+ extern const FFCodec ff_wbmp_encoder;
++extern const FFCodec ff_webp_anim_decoder;
+ extern const FFCodec ff_webp_decoder;
+ extern const FFCodec ff_wcmv_decoder;
+ extern const FFCodec ff_wrapped_avframe_encoder;
+diff --git a/libavcodec/codec_desc.c b/libavcodec/codec_desc.c
+index e813c13..e8dacf9 100644
+--- a/libavcodec/codec_desc.c
++++ b/libavcodec/codec_desc.c
+@@ -2009,6 +2009,14 @@ static const AVCodecDescriptor codec_descriptors[] = {
+                      AV_CODEC_PROP_LOSSLESS,
+         .mime_types= MT("image/jxs"),
+     },
++    {
++        .id        = AV_CODEC_ID_WEBP_ANIM,
++        .type      = AVMEDIA_TYPE_VIDEO,
++        .name      = "webp_anim",
++        .long_name = NULL_IF_CONFIG_SMALL("Animated WebP"),
++        .props     = AV_CODEC_PROP_LOSSY | AV_CODEC_PROP_LOSSLESS,
++        .mime_types= MT("image/webp"),
++    },
+ 
+     /* various PCM "codecs" */
+     {
+diff --git a/libavcodec/codec_id.h b/libavcodec/codec_id.h
+index d30c0b0..28217fe 100644
+--- a/libavcodec/codec_id.h
++++ b/libavcodec/codec_id.h
+@@ -332,6 +332,7 @@ enum AVCodecID {
+     AV_CODEC_ID_APV,
+     AV_CODEC_ID_PRORES_RAW,
+     AV_CODEC_ID_JPEGXS,
++    AV_CODEC_ID_WEBP_ANIM,
+ 
+     /* various PCM "codecs" */
+     AV_CODEC_ID_FIRST_AUDIO = 0x10000,     ///< A dummy id pointing at the start of audio codecs
+diff --git a/libavcodec/webp.c b/libavcodec/webp.c
+index 62967a3..7de7d90 100644
+--- a/libavcodec/webp.c
++++ b/libavcodec/webp.c
+@@ -2,6 +2,7 @@
+  * WebP (.webp) image decoder
+  * Copyright (c) 2013 Aneesh Dogra <aneesh@sugarlabs.org>
+  * Copyright (c) 2013 Justin Ruggles <justin.ruggles@gmail.com>
++ * Copyright (c) 2020 Pexeso Inc.
+  *
+  * This file is part of FFmpeg.
+  *
+@@ -35,11 +36,16 @@
+  * Exif metadata
+  * ICC profile
+  *
++ * @author Josef Zlomek, Pexeso Inc. <josef@pex.com>
++ * Animation
++ *
+  * Unimplemented:
+- *   - Animation
+  *   - XMP metadata
+  */
+ 
++#include "config_components.h"
++
++#include "libavutil/colorspace.h"
+ #include "libavutil/imgutils.h"
+ #include "libavutil/mem.h"
+ 
+@@ -1574,3 +1580,626 @@ const FFCodec ff_webp_decoder = {
+     .caps_internal  = FF_CODEC_CAP_ICC_PROFILES |
+                       FF_CODEC_CAP_USES_PROGRESSFRAMES,
+ };
++
++#if CONFIG_WEBP_ANIM_DECODER
++
++#define ANMF_FLAG_DISPOSE  (1 << 0)
++#define ANMF_FLAG_NO_BLEND (1 << 1)
++
++typedef struct AnimatedWebPContext {
++    WebPContext w;
++
++    AVFrame *canvas;                    /* AVFrame for canvas */
++    AVFrame *subframe;                  /* AVFrame for subframe */
++    int canvas_width;                   /* canvas width */
++    int canvas_height;                  /* canvas height */
++    int anmf_flags;                     /* frame flags from ANMF chunk */
++    int pos_x;                          /* frame position X */
++    int pos_y;                          /* frame position Y */
++    int duration;                       /* frame duration */
++    int prev_anmf_flags;                /* previous frame flags from ANMF chunk */
++    int prev_width;                     /* previous frame width */
++    int prev_height;                    /* previous frame height */
++    int prev_pos_x;                     /* previous frame position X */
++    int prev_pos_y;                     /* previous frame position Y */
++    uint8_t background_argb[4];         /* background color in ARGB format */
++    uint8_t background_yuva[4];         /* background color in YUVA format */
++} AnimatedWebPContext;
++
++/*
++ * Blend src (foreground) into dst (background), in ARGB format.
++ * pos_x, pos_y is the position in dst.
++ */
++static void blend_alpha_argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
++{
++    for (int y = 0; y < src->height; y++) {
++        const uint8_t *src_argb = src->data[0] +          y  * src->linesize[0];
++        uint8_t       *dst_argb = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * sizeof(uint32_t);
++        for (int x = 0; x < src->width; x++) {
++            int src_alpha = src_argb[0];
++            int dst_alpha = dst_argb[0];
++
++            if (src_alpha == 255) {
++                memcpy(dst_argb, src_argb, sizeof(uint32_t));
++            } else if (src_alpha == 0) {
++                // no-op
++            } else {
++                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
++                int blend_alpha = src_alpha + tmp_alpha;
++                int scale = (1UL << 24) / blend_alpha;
++
++                dst_argb[0] = blend_alpha;
++                dst_argb[1] = (((uint32_t) (src_argb[1] * src_alpha + dst_argb[1] * tmp_alpha)) * scale) >> 24;
++                dst_argb[2] = (((uint32_t) (src_argb[2] * src_alpha + dst_argb[2] * tmp_alpha)) * scale) >> 24;
++                dst_argb[3] = (((uint32_t) (src_argb[3] * src_alpha + dst_argb[3] * tmp_alpha)) * scale) >> 24;
++            }
++            src_argb += sizeof(uint32_t);
++            dst_argb += sizeof(uint32_t);
++        }
++    }
++}
++
++/*
++ * Blend src (foreground) into dst (background), in YUVA format.
++ * pos_x, pos_y is the position in dst.
++ */
++static void blend_alpha_yuva(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
++{
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(src->format);
++
++    int plane_y = desc->comp[0].plane;
++    int plane_u = desc->comp[1].plane;
++    int plane_v = desc->comp[2].plane;
++    int plane_a = desc->comp[3].plane;
++
++    // blend U & V planes first, because the later step may modify alpha plane
++    for (int y = 0; y < AV_CEIL_RSHIFT(src->height, 1); y++) {
++        int tile_h = FFMIN(src->height - y * 2, 2);
++        const uint8_t *src_u = src->data[plane_u] +                 y  * src->linesize[plane_u];
++        const uint8_t *src_v = src->data[plane_v] +                 y  * src->linesize[plane_v];
++        uint8_t       *dst_u = dst->data[plane_u] + ((pos_y >> 1) + y) * dst->linesize[plane_u] + (pos_x >> 1);
++        uint8_t       *dst_v = dst->data[plane_v] + ((pos_y >> 1) + y) * dst->linesize[plane_v] + (pos_x >> 1);
++        for (int x = 0; x < AV_CEIL_RSHIFT(src->width, 1); x++) {
++            int tile_w = FFMIN(src->width - x * 2, 2);
++            // calculate the average alpha of the tile
++            int src_alpha = 0;
++            int dst_alpha = 0;
++            for (int yy = 0; yy < tile_h; yy++) {
++                for (int xx = 0; xx < tile_w; xx++) {
++                    src_alpha += src->data[plane_a][(y * 2 + yy) * src->linesize[plane_a] +
++                                                    (x * 2 + xx)];
++                    dst_alpha += dst->data[plane_a][(((pos_y >> 1) + y) * 2 + yy) * dst->linesize[plane_a] +
++                                                    (((pos_x >> 1) + x) * 2 + xx)];
++                }
++            }
++            int shift = (tile_h == 2) + (tile_w == 2);
++            src_alpha = AV_CEIL_RSHIFT(src_alpha, shift);
++            dst_alpha = AV_CEIL_RSHIFT(dst_alpha, shift);
++
++            if (src_alpha == 255) {
++                *dst_u = *src_u;
++                *dst_v = *src_v;
++            } else if (src_alpha == 0) {
++                // no-op
++            } else {
++                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
++                int blend_alpha = src_alpha + tmp_alpha;
++                int scale = (1UL << 24) / blend_alpha;
++                *dst_u = (((uint32_t) (*src_u * src_alpha + *dst_u * tmp_alpha)) * scale) >> 24;
++                *dst_v = (((uint32_t) (*src_v * src_alpha + *dst_v * tmp_alpha)) * scale) >> 24;
++            }
++            src_u += 1;
++            src_v += 1;
++            dst_u += 1;
++            dst_v += 1;
++        }
++    }
++
++    // blend Y & A planes
++    for (int y = 0; y < src->height; y++) {
++        const uint8_t *src_y = src->data[plane_y] +          y  * src->linesize[plane_y];
++        const uint8_t *src_a = src->data[plane_a] +          y  * src->linesize[plane_a];
++        uint8_t       *dst_y = dst->data[plane_y] + (pos_y + y) * dst->linesize[plane_y] + pos_x;
++        uint8_t       *dst_a = dst->data[plane_a] + (pos_y + y) * dst->linesize[plane_a] + pos_x;
++        for (int x = 0; x < src->width; x++) {
++            int src_alpha = *src_a;
++            int dst_alpha = *dst_a;
++
++            if (src_alpha == 255) {
++                *dst_y = *src_y;
++                *dst_a = 255;
++            } else if (src_alpha == 0) {
++                // no-op
++            } else {
++                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
++                int blend_alpha = src_alpha + tmp_alpha;
++                int scale = (1UL << 24) / blend_alpha;
++                *dst_y = (((uint32_t) (*src_y * src_alpha + *dst_y * tmp_alpha)) * scale) >> 24;
++                *dst_a = blend_alpha;
++            }
++            src_y += 1;
++            src_a += 1;
++            dst_y += 1;
++            dst_a += 1;
++        }
++    }
++}
++
++static av_always_inline void webp_yuva2argb(uint8_t *out, int Y, int U, int V, int A)
++{
++    // variables used in macros
++    const uint8_t *cm = ff_crop_tab + MAX_NEG_CROP;
++    uint8_t r, g, b;
++    int y, cb, cr;
++    int r_add, g_add, b_add;
++
++    YUV_TO_RGB1_CCIR(U, V);
++    YUV_TO_RGB2_CCIR(r, g, b, Y);
++
++    out[0] = av_clip_uint8(A);
++    out[1] = av_clip_uint8(r);
++    out[2] = av_clip_uint8(g);
++    out[3] = av_clip_uint8(b);
++}
++
++static void copy_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
++{
++    const AVPixFmtDescriptor *src_desc = av_pix_fmt_desc_get(src->format);
++
++    int alpha   = src_desc->nb_components > 3;
++    int plane_y = src_desc->comp[0].plane;
++    int plane_u = src_desc->comp[1].plane;
++    int plane_v = src_desc->comp[2].plane;
++    int plane_a = src_desc->comp[3].plane;
++
++    for (int y = 0; y < src->height; y++) {
++        const uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
++        const uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
++        const uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
++        const uint8_t *src_a = NULL;
++        uint8_t       *dst_argb = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
++        if (alpha)
++            src_a = src->data[plane_a] + y * src->linesize[plane_a];
++
++        for (int x = 0; x < src->width; x++) {
++            webp_yuva2argb(dst_argb, *src_y, *src_u, *src_v, (alpha ? *src_a : 255));
++            src_y += 1;
++            src_u += x & 1;
++            src_v += x & 1;
++            if (alpha)
++                src_a += 1;
++            dst_argb += sizeof(uint32_t);
++        }
++    }
++}
++
++static void blend_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
++{
++    const AVPixFmtDescriptor *src_desc = av_pix_fmt_desc_get(src->format);
++
++    int plane_y = src_desc->comp[0].plane;
++    int plane_u = src_desc->comp[1].plane;
++    int plane_v = src_desc->comp[2].plane;
++    int plane_a = src_desc->comp[3].plane;
++
++    for (int y = 0; y < src->height; y++) {
++        const uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
++        const uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
++        const uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
++        const uint8_t *src_a = src->data[plane_a] +  y       * src->linesize[plane_a];
++        uint8_t       *dst_argb = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
++
++        for (int x = 0; x < src->width; x++) {
++            int src_alpha = *src_a;
++            int dst_alpha = dst_argb[0];
++
++            if (src_alpha == 255) {
++                webp_yuva2argb(dst_argb, *src_y, *src_u, *src_v, src_alpha);
++            } else if (src_alpha == 0) {
++                // no-op
++            } else {
++                uint8_t tmp[4];
++                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
++                int blend_alpha = src_alpha + tmp_alpha;
++                int scale = (1UL << 24) / blend_alpha;
++
++                webp_yuva2argb(tmp, *src_y, *src_u, *src_v, src_alpha);
++
++                dst_argb[0] = blend_alpha;
++                dst_argb[1] = (((uint32_t) (tmp[1] * src_alpha + dst_argb[1] * tmp_alpha)) * scale) >> 24;
++                dst_argb[2] = (((uint32_t) (tmp[2] * src_alpha + dst_argb[2] * tmp_alpha)) * scale) >> 24;
++                dst_argb[3] = (((uint32_t) (tmp[3] * src_alpha + dst_argb[3] * tmp_alpha)) * scale) >> 24;
++            }
++
++            src_y += 1;
++            src_u += x & 1;
++            src_v += x & 1;
++            src_a += 1;
++            dst_argb += sizeof(uint32_t);
++        }
++    }
++}
++
++static int blend_subframe_into_canvas(AnimatedWebPContext *s)
++{
++    AVFrame *canvas = s->canvas;
++    AVFrame *frame = s->subframe;
++
++    if ((s->anmf_flags & ANMF_FLAG_NO_BLEND)
++        || frame->format == AV_PIX_FMT_YUV420P) {
++        // do not blend, overwrite
++
++        if (canvas->format == AV_PIX_FMT_ARGB) {
++            if (canvas->format == frame->format) {
++                const uint8_t *src = frame->data[0];
++                uint8_t       *dst = canvas->data[0] +
++                                     s->pos_y * canvas->linesize[0] +
++                                     s->pos_x * sizeof(uint32_t);
++                for (int y = 0; y < s->w.height; y++) {
++                    memcpy(dst, src, s->w.width * sizeof(uint32_t));
++                    src += frame->linesize[0];
++                    dst += canvas->linesize[0];
++                }
++            } else {
++                copy_yuva2argb(canvas, frame, s->pos_x, s->pos_y);
++            }
++        } else /* if (canvas->format == AV_PIX_FMT_YUVA420P) */ {
++            const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
++
++            for (int comp = 0; comp < desc->nb_components; comp++) {
++                int plane = desc->comp[comp].plane;
++                int shift = (comp == 1 || comp == 2) ? 1 : 0;
++                const uint8_t *src = frame->data[plane];
++                uint8_t       *dst = canvas->data[plane] +
++                                     (s->pos_y >> shift) * canvas->linesize[plane] +
++                                     (s->pos_x >> shift);
++                for (int y = 0; y < AV_CEIL_RSHIFT(s->w.height, shift); y++) {
++                    memcpy(dst, src, AV_CEIL_RSHIFT(s->w.width, shift));
++                    src += frame->linesize[plane];
++                    dst += canvas->linesize[plane];
++                }
++            }
++
++            if (canvas->format == AV_PIX_FMT_YUVA420P && desc->nb_components < 4) {
++                // frame does not have alpha, set alpha to 255
++                const AVPixFmtDescriptor *canvas_desc = av_pix_fmt_desc_get(canvas->format);
++                int plane = canvas_desc->comp[3].plane;
++                uint8_t *dst = canvas->data[plane] + s->pos_y * canvas->linesize[plane] + s->pos_x;
++                for (int y = 0; y < s->w.height; y++) {
++                    memset(dst, 255, s->w.width);
++                    dst += canvas->linesize[plane];
++                }
++            }
++        }
++    } else {
++        // alpha blending
++
++        if (canvas->format == AV_PIX_FMT_ARGB) {
++            if (canvas->format == frame->format) {
++                blend_alpha_argb(canvas, frame, s->pos_x, s->pos_y);
++            } else {
++                blend_yuva2argb(canvas, frame, s->pos_x, s->pos_y);
++            }
++        } else /* if (canvas->format == AV_PIX_FMT_YUVA420P) */ {
++            blend_alpha_yuva(canvas, frame, s->pos_x, s->pos_y);
++        }
++    }
++
++    return 0;
++}
++
++/**
++ * Fill a rectangle on the canvas with the background color (transparent black
++ * by default, or the color from the ANIM chunk if provided by the demuxer).
++ */
++static void fill_canvas_rect(AnimatedWebPContext *s, int pos_x, int pos_y, int width, int height)
++{
++    AVFrame *canvas = s->canvas;
++
++    if (canvas->format == AV_PIX_FMT_ARGB) {
++        uint32_t bg_color = AV_RN32(s->background_argb);
++        int is_repeatable = (bg_color == ((bg_color & 0xff) * 0x01010101));
++        for (int y = 0; y < height; y++) {
++            uint32_t *dst = (uint32_t *) (canvas->data[0] + (pos_y + y) * canvas->linesize[0]) + pos_x;
++            if (is_repeatable) {
++                memset(dst, bg_color, width * sizeof(uint32_t));
++            } else {
++                for (int x = 0; x < width; x++)
++                    dst[x] = bg_color;
++            }
++        }
++    } else /* if (canvas->format == AV_PIX_FMT_YUVA420P) */ {
++        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(canvas->format);
++        for (int comp = 0; comp < desc->nb_components; comp++) {
++            int shift = (comp == 1 || comp == 2) ? 1 : 0;
++            int plane = desc->comp[comp].plane;
++            uint8_t *dst = canvas->data[plane] + (pos_y >> shift) * canvas->linesize[plane] + (pos_x >> shift);
++            for (int y = 0; y < AV_CEIL_RSHIFT(height, shift); y++) {
++                memset(dst, s->background_yuva[plane], AV_CEIL_RSHIFT(width, shift));
++                dst += canvas->linesize[plane];
++            }
++        }
++    }
++}
++
++static int allocate_canvas(AnimatedWebPContext *s, int format)
++{
++    s->w.avctx->pix_fmt = format;
++    int ret = ff_set_dimensions(s->w.avctx, s->canvas_width, s->canvas_height);
++    if (ret < 0)
++        return ret;
++    return ff_reget_buffer(s->w.avctx, s->canvas, 0);
++}
++
++static int prepare_canvas(AnimatedWebPContext *s, int key_frame, int format)
++{
++    int ret;
++
++    /**
++     * Clear the canvas on keyframes and frames that overwrite the entire
++     * canvas.
++     */
++    if (key_frame ||
++        ((s->anmf_flags & ANMF_FLAG_NO_BLEND) &&
++         (s->pos_x == 0) && (s->pos_x + s->w.width == s->canvas_width) &&
++         (s->pos_y == 0) && (s->pos_y + s->w.height == s->canvas_height)))
++        av_frame_unref(s->canvas);
++
++    if (!s->canvas->buf[0]) {
++        /* Allocate new canvas frame */
++        ret = allocate_canvas(s, format);
++        if (ret < 0)
++            return ret;
++        /* ... and initialize it. */
++        fill_canvas_rect(s, 0, 0, s->canvas->width, s->canvas->height);
++    } else {
++        if (format == AV_PIX_FMT_ARGB && s->canvas->format == AV_PIX_FMT_YUVA420P) {
++            /**
++             * If we have a lossless frame following a lossy frame, we upgrade
++             * the canvas to ARGB, but we don't convert the canvas back to YUVA
++             * if there is a lossy frame following a lossless frame.
++             */
++            AVFrame *yuva_canvas = av_frame_clone(s->canvas);
++            if (!yuva_canvas)
++                return AVERROR(ENOMEM);
++            av_frame_unref(s->canvas);
++            ret = allocate_canvas(s, AV_PIX_FMT_ARGB);
++            if (ret < 0) {
++                av_frame_free(&yuva_canvas);
++                return ret;
++            }
++            copy_yuva2argb(s->canvas, yuva_canvas, 0, 0);
++            av_frame_free(&yuva_canvas);
++        } else {
++            /**
++             * The decode frame function returns a reference to the canvas,
++             * therefore we have to ensure it is writable before using it
++             * for a new frame.
++             */
++            ret = av_frame_make_writable(s->canvas);
++            if (ret < 0)
++                return ret;
++        }
++        /* Dispose of previous frame if needed. */
++        if (s->prev_anmf_flags & ANMF_FLAG_DISPOSE)
++            fill_canvas_rect(s, s->prev_pos_x, s->prev_pos_y, s->prev_width, s->prev_height);
++    }
++
++    return 0;
++}
++
++static int webp_anim_decode_frame(AVCodecContext *avctx, AVFrame *p,
++                                  int *got_frame, AVPacket *avpkt)
++{
++    AnimatedWebPContext *s = avctx->priv_data;
++    int key_frame = (avpkt->flags & AV_PKT_FLAG_KEY);
++    int ret;
++
++    GetByteContext gb;
++    bytestream2_init(&gb, avpkt->data, avpkt->size);
++
++    /* Parse ANMF header. */
++    s->pos_x      = bytestream2_get_le24(&gb) * 2;
++    s->pos_y      = bytestream2_get_le24(&gb) * 2;
++    s->w.width    = bytestream2_get_le24(&gb) + 1;
++    s->w.height   = bytestream2_get_le24(&gb) + 1;
++    s->duration   = bytestream2_get_le24(&gb);
++    s->anmf_flags = bytestream2_get_byte(&gb);
++
++    av_log(avctx, AV_LOG_DEBUG,
++           "ANMF frame pos: %dx%d size: %dx%d duration: %d\n",
++           s->pos_x, s->pos_y, s->w.width, s->w.height, s->duration);
++
++    /* Reset alpha field from previous frame. */
++    s->w.has_alpha = 0;
++
++    /* Parse ANMF subchunks. */
++    while (bytestream2_get_bytes_left(&gb) > 8) {
++        uint32_t chunk_type = bytestream2_get_le32(&gb);
++        uint32_t chunk_size = bytestream2_get_le32(&gb);
++
++        if (chunk_size == UINT32_MAX) {
++            ret = AVERROR_INVALIDDATA;
++            goto end;
++        }
++        chunk_size += chunk_size & 1;
++
++        if (bytestream2_get_bytes_left(&gb) < chunk_size) {
++            /* we seem to be running out of data, but it could also be that the
++             * bitstream has trailing junk leading to bogus chunk_size. */
++            break;
++        }
++
++        switch (chunk_type) {
++        case MKTAG('A', 'L', 'P', 'H'): {
++            if (chunk_size == 0) {
++                av_log(avctx, AV_LOG_ERROR, "invalid ALPHA chunk size\n");
++                ret = AVERROR_INVALIDDATA;
++                goto end;
++            }
++            int alpha_header     = bytestream2_get_byte(&gb);
++            s->w.alpha_data      = avpkt->data + bytestream2_tell(&gb);
++            s->w.alpha_data_size = chunk_size - 1;
++            bytestream2_skip(&gb, s->w.alpha_data_size);
++
++            int filter_m    = (alpha_header >> 2) & 0x03;
++            int compression =  alpha_header       & 0x03;
++
++            if (compression > ALPHA_COMPRESSION_VP8L) {
++                av_log(avctx, AV_LOG_VERBOSE,
++                       "skipping unsupported ALPHA chunk\n");
++            } else {
++                s->w.has_alpha         = 1;
++                s->w.alpha_compression = compression;
++                s->w.alpha_filter      = filter_m;
++            }
++
++            break;
++        }
++        case MKTAG('V', 'P', '8', ' '):
++            if (*got_frame) {
++                av_log(avctx, AV_LOG_VERBOSE, "Ignoring extra VP8 chunk\n");
++                bytestream2_skip(&gb, chunk_size);
++                break;
++            }
++            ret = vp8_lossy_decode_frame(avctx, s->subframe, got_frame,
++                                         avpkt->data + bytestream2_tell(&gb),
++                                         chunk_size);
++            if (ret < 0)
++                goto end;
++            ret = prepare_canvas(s, key_frame, AV_PIX_FMT_YUVA420P);
++            if (ret < 0)
++                goto end;
++            bytestream2_skip(&gb, chunk_size);
++            break;
++        case MKTAG('V', 'P', '8', 'L'):
++            if (*got_frame) {
++                av_log(avctx, AV_LOG_VERBOSE, "Ignoring extra VP8L chunk\n");
++                bytestream2_skip(&gb, chunk_size);
++                break;
++            }
++            ret = vp8_lossless_decode_frame(avctx, s->subframe, got_frame,
++                                            avpkt->data + bytestream2_tell(&gb),
++                                            chunk_size, 0);
++            if (ret < 0)
++                goto end;
++            ret = prepare_canvas(s, key_frame, AV_PIX_FMT_ARGB);
++            if (ret < 0)
++                goto end;
++#if FF_API_CODEC_PROPS
++FF_DISABLE_DEPRECATION_WARNINGS
++            avctx->properties |= FF_CODEC_PROPERTY_LOSSLESS;
++FF_ENABLE_DEPRECATION_WARNINGS
++#endif
++            bytestream2_skip(&gb, chunk_size);
++            break;
++        default:
++            av_log(avctx, AV_LOG_VERBOSE, "skipping unknown chunk: %s\n",
++                   av_fourcc2str(chunk_type));
++            bytestream2_skip(&gb, chunk_size);
++            break;
++        }
++    }
++
++    if (!*got_frame) {
++        av_log(avctx, AV_LOG_ERROR, "image data not found\n");
++        ret = AVERROR_INVALIDDATA;
++        goto end;
++    }
++
++    /* The subframe dimensions may have been modified by update_canvas_size() */
++    if (s->pos_x + s->w.width  > s->canvas_width ||
++        s->pos_y + s->w.height > s->canvas_height) {
++        av_log(avctx, AV_LOG_ERROR,
++               "Frame (%dx%d at pos %dx%d) does not fit into canvas (%dx%d)\n",
++               s->w.width, s->w.height, s->pos_x, s->pos_y,
++               s->canvas_width, s->canvas_height);
++        ret = AVERROR_INVALIDDATA;
++        goto end;
++    }
++
++    ret = blend_subframe_into_canvas(s);
++    if (ret < 0)
++        goto end;
++
++    ret = av_frame_ref(p, s->canvas);
++    if (ret < 0)
++        goto end;
++
++    p->pict_type = key_frame ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_P;
++    p->pts       = avpkt->pts;
++    p->duration  = s->duration;
++
++    s->prev_anmf_flags = s->anmf_flags;
++    s->prev_width      = s->w.width;
++    s->prev_height     = s->w.height;
++    s->prev_pos_x      = s->pos_x;
++    s->prev_pos_y      = s->pos_y;
++
++    ret = avpkt->size;
++
++end:
++    av_frame_unref(s->subframe);
++    return ret;
++}
++
++static av_cold int webp_anim_decode_init(AVCodecContext *avctx)
++{
++    AnimatedWebPContext *s = avctx->priv_data;
++
++    s->w.avctx = avctx;
++    s->canvas_width  = avctx->width;
++    s->canvas_height = avctx->height;
++
++    s->canvas = av_frame_alloc();
++    if (!s->canvas)
++        return AVERROR(ENOMEM);
++
++    s->subframe = av_frame_alloc();
++    if (!s->subframe)
++        return AVERROR(ENOMEM);
++
++    /**
++     * Use background color if it was provided by the demuxer. Otherwise, the
++     * background color will be 0x00000000 (transparent black).
++     */
++    if (avctx->extradata_size >= 4) {
++        s->background_argb[0] = avctx->extradata[3];
++        s->background_argb[1] = avctx->extradata[2];
++        s->background_argb[2] = avctx->extradata[1];
++        s->background_argb[3] = avctx->extradata[0];
++    }
++
++    /* Convert background color to YUVA. */
++    const uint8_t *argb = s->background_argb;
++    s->background_yuva[0] = RGB_TO_Y_CCIR(argb[1], argb[2], argb[3]);
++    s->background_yuva[1] = RGB_TO_U_CCIR(argb[1], argb[2], argb[3], 0);
++    s->background_yuva[2] = RGB_TO_V_CCIR(argb[1], argb[2], argb[3], 0);
++    s->background_yuva[3] = argb[0];
++
++    return webp_decode_init(avctx);
++}
++
++static av_cold int webp_anim_decode_close(AVCodecContext *avctx)
++{
++    AnimatedWebPContext *s = avctx->priv_data;
++
++    av_frame_free(&s->canvas);
++    av_frame_free(&s->subframe);
++
++    return webp_decode_close(avctx);
++}
++
++const FFCodec ff_webp_anim_decoder = {
++    .p.name         = "webp_anim",
++    CODEC_LONG_NAME("Animated WebP image"),
++    .p.type         = AVMEDIA_TYPE_VIDEO,
++    .p.id           = AV_CODEC_ID_WEBP_ANIM,
++    .priv_data_size = sizeof(AnimatedWebPContext),
++    .init           = webp_anim_decode_init,
++    FF_CODEC_DECODE_CB(webp_anim_decode_frame),
++    .close          = webp_anim_decode_close,
++    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SLICE_THREADS,
++    .caps_internal  = FF_CODEC_CAP_USES_PROGRESSFRAMES,
++};
++#endif /* CONFIG_WEBP_ANIM_DECODER */
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 2be9a92..1dc5d95 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -646,6 +646,7 @@ OBJS-$(CONFIG_WEBM_MUXER)                += matroskaenc.o matroska.o \
+                                             avlanguage.o
+ OBJS-$(CONFIG_WEBM_DASH_MANIFEST_MUXER)  += webmdashenc.o
+ OBJS-$(CONFIG_WEBM_CHUNK_MUXER)          += webm_chunk.o
++OBJS-$(CONFIG_WEBP_ANIM_DEMUXER)         += webp_anim_dec.o
+ OBJS-$(CONFIG_WEBP_MUXER)                += webpenc.o
+ OBJS-$(CONFIG_WEBVTT_DEMUXER)            += webvttdec.o subtitles.o
+ OBJS-$(CONFIG_WEBVTT_MUXER)              += webvttenc.o
+diff --git a/libavformat/allformats.c b/libavformat/allformats.c
+index 5f44c49..ae567ce 100644
+--- a/libavformat/allformats.c
++++ b/libavformat/allformats.c
+@@ -518,6 +518,7 @@ extern const FFInputFormat  ff_webm_dash_manifest_demuxer;
+ extern const FFOutputFormat ff_webm_dash_manifest_muxer;
+ extern const FFOutputFormat ff_webm_chunk_muxer;
+ extern const FFOutputFormat ff_webp_muxer;
++extern const FFInputFormat  ff_webp_anim_demuxer;
+ extern const FFInputFormat  ff_webvtt_demuxer;
+ extern const FFOutputFormat ff_webvtt_muxer;
+ extern const FFInputFormat  ff_wsaud_demuxer;
+diff --git a/libavformat/webp_anim_dec.c b/libavformat/webp_anim_dec.c
+new file mode 100644
+index 0000000..badc36f
+--- /dev/null
++++ b/libavformat/webp_anim_dec.c
+@@ -0,0 +1,371 @@
++/*
++ * Animated WebP demuxer
++ * Copyright (c) 2020 Pexeso Inc.
++ * Copyright (c) 2026 Ramiro Polla
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * Animated WebP demuxer.
++ */
++
++#include "avio_internal.h"
++#include "demux.h"
++#include "avformat.h"
++#include "internal.h"
++#include "libavutil/intreadwrite.h"
++#include "libavutil/mem.h"
++#include "libavutil/opt.h"
++
++#define VP8X_FLAG_ANIMATION             0x02
++#define VP8X_FLAG_XMP_METADATA          0x04
++#define VP8X_FLAG_EXIF_METADATA         0x08
++#define VP8X_FLAG_ALPHA                 0x10
++#define VP8X_FLAG_ICC                   0x20
++
++typedef struct WebPAnimDemuxContext {
++    const AVClass *class;
++
++    /**
++     * Minimum allowed delay between frames in milliseconds.
++     * Values below this threshold are considered to be invalid
++     * and set to value of default_delay.
++     */
++    int min_delay;
++    int max_delay;
++    int default_delay;
++
++    /*
++     * loop options
++     */
++    int ignore_loop;                ///< ignore loop setting
++    int loop_count;                 ///< number of times to loop the animation
++    int cur_loop;                   ///< current loop counter
++
++    /*
++     * variables for the key frame detection
++     */
++    int cur_frame;                  ///< number of frames of the current animation file
++    int vp8x_flags;
++
++    int has_iccp;
++    int has_exif;
++    int has_anim;
++    int has_xmp;
++
++    int usebgcolor;
++
++    int64_t first_anmf_offset;
++} WebPAnimDemuxContext;
++
++/**
++ * Major web browsers display WebPs at ~10-15fps when rate is not
++ * explicitly set or have too low values. We assume default rate to be 10.
++ * Default delay = 1000 microseconds / 10fps = 100 milliseconds per frame.
++ */
++#define WEBP_DEFAULT_DELAY   100
++/**
++ * By default delay values less than this threshold considered to be invalid.
++ */
++#define WEBP_MIN_DELAY       10
++
++static int webp_anim_probe(const AVProbeData *p)
++{
++    const uint8_t *b = p->buf;
++
++    if (AV_RL32(b)      == MKTAG('R', 'I', 'F', 'F') &&
++        AV_RL32(b +  8) == MKTAG('W', 'E', 'B', 'P') &&
++        AV_RL32(b + 12) == MKTAG('V', 'P', '8', 'X') &&
++        AV_RL32(b + 16) == 10 &&
++        (b[20] & VP8X_FLAG_ANIMATION))
++        return AVPROBE_SCORE_MAX;
++
++    return 0;
++}
++
++static int webp_anim_read_header(AVFormatContext *s)
++{
++    WebPAnimDemuxContext *ctx = s->priv_data;
++    AVIOContext *pb = s->pb;
++    int ret;
++
++    /* Check for signature. */
++    if (avio_rl32(pb) != MKTAG('R', 'I', 'F', 'F'))
++        return AVERROR_INVALIDDATA;
++    avio_skip(pb, 4); /* file size */
++    if (avio_rl32(pb) != MKTAG('W', 'E', 'B', 'P'))
++        return AVERROR_INVALIDDATA;
++
++    /* VP8X must be first chunk */
++    if (avio_rl32(pb) != MKTAG('V', 'P', '8', 'X') ||
++        avio_rl32(pb) != 10 /* chunk size */)
++        return AVERROR_INVALIDDATA;
++    ctx->vp8x_flags = avio_r8(pb);
++    if (!(ctx->vp8x_flags & VP8X_FLAG_ANIMATION))
++        return AVERROR_INVALIDDATA;
++    avio_skip(pb, 3);
++
++    AVStream *st = avformat_new_stream(s, NULL);
++    if (!st)
++        return AVERROR(ENOMEM);
++
++    avpriv_set_pts_info(st, 64, 1, 1000);
++    st->codecpar->format     = AV_PIX_FMT_ARGB;
++    st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
++    st->codecpar->codec_id   = AV_CODEC_ID_WEBP_ANIM;
++    st->codecpar->width      = avio_rl24(pb) + 1;
++    st->codecpar->height     = avio_rl24(pb) + 1;
++    st->start_time           = 0;
++
++    int explode = (s->error_recognition & AV_EF_EXPLODE);
++    int loglevel = explode ? AV_LOG_ERROR : AV_LOG_WARNING;
++    while (1) {
++        int64_t offset = avio_tell(pb);
++        uint32_t fourcc = avio_rl32(pb);
++        uint32_t size = avio_rl32(pb);
++
++        av_log(s, AV_LOG_DEBUG, "Chunk %s of size %u at offset %" PRId64 "\n",
++               av_fourcc2str(fourcc), size, offset);
++
++        if (size == UINT32_MAX)
++            return AVERROR_INVALIDDATA;
++        size += size & 1;
++
++        if (avio_feof(pb))
++            break;
++
++        switch (fourcc) {
++        case MKTAG('I', 'C', 'C', 'P'):
++            if (ctx->has_iccp) {
++                av_log(s, loglevel, "Extra ICCP chunk found\n");
++                if (explode)
++                    return AVERROR_INVALIDDATA;
++                avio_skip(pb, size);
++            } else {
++                if (!(ctx->vp8x_flags & VP8X_FLAG_ICC)) {
++                    av_log(s, loglevel,
++                           "ICCP chunk present, but ICC Profile bit not set in the VP8X header\n");
++                    if (explode)
++                        return AVERROR_INVALIDDATA;
++                }
++
++                AVPacketSideData *sd = av_packet_side_data_new(&st->codecpar->coded_side_data,
++                                                               &st->codecpar->nb_coded_side_data,
++                                                               AV_PKT_DATA_ICC_PROFILE, size, 0);
++                if (!sd)
++                    return AVERROR(ENOMEM);
++                ret = avio_read(pb, sd->data, size);
++                if (ret < 0)
++                    return ret;
++                ctx->has_iccp = 1;
++            }
++            break;
++        case MKTAG('A', 'N', 'I', 'M'):
++            if (ctx->has_anim) {
++                av_log(s, loglevel, "Extra ANIM chunk found\n");
++                if (explode)
++                    return AVERROR_INVALIDDATA;
++                avio_skip(pb, size);
++            } else {
++                if (size != 6)
++                    return AVERROR_INVALIDDATA;
++                uint32_t bg_color = avio_rb32(pb);
++                ctx->loop_count   = avio_rl16(pb);
++                if (ctx->usebgcolor) {
++                    st->codecpar->extradata = av_mallocz(4 + AV_INPUT_BUFFER_PADDING_SIZE);
++                    if (!st->codecpar->extradata)
++                        return AVERROR(ENOMEM);
++                    AV_WB32(st->codecpar->extradata, bg_color);
++                    st->codecpar->extradata_size = 4;
++                }
++                av_log(s, AV_LOG_DEBUG,
++                       "ANIM: background BGRA 0x%08x loop count %d\n",
++                       bg_color, ctx->loop_count);
++                ctx->has_anim = 1;
++            }
++            break;
++        case MKTAG('A', 'N', 'M', 'F'):
++            if (!ctx->has_anim) {
++                av_log(s, loglevel,
++                       "ANMF chunk present, but no previous ANIM chunk found\n");
++                if (explode)
++                    return AVERROR_INVALIDDATA;
++                ctx->loop_count = 1;
++            } else if (!ctx->ignore_loop && ctx->loop_count != 1) {
++                int64_t file_size = avio_size(pb);
++                if (file_size < 0 || offset < 0 ||
++                    (ret = ffio_ensure_seekback(pb, file_size - offset)) < 0) {
++                    av_log(s, AV_LOG_WARNING,
++                           "Could not ensure seekback, will not loop\n");
++                    ctx->loop_count = 1;
++                }
++            }
++            ctx->first_anmf_offset = offset;
++            ret = avio_seek(pb, -8, SEEK_CUR);
++            if (ret < 0)
++                return ret;
++            return 0;
++        default:
++            av_log(s, AV_LOG_WARNING, "Skipping chunk: %s\n", av_fourcc2str(fourcc));
++            avio_skip(pb, size);
++            break;
++        }
++    }
++
++    return AVERROR_INVALIDDATA;
++}
++
++static int webp_anim_read_packet(AVFormatContext *s, AVPacket *pkt)
++{
++    WebPAnimDemuxContext *ctx = s->priv_data;
++    AVIOContext *pb = s->pb;
++    int ret;
++
++    int explode = (s->error_recognition & AV_EF_EXPLODE);
++    int loglevel = explode ? AV_LOG_ERROR : AV_LOG_WARNING;
++    while (1) {
++        int64_t offset = avio_tell(pb);
++        uint32_t fourcc = avio_rl32(pb);
++        uint32_t size = avio_rl32(pb);
++
++        if (size == UINT32_MAX)
++            return AVERROR_INVALIDDATA;
++        size += size & 1;
++
++        if (avio_feof(pb)) {
++            if (!ctx->ignore_loop &&
++                (ctx->loop_count == 0 || ++ctx->cur_loop < ctx->loop_count)) {
++                ctx->cur_frame = 0;
++                ret = avio_seek(pb, ctx->first_anmf_offset, SEEK_SET);
++                if (ret < 0)
++                    return ret;
++                continue;
++            }
++            break;
++        }
++
++        av_log(s, AV_LOG_DEBUG, "Chunk %s of size %u at offset %" PRId64 "\n",
++               av_fourcc2str(fourcc), size, offset);
++
++        switch (fourcc) {
++        case MKTAG('A', 'N', 'M', 'F'):
++            if (size < 16)
++                return AVERROR_INVALIDDATA;
++            ret = av_get_packet(pb, pkt, size);
++            if (ret < 0)
++                return ret;
++            if (!ctx->cur_frame++)
++                pkt->flags |= AV_PKT_FLAG_KEY;
++            pkt->pts = AV_NOPTS_VALUE;
++            pkt->dts = AV_NOPTS_VALUE;
++            uint32_t duration = AV_RL24(pkt->data + 12);
++            if (duration <= ctx->min_delay)
++                duration = ctx->default_delay;
++            pkt->duration = FFMIN(duration, ctx->max_delay);
++            return ret;
++        case MKTAG('E', 'X', 'I', 'F'):
++            if (ctx->has_exif) {
++                av_log(s, loglevel, "Extra EXIF chunk found\n");
++                if (explode)
++                    return AVERROR_INVALIDDATA;
++                avio_skip(pb, size);
++            } else {
++                if (!(ctx->vp8x_flags & VP8X_FLAG_EXIF_METADATA)) {
++                    av_log(s, loglevel,
++                           "EXIF chunk present, but EXIF bit not set in the VP8X header\n");
++                    if (explode)
++                        return AVERROR_INVALIDDATA;
++                }
++
++                AVStream *st = s->streams[0];
++                AVPacketSideData *sd = av_packet_side_data_new(&st->codecpar->coded_side_data,
++                                                               &st->codecpar->nb_coded_side_data,
++                                                               AV_PKT_DATA_EXIF, size, 0);
++                if (!sd)
++                    return AVERROR(ENOMEM);
++                ret = avio_read(pb, sd->data, size);
++                if (ret < 0)
++                    return ret;
++                ctx->has_exif = 1;
++            }
++            break;
++        case MKTAG('X', 'M', 'P', ' '):
++            if (ctx->has_xmp) {
++                av_log(s, loglevel, "Extra XMP chunk found\n");
++                if (explode)
++                    return AVERROR_INVALIDDATA;
++                avio_skip(pb, size);
++            } else {
++                if (!(ctx->vp8x_flags & VP8X_FLAG_XMP_METADATA)) {
++                    av_log(s, loglevel,
++                           "XMP chunk present, but XMP bit not set in the VP8X header\n");
++                    if (explode)
++                        return AVERROR_INVALIDDATA;
++                }
++
++                uint8_t *xmp = av_malloc(size + 1);
++                if (!xmp)
++                    return AVERROR(ENOMEM);
++                ret = ffio_read_size(pb, xmp, size);
++                if (ret < 0) {
++                    av_free(xmp);
++                    return ret;
++                }
++                xmp[size] = '\0';
++                av_dict_set(&s->metadata, "xmp", xmp, AV_DICT_DONT_STRDUP_VAL);
++                ctx->has_xmp = 1;
++            }
++            break;
++        default:
++            av_log(s, AV_LOG_WARNING, "Skipping chunk: %s\n", av_fourcc2str(fourcc));
++            avio_skip(pb, size);
++            break;
++        }
++    }
++
++    return AVERROR_EOF;
++}
++
++static const AVOption options[] = {
++    { "min_delay",      "minimum valid delay between frames (in milliseconds)", offsetof(WebPAnimDemuxContext, min_delay),     AV_OPT_TYPE_INT,  {.i64 = WEBP_MIN_DELAY},     0, 1000 * 60, AV_OPT_FLAG_DECODING_PARAM },
++    { "max_webp_delay", "maximum valid delay between frames (in milliseconds)", offsetof(WebPAnimDemuxContext, max_delay),     AV_OPT_TYPE_INT,  {.i64 = 0xffffff},           0, 0xffffff,  AV_OPT_FLAG_DECODING_PARAM },
++    { "default_delay",  "default delay between frames (in milliseconds)",       offsetof(WebPAnimDemuxContext, default_delay), AV_OPT_TYPE_INT,  {.i64 = WEBP_DEFAULT_DELAY}, 0, 1000 * 60, AV_OPT_FLAG_DECODING_PARAM },
++    { "ignore_loop",    "ignore loop setting",                                  offsetof(WebPAnimDemuxContext, ignore_loop),   AV_OPT_TYPE_BOOL, {.i64 = 1},                  0, 1,         AV_OPT_FLAG_DECODING_PARAM },
++    { "usebgcolor",     "use background color from ANIM chunk",                 offsetof(WebPAnimDemuxContext, usebgcolor),    AV_OPT_TYPE_BOOL, {.i64 = 0},                  0, 1,         AV_OPT_FLAG_DECODING_PARAM },
++    { NULL },
++};
++
++static const AVClass demuxer_class = {
++    .class_name = "Animated WebP demuxer",
++    .item_name  = av_default_item_name,
++    .option     = options,
++    .version    = LIBAVUTIL_VERSION_INT,
++    .category   = AV_CLASS_CATEGORY_DEMUXER,
++};
++
++const FFInputFormat ff_webp_anim_demuxer = {
++    .p.name         = "webp_anim",
++    .p.long_name    = NULL_IF_CONFIG_SMALL("Animated WebP"),
++    .p.flags        = AVFMT_GENERIC_INDEX,
++    .p.priv_class   = &demuxer_class,
++    .priv_data_size = sizeof(WebPAnimDemuxContext),
++    .read_probe     = webp_anim_probe,
++    .read_header    = webp_anim_read_header,
++    .read_packet    = webp_anim_read_packet,
++};
+diff --git a/tests/fate/image.mak b/tests/fate/image.mak
+index 334c421..be80309 100644
+--- a/tests/fate/image.mak
++++ b/tests/fate/image.mak
+@@ -589,6 +589,19 @@ FATE_WEBP-$(call DEMDEC, IMAGE2, WEBP) += $(FATE_WEBP)
+ FATE_IMAGE_FRAMECRC += $(FATE_WEBP-yes)
+ fate-webp: $(FATE_WEBP-yes)
+ 
++FATE_WEBP_ANIM += fate-webp-anim
++fate-webp-anim: CMD = framecrc -reinit_filter 0 -i $(TARGET_SAMPLES)/webp/anim.webp
++
++FATE_WEBP_ANIM += fate-webp-chfmt1
++fate-webp-chfmt1: CMD = framecrc -reinit_filter 0 -i $(TARGET_SAMPLES)/webp/anim_rgb_yuv.webp
++
++FATE_WEBP_ANIM += fate-webp-chfmt2
++fate-webp-chfmt2: CMD = framecrc -reinit_filter 0 -i $(TARGET_SAMPLES)/webp/anim_yuv_rgb.webp
++
++FATE_WEBP_ANIM-$(call DEMDEC, WEBP_ANIM, WEBP_ANIM) += $(FATE_WEBP_ANIM)
++FATE_IMAGE_FRAMECRC += $(FATE_WEBP_ANIM-yes)
++fate-webp: $(FATE_WEBP_ANIM-yes)
++
+ FATE_IMAGE_FRAMECRC-$(call DEMDEC, IMAGE2, XFACE) += fate-xface
+ fate-xface: CMD = framecrc -i $(TARGET_SAMPLES)/xface/lena.xface
+ 
+diff --git a/tests/ref/fate/webp-anim b/tests/ref/fate/webp-anim
+new file mode 100644
+index 0000000..1c9ec18
+--- /dev/null
++++ b/tests/ref/fate/webp-anim
+@@ -0,0 +1,22 @@
++#tb 0: 1/25
++#media_type 0: video
++#codec_id 0: rawvideo
++#dimensions 0: 100x70
++#sar 0: 0/1
++0,          0,          0,        2,    28000, 0x2023ba6e
++0,          2,          2,        2,    28000, 0x4292b778
++0,          4,          4,        2,    28000, 0x1c972ef1
++0,          6,          6,        2,    28000, 0xa98d8d04
++0,          8,          8,        2,    28000, 0xd323b6af
++0,         10,         10,        2,    28000, 0x508aba99
++0,         12,         12,        2,    28000, 0x5c672dda
++0,         14,         14,        2,    28000, 0xc8961ebb
++0,         16,         16,       25,    28000, 0x82460e1b
++0,         41,         41,        2,    28000, 0x3debbfc9
++0,         43,         43,        2,    28000, 0x427ab31f
++0,         45,         45,        2,    28000, 0x6bbdec2e
++0,         47,         47,        2,    28000, 0x5690b56b
++0,         49,         49,        2,    28000, 0xb62963f3
++0,         51,         51,        2,    28000, 0x68dd37b2
++0,         53,         53,        2,    28000, 0x465c47d2
++0,         55,         55,      250,    28000, 0xa92033df
+diff --git a/tests/ref/fate/webp-chfmt1 b/tests/ref/fate/webp-chfmt1
+new file mode 100644
+index 0000000..bd0de28
+--- /dev/null
++++ b/tests/ref/fate/webp-chfmt1
+@@ -0,0 +1,23 @@
++#tb 0: 2/25
++#media_type 0: video
++#codec_id 0: rawvideo
++#dimensions 0: 488x488
++#sar 0: 0/1
++0,          0,          0,        1,   952576, 0x5f74d3ae
++0,          1,          1,        1,   952576, 0x8b0f6cfe
++0,          2,          2,        1,   952576, 0x3e47771e
++0,          3,          3,        1,   952576, 0x63816e85
++0,          4,          4,        1,   952576, 0xf7a5d79a
++0,          5,          5,        6,   952576, 0x50c75e53
++0,         11,         11,        1,   952576, 0x54d4cdd3
++0,         12,         12,        1,   952576, 0x00648e70
++0,         13,         13,        2,   952576, 0xd9f7f652
++0,         15,         15,        2,   952576, 0x34c15d97
++0,         17,         17,        2,   952576, 0x94b9ab85
++0,         19,         19,        7,   952576, 0xa702612f
++0,         26,         26,        1,   952576, 0xd248d21e
++0,         27,         27,        1,   952576, 0xc0f7ffcf
++0,         28,         28,        9,   952576, 0x4e281a20
++0,         37,         37,        1,   952576, 0x114617ec
++0,         38,         38,        1,   952576, 0x79ba99a5
++0,         39,         39,        9,   952576, 0x79cb003d
+diff --git a/tests/ref/fate/webp-chfmt2 b/tests/ref/fate/webp-chfmt2
+new file mode 100644
+index 0000000..4a051a7
+--- /dev/null
++++ b/tests/ref/fate/webp-chfmt2
+@@ -0,0 +1,106 @@
++#tb 0: 3/100
++#media_type 0: video
++#codec_id 0: rawvideo
++#dimensions 0: 320x240
++#sar 0: 0/1
++0,          0,          0,        1,   192000, 0x41a50269
++0,          1,          1,        1,   307200, 0x170dc2e7
++0,          2,          2,        1,   307200, 0x25adb534
++0,          3,          3,        1,   307200, 0xe37daa55
++0,          4,          4,        1,   307200, 0x187fa021
++0,          5,          5,        1,   192000, 0x1e11fb1d
++0,          6,          6,        1,   307200, 0x870dbcf9
++0,          7,          7,        1,   307200, 0x6c53b4d5
++0,          8,          8,        1,   307200, 0x297dad60
++0,          9,          9,        1,   307200, 0x356780cc
++0,         10,         10,        1,   192000, 0xd263ff87
++0,         11,         11,        1,   307200, 0x41e557a6
++0,         12,         12,        1,   307200, 0x6b3d2750
++0,         13,         13,        1,   307200, 0xa0b3dcb4
++0,         14,         14,        1,   192000, 0xed44fcca
++0,         15,         15,        1,   307200, 0xf4eb4353
++0,         16,         16,        1,   307200, 0x29eff4ec
++0,         17,         17,        1,   307200, 0x3def11c6
++0,         18,         18,        1,   307200, 0xa13e8339
++0,         19,         19,        1,   192000, 0x78211c16
++0,         20,         20,        1,   307200, 0xf1e69519
++0,         21,         21,        1,   307200, 0x756913c1
++0,         22,         22,        1,   307200, 0x537cd21d
++0,         23,         23,        1,   307200, 0x282fb169
++0,         24,         24,        1,   192000, 0xee15e30e
++0,         25,         25,        1,   307200, 0x7c549b11
++0,         26,         26,        1,   307200, 0xceff6a5b
++0,         27,         27,        1,   307200, 0x0beb593a
++0,         28,         28,        1,   307200, 0xfaf84be8
++0,         29,         29,        1,   307200, 0xc2ab4155
++0,         30,         30,        1,   192000, 0x993bdae7
++0,         31,         31,        1,   192000, 0xf451d946
++0,         32,         32,        1,   307200, 0x73cb95ad
++0,         33,         33,        1,   307200, 0xd0e3a2ca
++0,         34,         34,        1,   192000, 0x4796f2ee
++0,         35,         35,        1,   307200, 0x22a50d7f
++0,         36,         36,        1,   307200, 0x5166ce51
++0,         37,         37,        1,   307200, 0x8ae72516
++0,         38,         38,        1,   307200, 0xdda8fa84
++0,         39,         39,        1,   192000, 0x4436fc7a
++0,         40,         40,        1,   307200, 0x003e6cb2
++0,         41,         41,        1,   307200, 0xc7d15f95
++0,         42,         42,        1,   307200, 0xa9005ba9
++0,         43,         43,        1,   307200, 0x1d525d04
++0,         44,         44,        1,   192000, 0x40a7f673
++0,         45,         45,        1,   307200, 0xf720ad87
++0,         46,         46,        1,   307200, 0xbf95a068
++0,         47,         47,        1,   307200, 0xda1799b8
++0,         48,         48,        1,   307200, 0xafcd93b9
++0,         49,         49,        1,   192000, 0x12a8f922
++0,         50,         50,        1,   307200, 0xb1aeb380
++0,         51,         51,        1,   307200, 0x4f40a913
++0,         52,         52,        1,   307200, 0xa21aa2f1
++0,         53,         53,        1,   307200, 0x47b6a5c9
++0,         54,         54,        1,   192000, 0x582bff4e
++0,         55,         55,        1,   307200, 0xb5adbc97
++0,         56,         56,        1,   307200, 0xf361afc5
++0,         57,         57,        1,   307200, 0x318eab20
++0,         58,         58,        1,   307200, 0x29fca9f6
++0,         59,         59,        1,   192000, 0xc769ff48
++0,         60,         60,        1,   307200, 0x27dab52f
++0,         61,         61,        1,   307200, 0xcd85aa7b
++0,         62,         62,        1,   307200, 0x7e46acac
++0,         63,         63,        1,   307200, 0xe651a3b6
++0,         64,         64,        1,   307200, 0x47b79976
++0,         65,         65,        1,   192000, 0x4eb3fd83
++0,         66,         66,        1,   307200, 0x20d8aa01
++0,         67,         67,        1,   307200, 0xbbd8a039
++0,         68,         68,        1,   307200, 0x93839dc4
++0,         69,         69,        1,   307200, 0xa31a9afd
++0,         70,         70,        1,   192000, 0xc95d04f3
++0,         71,         71,        1,   307200, 0x56bbcadd
++0,         72,         72,        1,   307200, 0x9751c327
++0,         73,         73,        1,   307200, 0xed92c1f5
++0,         74,         74,        1,   307200, 0xaa15c002
++0,         75,         75,        1,   192000, 0x2549049c
++0,         76,         76,        1,   307200, 0x33c6cd3e
++0,         77,         77,        1,   307200, 0x6d21c3e6
++0,         78,         78,        1,   307200, 0xac63bf54
++0,         79,         79,        1,   192000, 0xb9d308b0
++0,         80,         80,        1,   307200, 0xf6ecdab5
++0,         81,         81,        1,   307200, 0xbc4dd187
++0,         82,         82,        1,   307200, 0xc7d7ce88
++0,         83,         83,        1,   307200, 0x5e7dcb40
++0,         84,         84,        1,   192000, 0x9c7a0a6a
++0,         85,         85,        1,   307200, 0xe966d1fc
++0,         86,         86,        1,   307200, 0xd60fc684
++0,         87,         87,        1,   307200, 0xbf7fc486
++0,         88,         88,        1,   307200, 0x6b40bdf6
++0,         89,         89,        1,   307200, 0xf1feb31d
++0,         90,         90,        1,   192000, 0x022701d8
++0,         91,         91,        1,   307200, 0x5b41c9c8
++0,         92,         92,        1,   307200, 0x565abe9d
++0,         93,         93,        1,   307200, 0xc47eb9c1
++0,         94,         94,        1,   192000, 0x904f0405
++0,         95,         95,        1,   307200, 0xb839c468
++0,         96,         96,        1,   307200, 0x04f2b5dc
++0,         97,         97,        1,   307200, 0x04c3aef3
++0,         98,         98,        1,   307200, 0xd3b0a870
++0,         99,         99,        1,   307200, 0x26b2a119
++0,        100,        100,        1,   192000, 0x7c6bfe5e

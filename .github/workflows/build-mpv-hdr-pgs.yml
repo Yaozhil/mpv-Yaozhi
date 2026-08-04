@@ -8,6 +8,7 @@ on:
       - ".github/workflows/build-mpv-hdr-pgs.yml"
       - "build/av3a/**"
       - "build/vvc/**"
+      - "build/ffmpeg9/**"
       - "build/hdr-pgs/**"
       - "build/uosc-danmaku/**"
       - "portable_config/mpv.conf"
@@ -194,6 +195,10 @@ jobs:
             packages/ffmpeg-9002-av3a-frame-parser.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-nvenc-sdk-13.1.patch" \
             packages/ffmpeg-9003-nvenc-sdk-13.1.patch
+          cp "$GITHUB_WORKSPACE/build/ffmpeg9/ffmpeg-animated-webp-backport.patch" \
+            packages/ffmpeg-9007-animated-webp.patch
+          cp "$GITHUB_WORKSPACE/build/ffmpeg9/ffmpeg-he-aac-960-backport.patch" \
+            packages/ffmpeg-9008-he-aac-960.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
             packages/davs2-9000-const-correctness.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-error-recovery.patch" \
@@ -263,6 +268,8 @@ jobs:
               "ffmpeg-9001-av3a-multiframe-probe.patch",
               "ffmpeg-9002-av3a-frame-parser.patch",
               "ffmpeg-9003-nvenc-sdk-13.1.patch",
+              "ffmpeg-9007-animated-webp.patch",
+              "ffmpeg-9008-he-aac-960.patch",
           ]
           source_files = [
               ("ffmpeg-9006-libvvdec.c", "libavcodec/libvvdec.c"),
@@ -482,6 +489,12 @@ jobs:
           grep -Fq 'ffmpeg-9002-av3a-frame-parser.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9003-nvenc-sdk-13.1.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9007-animated-webp.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9008-he-aac-960.patch' packages/ffmpeg.cmake
+          grep -Fq 'ff_webp_anim_decoder' packages/ffmpeg-9007-animated-webp.patch
+          grep -Fq 'ff_webp_anim_demuxer' packages/ffmpeg-9007-animated-webp.patch
+          grep -Fq 'int numTimeSlots = fl960 ? 15 : 16;' \
+            packages/ffmpeg-9008-he-aac-960.patch
           grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
           grep -Fq 'av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
             packages/avs3-audiodec.cmake
@@ -525,7 +538,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/vvc/**', 'build/audio-layout/**', 'patches/*.patch') }}
+          key: mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/vvc/**', 'build/ffmpeg9/**', 'build/audio-layout/**', 'patches/*.patch') }}
           restore-keys: |
             mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-
 
@@ -723,8 +736,26 @@ jobs:
           grep -qi libarcdav3a artifact-check/ffmpeg.strings
           grep -qi libvvdec artifact-check/ffmpeg.strings
           grep -Fq av3a_render artifact-check/ffmpeg.strings
+          grep -Fq webp_anim artifact-check/ffmpeg.strings
+          if grep -Fq 'SBR with 960 frame length' artifact-check/ffmpeg.strings; then
+            echo "::error::FFmpeg still contains the HE-AAC 960 unsupported path"
+            exit 1
+          fi
           grep -Fq 'force binaural rendering for spatial AV3A streams' \
             artifact-check/ffmpeg.strings
+
+          ffmpeg_src=winbuild/mpv-winbuild-cmake/src_packages/ffmpeg
+          grep -Fq 'const FFCodec ff_webp_anim_decoder' \
+            "$ffmpeg_src/libavcodec/webp.c"
+          grep -Fq 'const FFInputFormat ff_webp_anim_demuxer' \
+            "$ffmpeg_src/libavformat/webp_anim_dec.c"
+          grep -Fq 'int numTimeSlots = fl960 ? 15 : 16;' \
+            "$ffmpeg_src/libavcodec/aacsbr_template.c"
+          if grep -Fq 'SBR with 960 frame length' \
+            "$ffmpeg_src/libavcodec/aac/aacdec.c"; then
+            echo "::error::HE-AAC 960 is still rejected in the patched source"
+            exit 1
+          fi
 
           mkdir artifact
           cp "$archive" artifact/
@@ -756,6 +787,9 @@ jobs:
           cp \
             build/av3a/tests/verify-davs2-thread-close.ps1 \
             artifact/
+          cp \
+            build/ffmpeg9/tests/verify-ffmpeg9-playback.ps1 \
+            artifact/
           (
             cd artifact
             sha256sum \
@@ -768,6 +802,7 @@ jobs:
               verify-spatial-layouts.ps1 \
               verify-vvdec.ps1 \
               verify-davs2-thread-close.ps1 \
+              verify-ffmpeg9-playback.ps1 \
               > SHA256SUMS.txt
           )
 
@@ -825,6 +860,11 @@ jobs:
 
           $mpv = Join-Path $mpvDir "mpv.com"
           $ffmpeg = Join-Path $artifact "ffmpeg-av3a-validation.exe"
+
+          & (Join-Path $artifact "verify-ffmpeg9-playback.ps1") `
+            -FFmpegPath $ffmpeg `
+            -MpvPath $mpv `
+            -WorkDir (Join-Path $artifact "ffmpeg9-playback-validation")
 
           & (Join-Path $artifact "verify-davs2-thread-close.ps1") `
             -MpvPath $mpv `
