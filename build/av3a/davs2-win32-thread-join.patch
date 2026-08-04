@@ -1,0 +1,54 @@
+diff --git a/source/common/threadpool.cc b/source/common/threadpool.cc
+index 20d1694..c6b0217 100644
+--- a/source/common/threadpool.cc
++++ b/source/common/threadpool.cc
+@@ -342,7 +342,11 @@ void davs2_threadpool_delete(davs2_threadpool_t *pool)
+     davs2_thread_mutex_unlock(&pool->run.mutex); /* unlock */
+ 
+     for (i = 0; i < pool->num_total_threads; i++) {
++#if HAVE_WIN32THREAD
++        davs2_thread_join(&pool->thread_handle[i], NULL);
++#else
+         davs2_thread_join(pool->thread_handle[i], NULL);
++#endif
+     }
+ 
+     davs2_threadpool_list_delete(&pool->uninit);
+diff --git a/source/common/win32thread.cc b/source/common/win32thread.cc
+index 51100f0..90c5916 100644
+--- a/source/common/win32thread.cc
++++ b/source/common/win32thread.cc
+@@ -109,17 +109,17 @@ int davs2_thread_create(davs2_thread_t *thread, const davs2_thread_attr_t *attr,
+     return !thread->handle;
+ }
+ 
+-int davs2_thread_join(davs2_thread_t thread, void **value_ptr)
++int davs2_thread_join(davs2_thread_t *thread, void **value_ptr)
+ {
+-    DWORD ret = WaitForSingleObject(thread.handle, INFINITE);
++    DWORD ret = WaitForSingleObject(thread->handle, INFINITE);
+ 
+     if (ret != WAIT_OBJECT_0) {
+         return -1;
+     }
+     if (value_ptr) {
+-        *value_ptr = thread.ret;
++        *value_ptr = thread->ret;
+     }
+-    CloseHandle(thread.handle);
++    CloseHandle(thread->handle);
+ 
+     return 0;
+ }
+diff --git a/source/common/win32thread.h b/source/common/win32thread.h
+index 3d2daab..40e71ed 100644
+--- a/source/common/win32thread.h
++++ b/source/common/win32thread.h
+@@ -72,6 +72,6 @@ int davs2_thread_create(davs2_thread_t *thread, const davs2_thread_attr_t *attr,
+                         void *(*start_routine)(void *), void *arg);
+ #define davs2_thread_join FPFX(thread_join)
+-int davs2_thread_join(davs2_thread_t thread, void **value_ptr);
++int davs2_thread_join(davs2_thread_t *thread, void **value_ptr);
+ 
+ #define davs2_thread_mutex_init FPFX(thread_mutex_init)
+ int davs2_thread_mutex_init(davs2_thread_mutex_t *mutex, const davs2_thread_mutexattr_t *attr);

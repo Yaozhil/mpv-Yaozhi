@@ -75,3 +75,13 @@ downmixed in the mpv audio chain. The native mpv checks do not force an
 transport-channel regression. For this diagnostic path, mpv's raw PCM writer
 accepts unknown channel layouts without assigning a speaker mask; WAV output
 keeps the normal WaveExtensible layout restrictions.
+
+The pinned davs2 fork's Windows thread handle is a 32-byte structure. Passing
+it by value to `davs2_thread_join()` lets MinGW emit an aligned 256-bit stack
+load even though the Windows x64 ABI only guarantees 16-byte stack alignment.
+`davs2-win32-thread-join.patch` passes that structure by pointer on the native
+Windows thread path while preserving the scalar POSIX `pthread_t` call.
+`tests/verify-davs2-thread-close.ps1` generates a 16-byte invalid AVS2 probe
+and repeatedly opens and closes `libdavs2` with 13 requested decoder threads;
+the release validation rejects access-violation exits before running the
+larger codec and audio regression suites.

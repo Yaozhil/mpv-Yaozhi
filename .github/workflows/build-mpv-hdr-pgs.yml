@@ -198,6 +198,8 @@ jobs:
             packages/davs2-9000-const-correctness.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-error-recovery.patch" \
             packages/davs2-9001-error-recovery.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/davs2-win32-thread-join.patch" \
+            packages/davs2-9002-win32-thread-join.patch
           cp "$GITHUB_WORKSPACE/build/vvc/vvdec.cmake" \
             packages/vvdec.cmake
           cp "$GITHUB_WORKSPACE/build/vvc/ffmpeg-native-default.patch" \
@@ -341,6 +343,12 @@ jobs:
               "        COMMAND ${EXEC} git apply "
               "${CMAKE_CURRENT_SOURCE_DIR}/"
               "davs2-9001-error-recovery.patch\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9002-win32-thread-join.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9002-win32-thread-join.patch\n"
           )
           if "davs2-9000-const-correctness.patch" not in text:
               anchor = '    UPDATE_COMMAND ""\n'
@@ -492,12 +500,17 @@ jobs:
           grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
           grep -n 'PATCH_COMMAND.*davs2-9000' packages/davs2.cmake
           grep -Fq 'davs2-9001-error-recovery.patch' packages/davs2.cmake
+          grep -Fq 'davs2-9002-win32-thread-join.patch' packages/davs2.cmake
           grep -Fq 'decode_lcu_parse(h, i_level_next' \
             packages/davs2-9001-error-recovery.patch
           grep -Fq 'decode_lcu_recon(h, row_rec, i_level_next' \
             packages/davs2-9001-error-recovery.patch
           grep -Fq 'h->decoding_error == 0 && h->rps.refered_by_others' \
             packages/davs2-9001-error-recovery.patch
+          grep -Fq 'davs2_thread_join(&pool->thread_handle[i], NULL)' \
+            packages/davs2-9002-win32-thread-join.patch
+          grep -Fq 'int davs2_thread_join(davs2_thread_t *thread' \
+            packages/davs2-9002-win32-thread-join.patch
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
@@ -740,6 +753,9 @@ jobs:
           cp \
             build/vvc/tests/verify-vvdec.ps1 \
             artifact/
+          cp \
+            build/av3a/tests/verify-davs2-thread-close.ps1 \
+            artifact/
           (
             cd artifact
             sha256sum \
@@ -751,6 +767,7 @@ jobs:
               verify-stage2.ps1 \
               verify-spatial-layouts.ps1 \
               verify-vvdec.ps1 \
+              verify-davs2-thread-close.ps1 \
               > SHA256SUMS.txt
           )
 
@@ -808,6 +825,10 @@ jobs:
 
           $mpv = Join-Path $mpvDir "mpv.com"
           $ffmpeg = Join-Path $artifact "ffmpeg-av3a-validation.exe"
+
+          & (Join-Path $artifact "verify-davs2-thread-close.ps1") `
+            -MpvPath $mpv `
+            -WorkDir (Join-Path $artifact "davs2-thread-close-validation")
 
           $vvcSample = Join-Path $artifact "CodingToolsSets_A_2.bit"
           Invoke-WebRequest `
