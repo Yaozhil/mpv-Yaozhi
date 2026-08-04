@@ -22,13 +22,16 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 > [!TIP]
 > **近期重点新增**
->
-> VVC / H.266、AVS2 / AVS3、Animated WebP、HE-AAC 960 / DAB+，以及扩展到 27 种格式的专业起播标识。VVC 默认使用 Fraunhofer HHI `libvvdec`，同时保留 FFmpeg 原生 `vvc` 回退路径；Animated WebP 与 HE-AAC 960 / DAB+ 为 FFmpeg 9.0 能力的定向回移。
+> 新增两项 FFmpeg 9.0 的实用播放能力：Animated WebP 动画图片播放、HE-AAC 960 / DAB+ 音频兼容
+> 新增支持：VVC / H.266、AVS2 / AVS3
 
 > [!IMPORTANT]
 > **自编译核心能力**
 >
-> AV3A / Audio Vivid / AVS3 Audio、HDR Vivid 元数据识别、Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4、HDR/DV 图形字幕，以及 5.1.4 / 7.1.4 PCM 高度声道。以上能力依赖本项目自编译 mpv / FFmpeg / SDL2 和定制补丁链，是本维护版区别于普通配置整合的核心部分。
+> 支持 AV3A / Audio Vivid / AVS3 Audio、HDR Vivid 元数据识别
+> 支持解码 Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4
+> 完全覆盖 5.1.4 / 7.1.4 / 9.1.4、9.1.6 常用空间布局
+> 以上能力依赖本项目自编译 mpv / FFmpeg / SDL2 和定制补丁链，是本维护版区别于普通配置整合的核心部分。
 
 ## 界面预览
 
@@ -95,6 +98,8 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 | --- | --- |
 | 5.1.4（10ch） | `FL-FR-FC-LFE-SL-SR-TFL-TFR-TBL-TBR` |
 | 7.1.4（12ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR` |
+| 9.1.4（14ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR-TSL-TSR` |
+| 9.1.6（16ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR-TSL-TSR-WL-WR` |
 
 10/12 声道设备打开已通过 Windows 自动回归，并完成真实多声道设备测试片复测。实际扬声器输出仍取决于声卡、驱动、HDMI/eARC 链路、回音壁或功放对相应布局的支持。
 
