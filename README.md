@@ -14,7 +14,9 @@
 
 </div>
 
-mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 持续维护。项目不仅整理配置与脚本，还提供针对 Windows 播放链路定制的 mpv 核心，重点改善 HDR/Dolby Vision、图形字幕、AV3A / Audio Vivid、多声道 PCM、音频源码直通、HTTPS 网盘播放与中文界面体验。
+mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-config](https://github.com/dyphire/mpv-config) 持续维护。
+
+项目不仅整理配置与脚本，还提供针对 Windows 播放链路定制的 mpv 核心，重点改善 HDR/Dolby Vision、图形字幕、AV3A / Audio Vivid、多声道 PCM、音频源码直通、HTTPS 网盘播放与中文界面体验。
 
 > 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版。
 
