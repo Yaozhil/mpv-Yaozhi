@@ -77,9 +77,30 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 - **音频标识**：Audio Vivid、Dolby Atmos、DTS:X、TrueHD、DTS-HD、AC-4、MPEG-H、FLAC、PCM、AAC 等
 - **菜单路径**：`杳知 > 起播格式标签`
 
+#### 双 VIVID 标识效果
+
+HDR Vivid 画面与 Audio Vivid 音轨可同时识别，并以双标识形式展示：
+
+![HDR Vivid 与 Audio Vivid 双标识展示](docs/images/startup-format-badges-vivid-dual.png)
+
+#### 两套标识样式
+
+**彩色徽章版**
+
+![起播格式标识彩色版总览](docs/images/startup-format-badges-color-overview.png)
+
+**透明白图标版**
+
+![起播格式标识透明白版总览](docs/images/startup-format-badges-white-overview.png)
+
+<details>
+<summary>查看更多实际播放场景</summary>
+
 ![实际播放中的起播格式标识](docs/images/startup-format-badges-playback.png)
 
 ![开场画面中的起播格式标识](docs/images/startup-format-badges-opening.png)
+
+</details>
 
 ### HDR 图形字幕增强
 
