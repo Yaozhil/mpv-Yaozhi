@@ -18,6 +18,8 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 > 本项目是社区维护的第三方整合方案，并非 mpv 官方发行版。
 
+TG群组：https://t.me/mpv_Yaozhi
+
 ## 新格式与核心增强
 
 > [!TIP]
