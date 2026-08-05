@@ -22,21 +22,20 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 > [!TIP]
 > **近期重点新增**
-
-> 新增两项 FFmpeg 9.0 的实用播放能力：
-1. Animated WebP 动画图片播放
-2. HE-AAC 960 / DAB+ 音频兼容
-> 新增支持：VVC / H.266、AVS2 / AVS3
+>
+> - **视频解码**：新增 VVC / H.266、AVS2 10-bit 与 AVS3 软件解码；VVC 默认使用 Fraunhofer HHI `libvvdec`，同时保留 FFmpeg 原生 `vvc` 回退路径。
+> - **图片播放**：定向回移 FFmpeg 9.0 的 Animated WebP 动画解码能力，无需整体升级 FFmpeg ABI。
+> - **音频兼容**：定向回移 FFmpeg 9.0 的 HE-AAC 960 transform / DAB+ 解码路径。
+> - **播放稳定性**：修复 AVS2 在播放结束、切换文件或关闭播放器时的 Windows 间歇崩溃。
 
 > [!IMPORTANT]
-> **自编译核心能力**
-
-> 支持 AV3A / Audio Vivid / AVS3 Audio、HDR Vivid 元数据识别
-
-> 支持解码 Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4
-
-> 完全覆盖 5.1.4 / 7.1.4 / 9.1.4、9.1.6 常用空间布局
-
+> **依赖自编译核心的重点能力**
+>
+> - **国产沉浸声**：AV3A / Audio Vivid / AVS3 Audio 解码，支持 `native` PCM 保序与 `binaural` 双耳渲染。
+> - **HDR 与 Dolby Vision**：HDR Vivid 帧元数据识别；Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4 播放器内部处理。
+> - **HDR 图形字幕**：UHD HDR/DV 内封 PGS 可随视频进入 HDR 映射链，并提供独立色彩与亮度控制。
+> - **空间 PCM**：完整保留 5.1.4（10ch）、7.1.4（12ch）、9.1.4（14ch）与 9.1.6（16ch）具名扬声器布局，避免退化为未知声道或发生换序。
+>
 > 以上能力依赖本项目自编译 mpv / FFmpeg / SDL2 和定制补丁链，是本维护版区别于普通配置整合的核心部分。
 
 ## 界面预览
@@ -63,7 +62,7 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 | 播放核心 | 自维护 Windows x86-64 mpv 核心；D3D11、`gpu-next`、Schannel/libcurl 与定制补丁链 |
 | HDR 与 Dolby Vision | HDR10、HDR10+、HLG、Dolby Vision P5 / P7 MEL/FEL / P8.1 / P8.4 播放；HDR Vivid 元数据识别 |
 | 图形字幕 | 按片源自动区分 UHD HDR/DV 内封 PGS 与 SDR 图形字幕；支持手动色彩覆盖及 150–400 nits 独立亮度档位 |
-| 沉浸声音频 | AV3A / Audio Vivid / AVS3 Audio 解码；5.1.4 / 7.1.4 PCM 高度声道布局；对象与 HOA 双耳渲染模式 |
+| 沉浸声音频 | AV3A / Audio Vivid / AVS3 Audio 解码；5.1.4 / 7.1.4 / 9.1.4 / 9.1.6 PCM 高度声道布局；对象与 HOA 双耳渲染模式 |
 | 音频源码直通 | AC-3、E-AC-3、Dolby TrueHD、DTS、DTS-HD HRA/MA；支持相应载荷中的 Dolby Atmos 与 DTS:X |
 | 中文交互 | 深度定制 uosc、中文统计信息、弹幕、片头片尾、音乐模式、播放历史与专业起播格式标识 |
 | 网络与媒体库 | AList/OpenList、HTTPS 媒体直链、Windows 系统证书链、签名 URL 历史记录与本地蓝光 ISO |
@@ -96,7 +95,7 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 - `binaural` 模式可将对象音频、床层加对象及 HOA 内容渲染为双声道耳机输出。
 - AV3A / Audio Vivid 是播放器解码后输出 PCM，不属于 S/PDIF 源码直通格式。
 
-### 5.1.4 / 7.1.4 高度声道输出
+### 5.1.4 至 9.1.6 高度声道输出
 
 SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的 `WAVEFORMATEXTENSIBLE` speaker mask，避免退化为缺少扬声器语义的 `unknown10` / `unknown12`。
 
@@ -107,7 +106,7 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 | 9.1.4（14ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR-TSL-TSR` |
 | 9.1.6（16ch） | `FL-FR-FC-LFE-BL-BR-SL-SR-TFL-TFR-TBL-TBR-TSL-TSR-WL-WR` |
 
-10/12 声道设备打开已通过 Windows 自动回归，并完成真实多声道设备测试片复测。实际扬声器输出仍取决于声卡、驱动、HDMI/eARC 链路、回音壁或功放对相应布局的支持。
+5.1.4 / 7.1.4 已通过 Windows 10/12 声道设备打开与真实测试片复测；9.1.4 / 9.1.6 已通过 WAV、WavPack、Opus 与 custom/raw PCM 的声道保序回归。实际扬声器输出仍取决于声卡、驱动、Windows 音频接口、HDMI/eARC 链路、回音壁或功放对相应布局的支持。
 
 ### 音频源码直通
 
@@ -131,7 +130,7 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 
 - Windows 10 / 11 64 位
 - 支持 Direct3D 11 的显卡与较新的显卡驱动
-- HDR、音频源码直通及 5.1.4/7.1.4 输出需要对应的显示器、声卡、HDMI/eARC 设备或功放支持
+- HDR、音频源码直通及 5.1.4 至 9.1.6 PCM 输出需要对应的显示器、声卡、Windows 音频接口、HDMI/eARC 设备或功放支持
 
 ### 安装
 
@@ -153,7 +152,7 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 | HDR Vivid | 当前用于帧元数据识别与界面标识；尚未接入专用动态色调映射或显示端透传 |
 | AV3A / Audio Vivid | 支持解码与 PCM 输出；对象/HOA 的扬声器级渲染不等同于普通 `channelmap`，当前显式空间渲染模式为双耳输出 |
 | Dolby Atmos / DTS:X 源码直通 | 依赖原始音轨载荷、Windows 默认输出设备及回音壁/功放支持 |
-| 5.1.4 / 7.1.4 PCM | 软件声道顺序与 Windows speaker mask 已验证；终端设备必须支持对应的 10/12 声道布局 |
+| 5.1.4 至 9.1.6 PCM | 5.1.4 / 7.1.4 的 Windows speaker mask 与设备打开已验证；9.1.4 / 9.1.6 的软件声道顺序与 PCM 保序已验证；终端设备仍须支持对应布局 |
 | 远程 ISO | 当前 AList/OpenList 远程 ISO 不作为正式能力；建议下载到本地后播放 |
 
 ## 验证状态
@@ -162,6 +161,7 @@ SDL PCM 输出链路保留具名扬声器布局，并为 Windows 写入匹配的
 
 - Windows SDL 5.1.4（10ch）与 7.1.4（12ch）实际打开及具名布局校验
 - 真实 7.1.4 测试片逐声道设备复测
+- 5.1.4 / 7.1.4 / 9.1.4 / 9.1.6 的 WAV、WavPack、Opus、canonical/custom/unknown 布局与 PCM 保序回归
 - VVC / H.266、AVS2、AVS3 用户样片与多路径解码回归
 - AV3A 常规多声道、对象音频、HOA、native 与 binaural 链路回归
 - Animated WebP 实播回归；HE-AAC 960 / DAB+ 定向回移的二进制能力门禁
