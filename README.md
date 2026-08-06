@@ -55,7 +55,7 @@ TG群组：https://t.me/mpv_Yaozhi
 
 ### 杳知功能菜单
 
-![杳知菜单](docs/images/yaozhi-menu-showcase.png)
+![杳知菜单](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E6%9D%B3%E7%9F%A5%E8%8F%9C%E5%8D%95%E5%B1%95%E7%A4%BA.png)
 
 </details>
 
