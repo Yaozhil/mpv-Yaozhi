@@ -202,6 +202,8 @@ jobs:
             packages/ffmpeg-9008-he-aac-960.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
             packages/ffmpeg-8998-dovi-split.c
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-registration.patch" \
             packages/ffmpeg-8998-dovi-split-registration.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
@@ -267,6 +269,7 @@ jobs:
               text = text.replace(fork, fork + tag, 1)
 
           patch_files = [
+              "ffmpeg-8997-dovi-split-prerequisites.patch",
               "ffmpeg-8998-dovi-split-registration.patch",
               "ffmpeg-9005-vvc-native-default.patch",
               "ffmpeg-9000-libarcdav3a-hardening.patch",
@@ -499,7 +502,14 @@ jobs:
           grep -Fq 'ffmpeg-9007-animated-webp.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9008-he-aac-960.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8997-dovi-split-prerequisites.patch' packages/ffmpeg.cmake
           grep -Fq '<SOURCE_DIR>/libavcodec/bsf/dovi_split.c' packages/ffmpeg.cmake
+          grep -Fq 'AV_PKT_DATA_HEVC_CONF' \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq 'MATROSKA_BLOCK_ADD_ID_TYPE_HVCE' \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq "MKTAG('h','v','c','E')" \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
           grep -Fq 'dovi_split_bsf_select="hevcparse"' \
             packages/ffmpeg-8998-dovi-split-registration.patch
           grep -Fq 'ff_webp_anim_decoder' packages/ffmpeg-9007-animated-webp.patch
