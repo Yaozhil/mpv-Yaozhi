@@ -1,0 +1,21 @@
+diff --git a/configure b/configure
+--- a/configure
++++ b/configure
+@@ -3761,2 +3761,3 @@
+ dovi_rpu_bsf_select="cbs_h265 cbs_av1 dovi_rpudec dovi_rpuenc"
++dovi_split_bsf_select="hevcparse"
+ dts2pts_bsf_select="cbs_h264 h264parse cbs_h265 hevc_parser"
+diff --git a/libavcodec/bitstream_filters.c b/libavcodec/bitstream_filters.c
+--- a/libavcodec/bitstream_filters.c
++++ b/libavcodec/bitstream_filters.c
+@@ -36,2 +36,3 @@
+ extern const FFBitStreamFilter ff_dovi_rpu_bsf;
++extern const FFBitStreamFilter ff_dovi_split_bsf;
+ extern const FFBitStreamFilter ff_dts2pts_bsf;
+diff --git a/libavcodec/bsf/Makefile b/libavcodec/bsf/Makefile
+--- a/libavcodec/bsf/Makefile
++++ b/libavcodec/bsf/Makefile
+@@ -25,2 +25,3 @@
+ OBJS-$(CONFIG_DOVI_RPU_BSF)               += bsf/dovi_rpu.o
++OBJS-$(CONFIG_DOVI_SPLIT_BSF)             += bsf/dovi_split.o
+ OBJS-$(CONFIG_HEVC_MP4TOANNEXB_BSF)       += bsf/hevc_mp4toannexb.o

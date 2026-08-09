@@ -9,6 +9,7 @@ on:
       - "build/av3a/**"
       - "build/vvc/**"
       - "build/ffmpeg9/**"
+      - "build/dolby-vision/**"
       - "build/hdr-pgs/**"
       - "build/uosc-danmaku/**"
       - "portable_config/mpv.conf"
@@ -199,6 +200,10 @@ jobs:
             packages/ffmpeg-9007-animated-webp.patch
           cp "$GITHUB_WORKSPACE/build/ffmpeg9/ffmpeg-he-aac-960-backport.patch" \
             packages/ffmpeg-9008-he-aac-960.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
+            packages/ffmpeg-8998-dovi-split.c
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-registration.patch" \
+            packages/ffmpeg-8998-dovi-split-registration.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
             packages/davs2-9000-const-correctness.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-error-recovery.patch" \
@@ -262,6 +267,7 @@ jobs:
               text = text.replace(fork, fork + tag, 1)
 
           patch_files = [
+              "ffmpeg-8998-dovi-split-registration.patch",
               "ffmpeg-9005-vvc-native-default.patch",
               "ffmpeg-9000-libarcdav3a-hardening.patch",
               "ffmpeg-9004-libarcdav3a-spatial.patch",
@@ -272,6 +278,7 @@ jobs:
               "ffmpeg-9008-he-aac-960.patch",
           ]
           source_files = [
+              ("ffmpeg-8998-dovi-split.c", "libavcodec/bsf/dovi_split.c"),
               ("ffmpeg-9006-libvvdec.c", "libavcodec/libvvdec.c"),
           ]
           patch = ""
@@ -491,6 +498,10 @@ jobs:
           grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9007-animated-webp.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9008-he-aac-960.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
+          grep -Fq '<SOURCE_DIR>/libavcodec/bsf/dovi_split.c' packages/ffmpeg.cmake
+          grep -Fq 'dovi_split_bsf_select="hevcparse"' \
+            packages/ffmpeg-8998-dovi-split-registration.patch
           grep -Fq 'ff_webp_anim_decoder' packages/ffmpeg-9007-animated-webp.patch
           grep -Fq 'ff_webp_anim_demuxer' packages/ffmpeg-9007-animated-webp.patch
           grep -Fq 'int numTimeSlots = fl960 ? 15 : 16;' \
@@ -743,10 +754,12 @@ jobs:
           fi
           grep -Fq 'force binaural rendering for spatial AV3A streams' \
             artifact-check/ffmpeg.strings
+          grep -Fq 'dovi_split' artifact-check/ffmpeg.strings
 
           mkdir artifact
           cp "$archive" artifact/
           cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
+          cp build/dolby-vision/verify-fel.ps1 artifact/
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
             artifact/AV3A-SYMBOLS.txt
@@ -790,6 +803,7 @@ jobs:
               verify-vvdec.ps1 \
               verify-davs2-thread-close.ps1 \
               verify-ffmpeg9-playback.ps1 \
+              verify-fel.ps1 \
               > SHA256SUMS.txt
           )
 
@@ -847,6 +861,10 @@ jobs:
 
           $mpv = Join-Path $mpvDir "mpv.com"
           $ffmpeg = Join-Path $artifact "ffmpeg-av3a-validation.exe"
+
+          & (Join-Path $artifact "verify-fel.ps1") `
+            -FFmpegPath $ffmpeg `
+            -MpvPath $mpv
 
           & (Join-Path $artifact "verify-ffmpeg9-playback.ps1") `
             -FFmpegPath $ffmpeg `
