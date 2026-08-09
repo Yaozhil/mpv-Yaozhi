@@ -169,6 +169,8 @@ jobs:
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
           cp "$GITHUB_WORKSPACE/patches/0007-swresample-use-native-canonical-input-layout.patch" \
             packages/mpv-9005-swresample-native-layout.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-stream-group-backport-version.patch" \
+            packages/mpv-8999-dovi-stream-group-backport-version.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
@@ -204,6 +206,8 @@ jobs:
             packages/ffmpeg-8998-dovi-split.c
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
             packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-dual-track-stream-group.patch" \
+            packages/ffmpeg-8996-dovi-dual-track-stream-group.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-registration.patch" \
             packages/ffmpeg-8998-dovi-split-registration.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
@@ -270,6 +274,7 @@ jobs:
 
           patch_files = [
               "ffmpeg-8997-dovi-split-prerequisites.patch",
+              "ffmpeg-8996-dovi-dual-track-stream-group.patch",
               "ffmpeg-8998-dovi-split-registration.patch",
               "ffmpeg-9005-vvc-native-default.patch",
               "ffmpeg-9000-libarcdav3a-hardening.patch",
@@ -503,6 +508,7 @@ jobs:
           grep -Fq 'ffmpeg-9008-he-aac-960.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8997-dovi-split-prerequisites.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8996-dovi-dual-track-stream-group.patch' packages/ffmpeg.cmake
           grep -Fq '<SOURCE_DIR>/libavcodec/bsf/dovi_split.c' packages/ffmpeg.cmake
           grep -Fq 'AV_PKT_DATA_HEVC_CONF' \
             packages/ffmpeg-8997-dovi-split-prerequisites.patch
@@ -512,6 +518,16 @@ jobs:
             packages/ffmpeg-8997-dovi-split-prerequisites.patch
           grep -Fq 'dovi_split_bsf_select="hevcparse"' \
             packages/ffmpeg-8998-dovi-split-registration.patch
+          grep -Fq 'AV_STREAM_GROUP_PARAMS_DOLBY_VISION' \
+            packages/ffmpeg-8996-dovi-dual-track-stream-group.patch
+          grep -Fq 'mov_read_vdep' \
+            packages/ffmpeg-8996-dovi-dual-track-stream-group.patch
+          grep -Fq '#define LIBAVFORMAT_VERSION_MICRO 102' \
+            packages/ffmpeg-8996-dovi-dual-track-stream-group.patch
+          grep -Fq 'AV_VERSION_INT(62, 13, 102)' \
+            packages/mpv-8999-dovi-stream-group-backport-version.patch
+          grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' \
+            packages/mpv-8999-dovi-stream-group-backport-version.patch
           grep -Fq 'ff_webp_anim_decoder' packages/ffmpeg-9007-animated-webp.patch
           grep -Fq 'ff_webp_anim_demuxer' packages/ffmpeg-9007-animated-webp.patch
           grep -Fq 'int numTimeSlots = fl960 ? 15 : 16;' \
@@ -559,7 +575,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/vvc/**', 'build/ffmpeg9/**', 'build/audio-layout/**', 'patches/*.patch') }}
+          key: mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/vvc/**', 'build/ffmpeg9/**', 'build/audio-layout/**', 'build/dolby-vision/**', 'patches/*.patch') }}
           restore-keys: |
             mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-
 

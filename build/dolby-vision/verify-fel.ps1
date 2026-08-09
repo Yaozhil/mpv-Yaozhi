@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$MpvPath,
     [Parameter(Mandatory = $true)][string]$FFmpegPath,
-    [string]$SamplePath
+    [string]$SamplePath,
+    [string]$DualTrackSamplePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,17 +17,42 @@ if ($LASTEXITCODE -ne 0 -or (($bsfs | ForEach-Object { "$_" }) -join "`n") -notm
     throw "FFmpeg does not expose the dovi_split bitstream filter"
 }
 
-if ($SamplePath) {
-    if (-not (Test-Path -LiteralPath $SamplePath -PathType Leaf)) {
-        throw "FEL sample not found: $SamplePath"
+function Get-MpvProbeText {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "FEL sample not found: $Path"
     }
-    $output = & $MpvPath --no-config --vo=null --ao=null --hwdec=no --frames=90 --msg-level=all=v -- $SamplePath 2>&1
-    $text = ($output | ForEach-Object { "$_" }) -join "`n"
+    $output = & $MpvPath --no-config --vo=null --ao=null --hwdec=no --frames=90 `
+        --msg-level=all=v `
+        '--term-playing-msg=FELTRACK ${current-tracks/video/dolby-vision-profile}' `
+        -- $Path 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "mpv FEL probe failed with exit code $LASTEXITCODE for $Path"
+    }
+    return ($output | ForEach-Object { "$_" }) -join "`n"
+}
+
+if ($SamplePath) {
+    $text = Get-MpvProbeText -Path $SamplePath
     if ($text -match "dovi_split.+not available") {
         throw "mpv fell back to the base layer because dovi_split is unavailable"
     }
     if ($text -notmatch 'Dolby Vision Profile 7 splitter.+virtual EL stream') {
         throw "mpv did not create the Dolby Vision Profile 7 enhancement-layer stream"
+    }
+}
+
+if ($DualTrackSamplePath) {
+    $text = Get-MpvProbeText -Path $DualTrackSamplePath
+    if ($text -notmatch 'Found Dolby Vision config record: profile 7') {
+        throw "mpv did not detect Dolby Vision Profile 7 metadata in the dual-track sample"
+    }
+    if ($text -notmatch '(?m)^.*\[vf\] \[el_pair\].*$') {
+        throw "mpv did not pair the Dolby Vision base and enhancement tracks"
+    }
+    if ($text -notmatch '(?m)^FELTRACK 7\s*$') {
+        throw "mpv did not expose Profile 7 metadata on the selectable base-layer track"
     }
 }
 

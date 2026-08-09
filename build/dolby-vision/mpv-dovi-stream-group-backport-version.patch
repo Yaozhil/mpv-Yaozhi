@@ -1,0 +1,49 @@
+From 4ed009a9dd8aea08f43bdf7ad168600363073b60 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Mon, 10 Aug 2026 01:15:17 +0800
+Subject: [PATCH] demux_lavf: enable backported Dolby Vision stream groups
+
+---
+ demux/demux_lavf.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index ed55dd517..7fae1dfa1 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1277,7 +1277,7 @@ static void handle_lcevc_group(demuxer_t *demuxer, AVStreamGroup *stg)
+ }
+ #endif
+ 
+-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
++#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 13, 102)
+ // Base layer + Enhancement layer separate track stream group
+ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+ {
+@@ -1310,6 +1310,15 @@ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+     bl_sh->group = group;
+     el_sh->group = group;
+     el_sh->dependent_track = true;
++
++    // The Dolby Vision config record belongs to the dependent EL track in
++    // this carriage. Expose the presentation metadata on the selectable BL
++    // track as well, without marking it as an interleaved BL/EL stream.
++    if (el_sh->codec->dovi) {
++        bl_sh->codec->dovi = true;
++        bl_sh->codec->dv_profile = el_sh->codec->dv_profile;
++        bl_sh->codec->dv_level = el_sh->codec->dv_level;
++    }
+ }
+ #endif
+ 
+@@ -1345,7 +1354,7 @@ static void handle_stream_groups(demuxer_t *demuxer)
+             handle_lcevc_group(demuxer, stg);
+             break;
+ #endif
+-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
++#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 13, 102)
+         case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
+             handle_layered_video_group(demuxer, stg);
+             break;
+-- 
+2.54.0.windows.1

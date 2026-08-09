@@ -16,6 +16,16 @@ enhancement-layer HEVC configuration to the splitter.
 - `ffmpeg-dovi-split-registration.patch` is the minimal registration and
   build-system subset adapted to the pinned FFmpeg baseline. Documentation
   and library version changes are intentionally not backported.
+- `ffmpeg-dovi-dual-track-stream-group.patch` backports the official MP4
+  layered-video stream group and `vdep` reference parsing required for
+  Profile 7 files that store BL and EL in separate tracks. Only the
+  libavformat micro version is advanced, avoiding unrelated API gates.
+- `mpv-dovi-stream-group-backport-version.patch` enables mpv's existing
+  Dolby Vision layered-video handler for that exact backport version while
+  leaving its newer LCEVC API guard unchanged. It also exposes the EL-owned
+  Profile/Level metadata on the selectable BL track so the UI reports Dolby
+  Vision instead of HDR10 after the pair is formed.
 - The workflow verifies the final FFmpeg binary exposes `dovi_split` and
-  the final mpv binary no longer reports a missing BSF for a generated FEL
-  regression sample.
+  packages a verifier for both single-track and dual-track FEL regression
+  samples. The dual-track gate requires mpv's `[el_pair]` filter output and
+  Profile 7 metadata on the selectable base-layer track.

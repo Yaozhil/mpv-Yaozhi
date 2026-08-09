@@ -1,0 +1,290 @@
+diff --git a/libavformat/avformat.c b/libavformat/avformat.c
+index 8a98f2e5..eadc9a6e 100644
+--- a/libavformat/avformat.c
++++ b/libavformat/avformat.c
+@@ -106,6 +106,10 @@ void ff_free_stream_group(AVStreamGroup **pstg)
+         av_opt_free(stg->params.lcevc);
+         av_freep(&stg->params.lcevc);
+         break;
++    case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
++        av_opt_free(stg->params.layered_video);
++        av_freep(&stg->params.layered_video);
++        break;
+     default:
+         break;
+     }
+@@ -264,6 +268,7 @@ const char *avformat_stream_group_name(enum AVStreamGroupParamsType type)
+     case AV_STREAM_GROUP_PARAMS_IAMF_MIX_PRESENTATION:     return "IAMF Mix Presentation";
+     case AV_STREAM_GROUP_PARAMS_TILE_GRID:                 return "Tile Grid";
+     case AV_STREAM_GROUP_PARAMS_LCEVC:                     return "LCEVC (Split video and enhancement)";
++    case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:              return "Dolby Vision (Split base and enhancement layer)";
+     }
+     return NULL;
+ }
+diff --git a/libavformat/avformat.h b/libavformat/avformat.h
+index ee0ddddf..a80a6dfa 100644
+--- a/libavformat/avformat.h
++++ b/libavformat/avformat.h
+@@ -1085,12 +1085,35 @@ typedef struct AVStreamGroupLCEVC {
+     int height;
+ } AVStreamGroupLCEVC;
+ 
++/**
++ * AVStreamGroupLayeredVideo defines the relation between a base-layer video
++ * stream and a separate enhancement-layer stream which together form one
++ * layered video presentation.
++ */
++typedef struct AVStreamGroupLayeredVideo {
++    const AVClass *av_class;
++
++    /**
++     * Index of the enhancement-layer stream in AVStreamGroup.
++     */
++    unsigned int el_index;
++    /**
++     * Width of the final stream for presentation.
++     */
++    int width;
++    /**
++     * Height of the final image for presentation.
++     */
++    int height;
++} AVStreamGroupLayeredVideo;
++
+ enum AVStreamGroupParamsType {
+     AV_STREAM_GROUP_PARAMS_NONE,
+     AV_STREAM_GROUP_PARAMS_IAMF_AUDIO_ELEMENT,
+     AV_STREAM_GROUP_PARAMS_IAMF_MIX_PRESENTATION,
+     AV_STREAM_GROUP_PARAMS_TILE_GRID,
+     AV_STREAM_GROUP_PARAMS_LCEVC,
++    AV_STREAM_GROUP_PARAMS_DOLBY_VISION,
+ };
+ 
+ struct AVIAMFAudioElement;
+@@ -1133,6 +1156,7 @@ typedef struct AVStreamGroup {
+         struct AVIAMFMixPresentation *iamf_mix_presentation;
+         struct AVStreamGroupTileGrid *tile_grid;
+         struct AVStreamGroupLCEVC *lcevc;
++        struct AVStreamGroupLayeredVideo *layered_video;
+     } params;
+ 
+     /**
+diff --git a/libavformat/isom.h b/libavformat/isom.h
+index d7e13858..9898c8da 100644
+--- a/libavformat/isom.h
++++ b/libavformat/isom.h
+@@ -435,6 +435,7 @@ void ff_mp4_parse_es_descr(AVIOContext *pb, int *es_id);
+ #define MOV_SAMPLE_DEPENDENCY_NO      0x2
+ 
+ #define MOV_TREF_FLAG_ENHANCEMENT     0x1
++#define MOV_TREF_FLAG_DOVI            0x2
+ 
+ #define TAG_IS_AVCI(tag)                    \
+     ((tag) == MKTAG('a', 'i', '5', 'p') ||  \
+diff --git a/libavformat/mov.c b/libavformat/mov.c
+index 2d36a8cc..2e4c90e9 100644
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -32,6 +32,7 @@
+ #include "libavutil/attributes.h"
+ #include "libavutil/bprint.h"
+ #include "libavutil/channel_layout.h"
++#include "libavutil/dovi_meta.h"
+ #include "libavutil/internal.h"
+ #include "libavutil/intreadwrite.h"
+ #include "libavutil/intfloat.h"
+@@ -2571,6 +2572,27 @@ static int mov_read_sbas(MOVContext* c, AVIOContext* pb, MOVAtom atom)
+     return 0;
+ }
+ 
++static int mov_read_vdep(MOVContext* c, AVIOContext* pb, MOVAtom atom)
++{
++    AVStream* st;
++    MOVStreamContext* sc;
++
++    if (c->fc->nb_streams < 1)
++        return 0;
++
++    if (atom.size > 4)
++        av_log(c->fc, AV_LOG_WARNING, "More than one vdep reference is not supported.\n");
++    if (atom.size < 4)
++        return AVERROR_INVALIDDATA;
++
++    st = c->fc->streams[c->fc->nb_streams - 1];
++    sc = st->priv_data;
++    sc->tref_id = avio_rb32(pb);
++    sc->tref_flags |= MOV_TREF_FLAG_DOVI;
++
++    return 0;
++}
++
+ /**
+  * An strf atom is a BITMAPINFOHEADER struct. This struct is 40 bytes itself,
+  * but can have extradata appended at the end after the 40 bytes belonging
+@@ -9702,6 +9724,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
+ { MKTAG('p','a','s','p'), mov_read_pasp },
+ { MKTAG('c','l','a','p'), mov_read_clap },
+ { MKTAG('s','b','a','s'), mov_read_sbas },
++{ MKTAG('v','d','e','p'), mov_read_vdep },
+ { MKTAG('s','i','d','x'), mov_read_sidx },
+ { MKTAG('s','t','b','l'), mov_read_default },
+ { MKTAG('s','t','c','o'), mov_read_stco },
+@@ -11002,6 +11025,73 @@ static int mov_parse_lcevc_streams(AVFormatContext *s)
+     return 0;
+ }
+ 
++static int mov_parse_dovi_streams(AVFormatContext *s)
++{
++    int err;
++
++    if (s->nb_streams <= 1)
++        return 0;
++
++    /* Identify legacy dual-track Dolby Vision profile 7 carriage per Annex
++     * C of "Dolby Vision Streams Within the ISO Base Media File Format",
++     * v2.7.1. The 'vdep' reference is only accepted together with the
++     * DV-specific sample entry and decoder configuration record. */
++    for (int i = 0; i < s->nb_streams; i++) {
++        AVStreamGroup *stg;
++        AVStream *st = s->streams[i];
++        AVStream *st_base;
++        MOVStreamContext *sc = st->priv_data;
++        const AVPacketSideData *sd;
++        const AVDOVIDecoderConfigurationRecord *dovi;
++
++        if (st->codecpar->codec_id != AV_CODEC_ID_HEVC ||
++            !(sc->tref_flags & MOV_TREF_FLAG_DOVI))
++            continue;
++
++        if (st->codecpar->codec_tag != MKTAG('d','v','h','e') &&
++            st->codecpar->codec_tag != MKTAG('d','v','h','1'))
++            continue;
++
++        sd = av_packet_side_data_get(st->codecpar->coded_side_data,
++                                     st->codecpar->nb_coded_side_data,
++                                     AV_PKT_DATA_DOVI_CONF);
++        if (!sd)
++            continue;
++        dovi = (const AVDOVIDecoderConfigurationRecord *)sd->data;
++
++        if (dovi->dv_profile != 7 || !dovi->rpu_present_flag ||
++            !dovi->el_present_flag || dovi->bl_present_flag)
++            continue;
++
++        st_base = mov_find_reference_track(s, st, 0);
++        if (!st_base) {
++            int loglevel = (s->error_recognition & AV_EF_EXPLODE) ? AV_LOG_ERROR : AV_LOG_WARNING;
++            av_log(s, loglevel, "Failed to find base layer for Dolby Vision EL stream\n");
++            if (s->error_recognition & AV_EF_EXPLODE)
++                return AVERROR_INVALIDDATA;
++            continue;
++        }
++
++        stg = avformat_stream_group_create(s, AV_STREAM_GROUP_PARAMS_DOLBY_VISION, NULL);
++        if (!stg)
++            return AVERROR(ENOMEM);
++        stg->id = st->id;
++
++        err = avformat_stream_group_add_stream(stg, st_base);
++        if (err < 0)
++            return err;
++        err = avformat_stream_group_add_stream(stg, st);
++        if (err < 0)
++            return err;
++
++        stg->params.layered_video->el_index = stg->nb_streams - 1;
++        stg->params.layered_video->width = st_base->codecpar->width;
++        stg->params.layered_video->height = st_base->codecpar->height;
++    }
++
++    return 0;
++}
++
+ static void fix_stream_ids(AVFormatContext *s)
+ {
+     int highest_id = 0, lowest_iamf_id = INT_MAX;
+@@ -11123,6 +11213,11 @@ static int mov_read_header(AVFormatContext *s)
+     if (err < 0)
+         return err;
+ 
++    /* Create Dolby Vision Profile 7 stream groups. */
++    err = mov_parse_dovi_streams(s);
++    if (err < 0)
++        return err;
++
+     for (i = 0; i < s->nb_streams; i++) {
+         AVStream *st = s->streams[i];
+         FFStream *const sti = ffstream(st);
+diff --git a/libavformat/options.c b/libavformat/options.c
+index 72a6a5a4..8e56d919 100644
+--- a/libavformat/options.c
++++ b/libavformat/options.c
+@@ -365,6 +365,22 @@ static const AVClass lcevc_class = {
+     .option     = lcevc_options,
+ };
+ 
++#define OFFSET(x) offsetof(AVStreamGroupLayeredVideo, x)
++static const AVOption layered_video_options[] = {
++    { "el_index", "Index of the enhancement layer stream within the group", OFFSET(el_index),
++        AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, FLAGS },
++    { "video_size", "size of the final layered video presentation", OFFSET(width),
++        AV_OPT_TYPE_IMAGE_SIZE, { .str = NULL }, 0, INT_MAX, FLAGS },
++    { NULL },
++};
++#undef OFFSET
++
++static const AVClass layered_video_class = {
++    .class_name = "AVStreamGroupLayeredVideo",
++    .version    = LIBAVUTIL_VERSION_INT,
++    .option     = layered_video_options,
++};
++
+ static void *stream_group_child_next(void *obj, void *prev)
+ {
+     AVStreamGroup *stg = obj;
+@@ -378,6 +394,8 @@ static void *stream_group_child_next(void *obj, void *prev)
+             return stg->params.tile_grid;
+         case AV_STREAM_GROUP_PARAMS_LCEVC:
+             return stg->params.lcevc;
++        case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
++            return stg->params.layered_video;
+         default:
+             break;
+         }
+@@ -408,6 +426,9 @@ static const AVClass *stream_group_child_iterate(void **opaque)
+     case AV_STREAM_GROUP_PARAMS_LCEVC:
+         ret = &lcevc_class;
+         break;
++    case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
++        ret = &layered_video_class;
++        break;
+     default:
+         break;
+     }
+@@ -484,6 +505,13 @@ AVStreamGroup *avformat_stream_group_create(AVFormatContext *s,
+         stg->params.lcevc->av_class = &lcevc_class;
+         av_opt_set_defaults(stg->params.lcevc);
+         break;
++    case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
++        stg->params.layered_video = av_mallocz(sizeof(*stg->params.layered_video));
++        if (!stg->params.layered_video)
++            goto fail;
++        stg->params.layered_video->av_class = &layered_video_class;
++        av_opt_set_defaults(stg->params.layered_video);
++        break;
+     default:
+         goto fail;
+     }
+diff --git a/libavformat/version.h b/libavformat/version.h
+index cd62aaf1..ff831498 100644
+--- a/libavformat/version.h
++++ b/libavformat/version.h
+@@ -32,7 +32,7 @@
+ #include "version_major.h"
+ 
+ #define LIBAVFORMAT_VERSION_MINOR  13
+-#define LIBAVFORMAT_VERSION_MICRO 101
++#define LIBAVFORMAT_VERSION_MICRO 102
+ 
+ #define LIBAVFORMAT_VERSION_INT AV_VERSION_INT(LIBAVFORMAT_VERSION_MAJOR, \
+                                                LIBAVFORMAT_VERSION_MINOR, \
