@@ -1,6 +1,6 @@
 # 当前任务进度
 
-## 蓝光 ISO/BDMV Dolby Vision Profile 7 FEL（2026-08-10，构建前验证完成）
+## 蓝光 ISO/BDMV Dolby Vision Profile 7 FEL（2026-08-10，已完成并部署）
 
 - 用户样片 `C:\Users\杳知\Desktop\FEL RPU_EL测试.iso` 已确认是 UHD Blu-ray：主视频 PID `0x1011` 为 HEVC HDR10/BT.2020 BL，`dv_streams[]` 中 PID `0x1015` 为 HEVC Dolby Vision EL；现有 MPEG-TS 层未形成 stream group，所以只选择 BL 并显示 HDR10。
 - 历史核心 `v0.41.0-847` 至当前 `v0.41.0-853` 对同一 ISO 均未暴露 Profile 7，排除“最近双轨 MP4 补丁破坏 ISO”的回归；问题是蓝光结构关系一直没有接入 mpv。
@@ -8,12 +8,17 @@
 - 已新增 `mpv-bluray-dovi-pair.patch`，在蓝光 stream control 暴露 BL/EL PID 关系，并在 disc demux 层建立 dependent group、标注 Profile 7；现有 MP4 stream group 路径保持不变。
 - 构建固定 libbluray `065247e5ef40ccf39857db81e2c1368354a23ef8`（1.5.1），并强制清理其缓存前缀；最终二进制门禁检查 libbluray 版本和蓝光配对日志字符串。
 - 已通过精确 mpv 基线 `99b4c12cccb4d8d3f72b41944cb6c640e2156650` 的补丁顺序应用、`git diff --check`、PowerShell AST 和工作流关键断言检查。
+- 修复提交 `17aba7bbfa56fd6bd0646c2fdd9a63505e712a1d` 已推送，Actions 运行 `31352817122` 的 build 与 validate-windows 全绿；产物为 `mpv v0.41.0-854-g7867bd1b7`。
+- 用户 ISO 已在候选和部署后两次通过：日志明确显示 BL PID `0x1011`、EL PID `0x1015`、`[el_pair]` 和 `FELTRACK 7`；正式配置直接打开 ISO 会经 `auto_iso_loader` 进入 `bd://`，Lua 错误为 0。
+- 两份单轨 MKV 与双轨 MP4 既有 FEL 路径均通过回归；FFmpeg 9、DAVS2、VVC/VVDEC、AV3A 和 5.1.4/7.1.4/9.1.4/9.1.6 门禁继续通过。
+- 用户真实 VVC 样片 `C:\Users\杳知\Desktop\Tearsofsteel.1080p.VVCRip-MartinEesmaa.mp4` 已通过三解码路径；libvvdec 连续 300 帧零解码错误，完整配置 180 帧正常退出。
+- 非 HDR 屏幕使用 BT.709/Gamma 2.2/100 nit 固定映射；同一时间点 30.527633 秒的旧/新核心画面对照 PSNR 为 10.329383 dB，确认增强层实际参与输出。
+- v853 已备份到 `.codex-build/iso-fel-deploy-run-31352817122/backup-current-core-v853/`；部署后 exe/com SHA-256 为 `1A6289AF0BCA895B478D47B5FBFBD3387A5BB0A406D715FCCD34DB33A6FEAEB5` 和 `25519E4D2A90543B6F478788A3A2D98C00932E2031140100877CD3CD171B6F2C`。
 
 ## 下一步（蓝光 FEL）
 
-- 提交并推送 `codex/hdr-pgs-core-fix`，等待 GitHub Actions 完整交叉构建。
-- 下载候选核心后先用 ISO 执行 `verify-fel.ps1 -BluRayIsoPath`，再回归三份既有 FEL 样片、普通 HDR10/SDR/音频/字幕与网络路径。
-- 全部通过后备份并部署根目录核心，最后更新桌面公告；未通过前不替换正式核心。
+- 进入客户发布与不同显卡的性能覆盖；功能正确性、本机软件解码、完整配置和固定 SDR 画面对照已完成。
+- 裸 M2TS 继续保持普通视频行为；除非未来获得可靠的外部结构关系，不增加分辨率/PID/轨序启发式配对。
 
 ## FFmpeg 9.0 播放能力定向回移（2026-08-04，已完成）
 
