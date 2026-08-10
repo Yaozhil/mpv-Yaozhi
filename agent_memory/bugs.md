@@ -2,11 +2,14 @@
 
 ## 已知问题
 
-- 当前未发现阻断发布的问题；VVC 默认 `libvvdec`，原生 `vvc` 保留为显式回退。
+- 当前发布核心播放用户蓝光 FEL ISO 时只取 HDR10 BL，未建立 libbluray 声明的 DV EL 依赖关系；修复已完成本地静态验证，等待 CI 与实片验收。
+- VVC 默认 `libvvdec`，原生 `vvc` 保留为显式回退。
 - 本机 `vvc_qsv` 探测失败，不能把硬解作为通用解决方案。
 
 ## 风险与待确认
 
+- 蓝光 FEL 运行时是否能稳定产生 `[el_pair]` 并从 EL 帧继承 RPU，只能在新核心构建后用用户 ISO 确认；未通过前不得部署或更新公告为“已修复”。
+- 任意裸 `.m2ts` 不含 MPLS authored relation，修复范围是经 libbluray 打开的 ISO/BDMV；不会对裸 M2TS 做启发式误配。
 - 尚未取得可公开复现的 HE-AAC 960 / DAB+ 样片；当前验证覆盖官方补丁完整回移、15-slot SBR 路径、最终二进制旧拒绝字符串消失和 Windows 编译链接。
 - FFmpeg 9.0 能力采用定向回移；不要把当前 `libavcodec 62` 基线误记为已整体升级 FFmpeg 9.0 ABI。
 

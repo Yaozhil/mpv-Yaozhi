@@ -1,5 +1,20 @@
 # 当前任务进度
 
+## 蓝光 ISO/BDMV Dolby Vision Profile 7 FEL（2026-08-10，构建前验证完成）
+
+- 用户样片 `C:\Users\杳知\Desktop\FEL RPU_EL测试.iso` 已确认是 UHD Blu-ray：主视频 PID `0x1011` 为 HEVC HDR10/BT.2020 BL，`dv_streams[]` 中 PID `0x1015` 为 HEVC Dolby Vision EL；现有 MPEG-TS 层未形成 stream group，所以只选择 BL 并显示 HDR10。
+- 历史核心 `v0.41.0-847` 至当前 `v0.41.0-853` 对同一 ISO 均未暴露 Profile 7，排除“最近双轨 MP4 补丁破坏 ISO”的回归；问题是蓝光结构关系一直没有接入 mpv。
+- 方案固定为 libbluray 1.5.1 官方 `dv_streams[]` 声明，不使用分辨率、PID 范围或轨道顺序猜测。只有唯一 HEVC DV EL 与唯一 HEVC HDR10/BT.2020 主视频时才建组，歧义内容保持原行为。
+- 已新增 `mpv-bluray-dovi-pair.patch`，在蓝光 stream control 暴露 BL/EL PID 关系，并在 disc demux 层建立 dependent group、标注 Profile 7；现有 MP4 stream group 路径保持不变。
+- 构建固定 libbluray `065247e5ef40ccf39857db81e2c1368354a23ef8`（1.5.1），并强制清理其缓存前缀；最终二进制门禁检查 libbluray 版本和蓝光配对日志字符串。
+- 已通过精确 mpv 基线 `99b4c12cccb4d8d3f72b41944cb6c640e2156650` 的补丁顺序应用、`git diff --check`、PowerShell AST 和工作流关键断言检查。
+
+## 下一步（蓝光 FEL）
+
+- 提交并推送 `codex/hdr-pgs-core-fix`，等待 GitHub Actions 完整交叉构建。
+- 下载候选核心后先用 ISO 执行 `verify-fel.ps1 -BluRayIsoPath`，再回归三份既有 FEL 样片、普通 HDR10/SDR/音频/字幕与网络路径。
+- 全部通过后备份并部署根目录核心，最后更新桌面公告；未通过前不替换正式核心。
+
 ## FFmpeg 9.0 播放能力定向回移（2026-08-04，已完成）
 
 - 范围固定为 Animated WebP 解码/解封装和 HE-AAC 960（DAB+）解码，不迁移 FFmpeg 9.0 ABI，不引入 AMF FRC、`dovi_split` 或 SMPTE 2094-50 UI。

@@ -17,11 +17,13 @@
 - `build/vvc/`：VVDEC 构建配方、FFmpeg wrapper、默认选择补丁和 Windows 验收脚本。
 - `build/av3a/`：AV3A、AVS2 及空间音频补丁链。
 - `build/ffmpeg9/`：从 FFmpeg 9.0 定向回移的 Animated WebP、HE-AAC 960 补丁及 Windows 播放验收脚本；不代表整套基线升级到 libavcodec 63。
+- `build/dolby-vision/`：单轨 FEL、MP4 双轨 FEL 及蓝光 ISO/BDMV Profile 7 BL/EL 配对补丁与验收脚本。
 
 ## 当前发布核心
 
-- GitHub Actions Run `30917292112` 全绿，根目录已部署 `mpv v0.41.0-852-g8d504e9c0`。
-- `mpv.exe` / `mpv.com` SHA-256 为 `96C67204828E96C0C5823B608BFDBF9B319E71877F4559CCE4D7BE3EEC6068AD`、`275C8CC28AC7C05DEDED009B48CE75C42F92E7B5BD753BEDE299FCC76753E351`。
+- GitHub Actions Run `31328067629` 全绿，根目录已部署 `mpv v0.41.0-853-g413f9a86b`。
+- `mpv.exe` / `mpv.com` SHA-256 为 `DD91331B157A4FC8791D26318AF4B6956D2D967D1D43AB738950D7CA018DF975`、`788B21D785369728D5F6E780EBB7962DF80C63B6905466BA21464B459F46FCFB`。
+- 当前核心已支持单轨 FEL 和带 `vdep` 的 MP4 双轨 FEL；蓝光 ISO/BDMV 双轨 FEL 修复正在构建验收，尚未部署。
 
 ## 已确认假设
 

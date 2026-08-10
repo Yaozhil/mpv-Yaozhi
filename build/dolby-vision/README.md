@@ -25,7 +25,12 @@ enhancement-layer HEVC configuration to the splitter.
   leaving its newer LCEVC API guard unchanged. It also exposes the EL-owned
   Profile/Level metadata on the selectable BL track so the UI reports Dolby
   Vision instead of HDR10 after the pair is formed.
+- `mpv-bluray-dovi-pair.patch` uses libbluray 1.5's authored `dv_streams[]`
+  list to pair UHD Blu-ray Profile 7 base/enhancement PIDs when the MPEG-TS
+  PMT has no generic Dolby Vision descriptor. It only accepts an unambiguous
+  HEVC DV EL plus HEVC HDR10/BT.2020 primary video and never guesses from
+  resolution, PID range, or track order.
 - The workflow verifies the final FFmpeg binary exposes `dovi_split` and
-  packages a verifier for both single-track and dual-track FEL regression
-  samples. The dual-track gate requires mpv's `[el_pair]` filter output and
-  Profile 7 metadata on the selectable base-layer track.
+  packages a verifier for single-track, dual-track file, and optional Blu-ray
+  ISO FEL regression samples. The dual-track gates require mpv's `[el_pair]`
+  filter output and Profile 7 metadata on the selectable base-layer track.

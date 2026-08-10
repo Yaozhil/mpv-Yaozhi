@@ -42,6 +42,7 @@ jobs:
       VVDEC_COMMIT: 1fd46b0e345669648f1e94c65e9378343db4f1a0
       SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
       LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
+      LIBBLURAY_COMMIT: 065247e5ef40ccf39857db81e2c1368354a23ef8
 
     steps:
       - name: Install build dependencies
@@ -109,6 +110,7 @@ jobs:
           done
 
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
           path = Path("packages/mpv.cmake")
@@ -155,6 +157,19 @@ jobs:
                   raise SystemExit("Could not locate SDL2 update anchor")
               text = text.replace(anchor, anchor + patch, 1)
           sdl2.write_text(text)
+
+          libbluray = Path("packages/libbluray.cmake")
+          text = libbluray.read_text()
+          repository = (
+              "    GIT_REPOSITORY "
+              "https://code.videolan.org/videolan/libbluray.git\n"
+          )
+          tag = f'    GIT_TAG {os.environ["LIBBLURAY_COMMIT"]}\n'
+          if tag not in text:
+              if repository not in text:
+                  raise SystemExit("Could not locate libbluray repository")
+              text = text.replace(repository, repository + tag, 1)
+          libbluray.write_text(text)
           PY
 
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
@@ -171,6 +186,8 @@ jobs:
             packages/mpv-9005-swresample-native-layout.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-stream-group-backport-version.patch" \
             packages/mpv-8999-dovi-stream-group-backport-version.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-bluray-dovi-pair.patch" \
+            packages/mpv-8998-bluray-dovi-pair.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
@@ -528,6 +545,11 @@ jobs:
             packages/mpv-8999-dovi-stream-group-backport-version.patch
           grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' \
             packages/mpv-8999-dovi-stream-group-backport-version.patch
+          grep -Fq "GIT_TAG $LIBBLURAY_COMMIT" packages/libbluray.cmake
+          grep -Fq 'STREAM_CTRL_GET_DOVI_PAIR' \
+            packages/mpv-8998-bluray-dovi-pair.patch
+          grep -Fq 'BLURAY_DYNAMIC_RANGE_DOLBY_VISION' \
+            packages/mpv-8998-bluray-dovi-pair.patch
           grep -Fq 'ff_webp_anim_decoder' packages/ffmpeg-9007-animated-webp.patch
           grep -Fq 'ff_webp_anim_demuxer' packages/ffmpeg-9007-animated-webp.patch
           grep -Fq 'int numTimeSlots = fl960 ? 15 : 16;' \
@@ -589,6 +611,7 @@ jobs:
             src_packages/curl \
             src_packages/davs2 \
             src_packages/ffmpeg \
+            src_packages/libbluray \
             src_packages/libpsl \
             src_packages/libsdl2 \
             src_packages/mpv \
@@ -597,6 +620,7 @@ jobs:
             build64/packages/curl-prefix \
             build64/packages/davs2-prefix \
             build64/packages/ffmpeg-prefix \
+            build64/packages/libbluray-prefix \
             build64/packages/libpsl-prefix \
             build64/packages/libsdl2-prefix \
             build64/packages/mpv-prefix \
@@ -766,6 +790,8 @@ jobs:
           grep -Fq 'SDL Audio' artifact-check/mpv.strings
           grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
           grep -Fq 'hdr-vivid' artifact-check/mpv.strings
+          grep -Fq 'libbluray version 1.5.1' artifact-check/mpv.strings
+          grep -Fq 'Blu-ray Dolby Vision Profile 7' artifact-check/mpv.strings
 
           ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
           test -f "$ffmpeg_exe"

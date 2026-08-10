@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Mon, 10 Aug 2026 12:00:00 +0800
+Subject: [PATCH] bluray: pair authored Dolby Vision base and enhancement streams
+
+Use the Dolby Vision enhancement stream list exposed by libbluray 1.5 to
+form Profile 7 BL/EL groups for UHD Blu-ray playback. MPEG-TS PMTs on discs
+do not necessarily carry the generic Dolby Vision descriptor, while the
+MPLS structure contains the authoritative relationship.
+
+Only an unambiguous HEVC Dolby Vision EL plus HEVC HDR10/BT.2020 primary
+video is accepted. No resolution, PID-range, or track-order heuristic is
+used, so ordinary multi-video Blu-rays remain unchanged.
+---
+ demux/demux_disc.c     | 54 ++++++++++++++++++++++++++++++++++++++++++
+ stream/stream.h        |  8 +++++++
+ stream/stream_bluray.c | 57 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 119 insertions(+)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 86557a711..8375f815f 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -184,6 +184,60 @@ static void add_streams(demuxer_t *demuxer)
+         }
+     }
+ 
++    // libbluray 1.5 exposes the authored UHD Blu-ray Dolby Vision EL list.
++    // Use that declaration to form the BL/EL pair when MPEG-TS itself has no
++    // Dolby Vision descriptor. This deliberately rejects heuristic matching
++    // by resolution, PID range, or track order.
++    for (int n = 0; n < p->num_streams; n++) {
++        struct sh_stream *el = p->streams[n];
++        if (!el || el->type != STREAM_VIDEO || el->group)
++            continue;
++
++        struct stream_dovi_pair_req req = {
++            .el_id = el->demuxer_id,
++            .bl_id = -1,
++        };
++        if (stream_control(demuxer->stream, STREAM_CTRL_GET_DOVI_PAIR, &req) !=
++            STREAM_OK)
++        {
++            continue;
++        }
++
++        struct sh_stream *bl = NULL;
++        for (int m = 0; m < p->num_streams; m++) {
++            struct sh_stream *candidate = p->streams[m];
++            if (candidate && candidate->type == STREAM_VIDEO &&
++                candidate->demuxer_id == req.bl_id)
++            {
++                if (bl) {
++                    bl = NULL;
++                    break;
++                }
++                bl = candidate;
++            }
++        }
++        if (!bl || bl == el || bl->group)
++            continue;
++
++        struct sh_stream_group *grp = talloc_zero(bl, struct sh_stream_group);
++        MP_TARRAY_APPEND(grp, grp->members, grp->num_members, bl);
++        MP_TARRAY_APPEND(grp, grp->members, grp->num_members, el);
++        bl->group = grp;
++        el->group = grp;
++        el->dependent_track = true;
++
++        // UHD Blu-ray Dolby Vision dual-layer carriage is Profile 7. Frame
++        // metadata (including the RPU) is inherited from the decoded EL.
++        bl->codec->dovi = true;
++        bl->codec->dv_profile = 7;
++        el->codec->dovi = true;
++        el->codec->dv_profile = 7;
++
++        MP_VERBOSE(demuxer, "Blu-ray Dolby Vision Profile 7: BL PID %#x, "
++                   "EL PID %#x (libbluray authored relation).\n",
++                   bl->demuxer_id, el->demuxer_id);
++    }
++
+     reselect_streams(demuxer);
+ }
+ 
+diff --git a/stream/stream.h b/stream/stream.h
+index 98b5dff35..c560578f9 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -92,6 +92,7 @@ enum stream_ctrl {
+     STREAM_CTRL_GET_TITLE_LENGTH,    // double* (in: title number, out: len)
+     STREAM_CTRL_GET_TITLE_PLAYLIST,  // double* (in: title number, out: playlist)
+     STREAM_CTRL_GET_LANG,
++    STREAM_CTRL_GET_DOVI_PAIR,
+     STREAM_CTRL_GET_CURRENT_TITLE,
+     STREAM_CTRL_SET_CURRENT_TITLE,
+ };
+@@ -102,6 +103,13 @@ struct stream_lang_req {
+     char name[50];
+ };
+ 
++// Query a container-declared Dolby Vision base/enhancement-layer relation.
++// The caller supplies el_id and receives bl_id on success.
++struct stream_dovi_pair_req {
++    int el_id;
++    int bl_id;
++};
++
+ struct stream_dvd_info_req {
+     unsigned int palette[16];
+     int num_subs;
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index b28f45267..e314e330f 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -314,6 +314,63 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+         }
+         return STREAM_ERROR;
+     }
++    case STREAM_CTRL_GET_DOVI_PAIR: {
++#if BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 5, 0)
++        const BLURAY_TITLE_INFO *ti = b->title_info;
++        struct stream_dovi_pair_req *req = arg;
++        int bl_id = -1;
++        bool found = false;
++
++        if (!ti)
++            return STREAM_ERROR;
++
++        for (int n = 0; n < ti->clip_count; n++) {
++            const BLURAY_CLIP_INFO *clip = &ti->clips[n];
++            bool clip_has_el = false;
++            for (int i = 0; i < clip->dv_stream_count; i++) {
++                const BLURAY_STREAM_INFO *el = &clip->dv_streams[i];
++                if (el->pid == req->el_id &&
++                    el->coding_type == BLURAY_STREAM_TYPE_VIDEO_HEVC &&
++                    el->dynamic_range_type == BLURAY_DYNAMIC_RANGE_DOLBY_VISION)
++                {
++                    clip_has_el = true;
++                    break;
++                }
++            }
++            if (!clip_has_el)
++                continue;
++
++            // UHD Blu-ray Profile 7 carries a DV enhancement stream beside
++            // one HDR10-compatible HEVC base stream. Reject ambiguous clips
++            // instead of pairing unrelated secondary/angle video.
++            int clip_bl_id = -1;
++            for (int i = 0; i < clip->video_stream_count; i++) {
++                const BLURAY_STREAM_INFO *bl = &clip->video_streams[i];
++                if (bl->coding_type != BLURAY_STREAM_TYPE_VIDEO_HEVC ||
++                    bl->dynamic_range_type != BLURAY_DYNAMIC_RANGE_HDR10 ||
++                    bl->color_space != BLURAY_COLOR_SPACE_BT2020)
++                {
++                    continue;
++                }
++                if (clip_bl_id >= 0 && clip_bl_id != bl->pid)
++                    return STREAM_ERROR;
++                clip_bl_id = bl->pid;
++            }
++            if (clip_bl_id < 0)
++                return STREAM_ERROR;
++            if (found && bl_id != clip_bl_id)
++                return STREAM_ERROR;
++            bl_id = clip_bl_id;
++            found = true;
++        }
++
++        if (found) {
++            req->bl_id = bl_id;
++            return STREAM_OK;
++        }
++#endif
++        return STREAM_UNSUPPORTED;
++    }
+     case STREAM_CTRL_GET_DISC_NAME: {
+         const struct meta_dl *meta = bd_get_meta(b->bd);
+         if (!meta || !meta->di_name || !meta->di_name[0])
+-- 
+2.54.0.windows.1
