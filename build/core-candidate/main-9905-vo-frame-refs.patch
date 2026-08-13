@@ -1,0 +1,133 @@
+From 4af3488e9092bbe8616f0f0f391d2981a35e3637 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Mon, 27 Jul 2026 19:03:31 +0200
+Subject: [PATCH] vo: add number of referenced frames to queue params
+
+VOs can hold more frames than the requested lookahead. vo_gpu_next's
+pl_queue retains past frames for the interpolation mixing window. Let
+VOs declare the total number of frames they may reference at the same
+time, so fixed hwdec surface pools can be sized accordingly.
+---
+ video/out/gpu/video.c   |  3 ++-
+ video/out/vo.c          | 18 +++++++++++++++++-
+ video/out/vo.h          |  4 +++-
+ video/out/vo_gpu_next.c |  4 +++-
+ video/out/vo_vdpau.c    |  2 +-
+ 5 files changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/video/out/gpu/video.c b/video/out/gpu/video.c
+index 5150c900a..656c11c29 100644
+--- a/video/out/gpu/video.c
++++ b/video/out/gpu/video.c
+@@ -4395,7 +4395,8 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
+         }
+     }
+ 
+-    vo_set_queue_params(vo, 0, queue_size);
++    queue_size = MPMIN(queue_size, VO_MAX_REQ_FRAMES);
++    vo_set_queue_params(vo, 0, queue_size, queue_size + 1);
+ }
+ 
+ static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
+diff --git a/video/out/vo.c b/video/out/vo.c
+index c75edbd6e..ba5a6568b 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -170,6 +170,7 @@ struct vo_internal {
+     bool rendering;                 // true if an image is being rendered
+     struct vo_frame *frame_queued;  // should be drawn next
+     int req_frames;                 // VO's requested value of num_frames
++    int frame_refs;                 // max frames the VO may reference at once
+     uint64_t current_frame_id;
+ 
+     double display_fps;
+@@ -293,6 +294,7 @@ static struct vo *vo_create(bool probing, struct mpv_global *global,
+     *vo->in = (struct vo_internal) {
+         .dispatch = mp_dispatch_create(vo),
+         .req_frames = 1,
++        .frame_refs = 2, // current_frame + frame_queued
+         .estimated_vsync_jitter = -1,
+         .stats = stats_ctx_create(vo, global, "vo"),
+     };
+@@ -1332,12 +1334,17 @@ void vo_get_src_dst_rects(struct vo *vo, struct mp_rect *out_src,
+ // (For vo_vdpau, which does its own timing.)
+ // num_req_frames set the requested number of requested vo_frame.frames.
+ // (For vo_gpu interpolation.)
+-void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames)
++// num_frame_refs sets the total number of frames the VO may reference at the
++// same time, including retained past frames. (For sizing fixed hardware
++// decoder surface pools.)
++void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames,
++                         int num_frame_refs)
+ {
+     struct vo_internal *in = vo->in;
+     mp_mutex_lock(&in->lock);
+     in->flip_queue_offset = offset_ns;
+     in->req_frames = MPCLAMP(num_req_frames, 1, VO_MAX_REQ_FRAMES);
++    in->frame_refs = MPCLAMP(num_frame_refs, in->req_frames, 2 * VO_MAX_REQ_FRAMES);
+     mp_mutex_unlock(&in->lock);
+ }
+ 
+@@ -1350,6 +1357,15 @@ int vo_get_num_req_frames(struct vo *vo)
+     return res;
+ }
+ 
++int vo_get_num_frame_refs(struct vo *vo)
++{
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    int res = in->frame_refs;
++    mp_mutex_unlock(&in->lock);
++    return res;
++}
++
+ double vo_get_vsync_interval(struct vo *vo)
+ {
+     struct vo_internal *in = vo->in;
+diff --git a/video/out/vo.h b/video/out/vo.h
+index 8e397618e..f24918d46 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -549,8 +549,10 @@ void vo_query_formats(struct vo *vo, uint8_t *list);
+ void vo_event(struct vo *vo, int event);
+ int vo_query_and_reset_events(struct vo *vo, int events);
+ struct mp_image *vo_get_current_frame(struct vo *vo);
+-void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames);
++void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames,
++                         int num_frame_refs);
+ int vo_get_num_req_frames(struct vo *vo);
++int vo_get_num_frame_refs(struct vo *vo);
+ double vo_get_vsync_interval(struct vo *vo);
+ double vo_get_estimated_vsync_interval(struct vo *vo);
+ double vo_get_estimated_vsync_jitter(struct vo *vo);
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 82fa0413d..45b2c8442 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -2769,7 +2769,9 @@ static void update_render_options(struct vo *vo)
+         req_frames += ceilf(pars->params.frame_mixer->kernel->radius) *
+                       (pars->params.skip_anti_aliasing ? 1 : 2);
+     }
+-    vo_set_queue_params(vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
++    req_frames = MPMIN(VO_MAX_REQ_FRAMES, req_frames);
++    // pl_queue also retains past frames for the symmetric mixing window,
++    vo_set_queue_params(vo, 0, req_frames, 2 * req_frames - 1);
+ 
+     pars->params.deband_params = opts->deband ? &pars->deband_params : NULL;
+     pars->deband_params.iterations = opts->deband_opts->iterations;
+diff --git a/video/out/vo_vdpau.c b/video/out/vo_vdpau.c
+index f157b3e62..2ba0be0dc 100644
+--- a/video/out/vo_vdpau.c
++++ b/video/out/vo_vdpau.c
+@@ -279,7 +279,7 @@ static void resize(struct vo *vo)
+     vc->flip_offset_us = vo->opts->fullscreen ?
+                          1000LL * vc->flip_offset_fs :
+                          1000LL * vc->flip_offset_window;
+-    vo_set_queue_params(vo, vc->flip_offset_us * 1000, 1);
++    vo_set_queue_params(vo, vc->flip_offset_us * 1000, 1, 2);
+ 
+     if (vc->output_surface_w < vo->dwidth || vc->output_surface_h < vo->dheight ||
+         vc->rotation != vo->params->rotate)
+-- 
+2.54.0.windows.1
+

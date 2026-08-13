@@ -195,10 +195,12 @@ jobs:
             packages/mpv-9903-curl-compression-bounds.patch
           cp "$GITHUB_WORKSPACE/build/core-candidate/main-9904-demux-interrupt-discarded-read.patch" \
             packages/mpv-9904-demux-interrupt-discarded-read.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9905-vo-frame-refs.patch" \
+            packages/mpv-9905-vo-frame-refs.patch
           cp "$GITHUB_WORKSPACE/build/core-candidate/main-9905-hwdec-surface-pool.patch" \
-            packages/mpv-9905-hwdec-surface-pool.patch
+            packages/mpv-9906-hwdec-surface-pool.patch
           cp "$GITHUB_WORKSPACE/build/core-candidate/main-9906-spdif-reset.patch" \
-            packages/mpv-9906-spdif-reset.patch
+            packages/mpv-9907-spdif-reset.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-stream-group-backport-version.patch" \
             packages/mpv-8999-dovi-stream-group-backport-version.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-bluray-dovi-pair.patch" \
@@ -516,10 +518,12 @@ jobs:
             packages/mpv-9900-secondary-sub-scale.patch
           grep -Fq 'Server ignored range request at offset' \
             packages/mpv-9902-curl-range-validation.patch
+          grep -Fq 'vo_get_num_frame_refs' \
+            packages/mpv-9905-vo-frame-refs.patch
           grep -Fq 'hwdec_get_extra_frames' \
-            packages/mpv-9905-hwdec-surface-pool.patch
+            packages/mpv-9906-hwdec-surface-pool.patch
           grep -Fq 'Still waiting for TrueHD major sync' \
-            packages/mpv-9906-spdif-reset.patch
+            packages/mpv-9907-spdif-reset.patch
           grep -Fq 'mp_chmap_equals(&map_in, &map_out) && !native_equal_layout' \
             packages/mpv-9005-swresample-native-layout.patch
           grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \

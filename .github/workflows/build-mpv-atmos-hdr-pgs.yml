@@ -296,6 +296,7 @@ jobs:
             mpv-8802-curl-range-validation.patch \
             mpv-8803-curl-compression-bounds.patch \
             mpv-8804-demux-interrupt-discarded-read.patch \
+            mpv-8805-vo-frame-refs.patch \
             mpv-8805-hwdec-surface-pool.patch \
             mpv-8806-spdif-reset.patch; do
             git -C "$src" apply --3way \
@@ -303,6 +304,7 @@ jobs:
           done
           grep -Fq 'Server ignored range request at offset' \
             "$src/stream/stream_curl.c"
+          grep -Fq 'vo_get_num_frame_refs' "$src/video/out/vo.c"
           grep -Fq 'hwdec_get_extra_frames' "$src/video/decode/vd_lavc.c"
           grep -Fq 'Still waiting for TrueHD major sync' \
             "$src/audio/decode/ad_spdif.c"
