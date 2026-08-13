@@ -1,0 +1,48 @@
+diff --git a/deps-fel/pins-fel.env b/deps-fel/pins-fel.env
+--- a/deps-fel/pins-fel.env
++++ b/deps-fel/pins-fel.env
+@@ -21,8 +21,8 @@ LIBPLACEBO_REF="master"
+ # the AV_STREAM_GROUP_PARAMS_DOLBY_VISION stream group that mpv's demux/dovi_split
+ # and demux_lavf now rely on. release/8.1 has NEITHER, so master is required until
+ # an ffmpeg release ships them. The vendored dovi_split patch is gone (upstream).
+-FFMPEG_URL="https://git.ffmpeg.org/ffmpeg.git"
+-FFMPEG_REF="master"
++FFMPEG_URL="https://github.com/FFmpeg/FFmpeg.git"
++FFMPEG_REF="b397eba2f0d3d86daf1098d0f27daffccc74fea5"
+ 
+ # NB: the mpv base is no longer pinned. The old MPV_FEL_BASE pin existed only to
+ # keep the vendored FEL mpv patch (patches-fel/) from rotting against a moving
+diff --git a/scripts/build-fel-deps.sh b/scripts/build-fel-deps.sh
+--- a/scripts/build-fel-deps.sh
++++ b/scripts/build-fel-deps.sh
+@@ -175,14 +175,24 @@ if [ "$MACOS" = 0 ]; then
+ # 3. ffmpeg (upstream master — carries the dovi_split BSF + DoVi stream group).
+ # ---------------------------------------------------------------------------
+ log "ffmpeg $FFMPEG_REF"
+ if [ ! -d "$WORK/ffmpeg/.git" ]; then
+-    git clone --branch "$FFMPEG_REF" "$FFMPEG_URL" "$WORK/ffmpeg"
+-else
+-    # We track master now, so an existing clone must re-fetch (like libplacebo
+-    # above) — a bare reset would freeze it at the clone-time origin/master.
+-    git -C "$WORK/ffmpeg" fetch origin "${FFMPEG_REF##*/}"
++    mkdir -p "$WORK/ffmpeg"
++    git -C "$WORK/ffmpeg" init -q
++    git -C "$WORK/ffmpeg" remote add origin "$FFMPEG_URL"
+ fi
+-git -C "$WORK/ffmpeg" reset --hard -q "origin/${FFMPEG_REF##*/}" 2>/dev/null || true
++fetched=0
++for attempt in 1 2 3; do
++    if git -C "$WORK/ffmpeg" fetch --depth 1 origin "$FFMPEG_REF"; then
++        fetched=1
++        break
++    fi
++    [ "$attempt" = 3 ] || sleep $((attempt * 2))
++done
++if [ "$fetched" != 1 ]; then
++    echo "failed to fetch pinned FFmpeg ref $FFMPEG_REF" >&2
++    exit 1
++fi
++git -C "$WORK/ffmpeg" reset --hard -q FETCH_HEAD
+ git -C "$WORK/ffmpeg" clean -fdx >/dev/null 2>&1 || true
+ 
+ ff_args=(--prefix="$PREFIX" --enable-shared --disable-static

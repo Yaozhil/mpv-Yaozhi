@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/build-mpv-atmos-hdr-pgs.yml"
       - "build/atmos/pin-mpv-master.patch"
+      - "build/atmos/pin-fel-dependencies.patch"
       - "patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
   workflow_dispatch:
 
@@ -67,6 +68,13 @@ jobs:
           repository: mgth/mpv-omniphony
           ref: ${{ env.MPV_OMNIPHONY_REF }}
           path: mpv-omniphony
+
+      - name: Pin FEL dependency sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git -C mpv-omniphony apply \
+            "$GITHUB_WORKSPACE/build/atmos/pin-fel-dependencies.patch"
 
       - name: Bootstrap Arch and MinGW repository
         shell: bash
