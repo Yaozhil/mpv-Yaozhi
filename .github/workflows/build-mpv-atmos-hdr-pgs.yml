@@ -6,20 +6,53 @@ on:
       - codex/hdr-pgs-core-fix
     paths:
       - ".github/workflows/build-mpv-atmos-hdr-pgs.yml"
-      - "patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
+      - "build/atmos/pin-mpv-master.patch"
+      - "patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  MPV_MASTER_REF: 99b4c12cc
-  MPV_OMNIPHONY_REF: v0.4.1-fel-beta.6
-  OMNIPHONY_ENGINE_REF: v0.4.1
-  OFFICIAL_PLAYER_SHA256: cafb15186b96f637f7448af4e99cc9411001a50706459389822a8aea2d678a4a
+  MPV_MASTER_REF: 8c67647b50059406c5c0444903597281b81516cf
+  MPV_OMNIPHONY_REF: v0.4.2-fel-beta.1
+  OMNIPHONY_ENGINE_REF: v0.4.2
 
 jobs:
+  build-liborender-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out pinned Omniphony engine
+        uses: actions/checkout@v6
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_ENGINE_REF }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build pinned liborender
+        working-directory: omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings -A dead_code
+        run: cargo build --release -p orender_ffi
+
+      - name: Stage liborender artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item omniphony-renderer/target/release/orender.dll out/
+          Copy-Item omniphony-renderer/orender_ffi/include/orender.h out/
+
+      - name: Upload liborender artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: liborender-windows-v0.4.2
+          path: out
+          if-no-files-found: error
+
   build-windows:
+    needs: build-liborender-windows
     runs-on: ubuntu-latest
     container: archlinux:latest
     timeout-minutes: 240
@@ -28,7 +61,7 @@ jobs:
       - name: Check out mpv-Yaozhi patch
         uses: actions/checkout@v6
 
-      - name: Check out mpv-omniphony beta.6 integration
+      - name: Check out mpv-omniphony beta.1 integration
         uses: actions/checkout@v6
         with:
           repository: mgth/mpv-omniphony
@@ -97,13 +130,15 @@ jobs:
           endian = 'little'
           EOF
 
-      - name: Resolve pinned libplacebo source
+      - name: Resolve libplacebo source
         id: libplacebo
         shell: bash
         run: |
           set -euxo pipefail
           source mpv-omniphony/deps-fel/pins-fel.env
-          echo "ref=${LIBPLACEBO_REF}" >> "$GITHUB_OUTPUT"
+          sha="$(git ls-remote "$LIBPLACEBO_URL" "$LIBPLACEBO_REF" | cut -f1)"
+          test -n "$sha"
+          echo "ref=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Restore FEL dependency cache
         id: felcache
@@ -196,22 +231,21 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
-      - name: Install pinned Omniphony engine
+      - name: Download pinned liborender
+        uses: actions/download-artifact@v7
+        with:
+          name: liborender-windows-v0.4.2
+          path: /tmp/liborender
+
+      - name: Install pinned liborender
         shell: bash
         run: |
           set -euxo pipefail
           SYS=/usr/x86_64-w64-mingw32
-          archive=/tmp/mpv-omniphony-beta6.zip
-          curl -fsSL \
-            "https://github.com/mgth/Omniphony/releases/download/mpv-v0.4.1-fel-beta.6/mpv-omniphony-fel-windows-x86_64.zip" \
-            -o "$archive"
-          echo "${OFFICIAL_PLAYER_SHA256}  $archive" | sha256sum -c -
-          mkdir -p /tmp/mpv-omniphony-beta6
-          unzip -q "$archive" -d /tmp/mpv-omniphony-beta6
-          engine="$(find /tmp/mpv-omniphony-beta6 -type f -iname orender.dll -print -quit)"
-          header="$(find /tmp/mpv-omniphony-beta6 -type f -iname orender.h -print -quit)"
-          test -n "$engine"
-          test -n "$header"
+          engine=/tmp/liborender/orender.dll
+          header=/tmp/liborender/orender.h
+          test -f "$engine"
+          test -f "$header"
           install -Dm755 "$engine" "$SYS/bin/orender.dll"
           install -Dm755 "$engine" "$SYS/lib/orender.dll"
           install -Dm644 "$header" "$SYS/include/orender.h"
@@ -240,13 +274,14 @@ jobs:
         run: |
           set -euxo pipefail
           cd mpv-omniphony
+          git apply "$GITHUB_WORKSPACE/build/atmos/pin-mpv-master.patch"
           MPV_MASTER_REF="$MPV_MASTER_REF" bash scripts/apply-patches-master.sh
           src="$(find build -maxdepth 1 -type d -name 'mpv-master-*' \
             ! -name 'mpv-master-clone' -print -quit)"
           test -n "$src"
           src="$(realpath "$src")"
           git -C "$src" apply --3way \
-            "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
+            "$GITHUB_WORKSPACE/patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
           git -C "$src" diff --check
 
@@ -279,8 +314,8 @@ jobs:
           cp mpv-omniphony/README.md staging/
           cp mpv-omniphony/COPYING staging/
           cp mpv-omniphony/THIRD-PARTY-NOTICES.md staging/
-          cp patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch \
-            staging/0001-image-subs-colorspace.patch
+          cp patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch \
+            staging/0008-image-subs-colorspace-master.patch
 
           should_skip() {
             case "$1" in
@@ -314,7 +349,7 @@ jobs:
             fi
           done
 
-          archive=mpv-omniphony-fel-beta.6-yaozhi-image-subs-windows-x86_64.zip
+          archive=mpv-omniphony-fel-beta.1-yaozhi-image-subs-windows-x86_64.zip
           (
             cd staging
             zip -r "../$archive" .
@@ -326,7 +361,7 @@ jobs:
         with:
           name: mpv-atmos-hdr-pgs-windows-x86_64
           path: |
-            mpv-omniphony-fel-beta.6-yaozhi-image-subs-windows-x86_64.zip
+            mpv-omniphony-fel-beta.1-yaozhi-image-subs-windows-x86_64.zip
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

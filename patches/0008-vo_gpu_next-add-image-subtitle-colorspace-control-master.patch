@@ -1,0 +1,130 @@
+From 03b17140ec4cc2f6eac20d0c595dfe034a3e4b02 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Fri, 24 Jul 2026 13:15:50 +0800
+Subject: [PATCH] vo_gpu_next: add image subtitle colorspace and brightness control
+
+---
+ DOCS/interface-changes.rst |  1 +
+ DOCS/man/options.rst       | 15 +++++++++++++++
+ video/out/vo_gpu_next.c    | 33 +++++++++++++++++++++++++++++++--
+ 3 files changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/DOCS/interface-changes.rst b/DOCS/interface-changes.rst
+index 230a5b5..49a64a1 100644
+--- a/DOCS/interface-changes.rst
++++ b/DOCS/interface-changes.rst
+@@ -81,6 +81,7 @@ Interface changes
+     - add `--sub-bitmap-max-size`
+     - add `--osd-shaper`
+     - add `--input-tablet-emulate-mouse` option
++    - add `--image-subs-colorspace` option
+     - add `--image-subs-hdr-peak` option
+     - add `--hwdec-threads`
+     - add `--hdr-reference-white`
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+index f9f1763..2274a65 100644
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -2816,9 +2816,24 @@ Subtitles
+     ``video-dynamic`` uses only per-scene video metadata,
+     ``video-static`` uses only static video metadata, (``--vo=gpu-next`` only)
+ 
++    Numeric values and ``sdr`` also control the diffuse white level when
++    ``--image-subs-colorspace`` selects SDR sRGB. The video metadata modes
++    fall back to standard SDR white in that path.
++
+     This also affects image subtitle brightness in HDR tone mapping with
+     ``--blend-subtitles=<yes|video>``.
+ 
++``--image-subs-colorspace=<video|sdr|auto>``
++    Controls the color space assigned to image subtitles such as PGS, VobSub,
++    and DVB subtitles (``--vo=gpu-next`` only).
++
++    ``video`` preserves the historical behavior and inherits the video color
++    space. ``sdr`` always treats image subtitles as SDR sRGB graphics.
++    ``auto`` uses SDR sRGB for HDR video and preserves the historical behavior
++    for SDR video. The default is ``video``.
++
++    This option does not affect text subtitles, OSD, or the video itself.
++
+ ``--sub-hdr-peak=<auto|sdr|10-10000>``
+     Controls the text subtitle and OSD diffuse white level in cd/m² (nits)
+     for HDR output (default: auto). In ``auto`` mode, subtitles and OSD follow
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 87d6610..ca126b7 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -174,10 +174,17 @@ struct priv {
+ static void update_render_options(struct vo *vo);
+ static void update_lut(struct priv *p, struct user_lut *lut);
+ 
++enum image_subs_colorspace_mode {
++    IMAGE_SUBS_COLORSPACE_VIDEO,
++    IMAGE_SUBS_COLORSPACE_SDR,
++    IMAGE_SUBS_COLORSPACE_AUTO,
++};
++
+ struct gl_next_opts {
+     bool delayed_peak;
+     int sub_hdr_peak;
+     int image_subs_hdr_peak;
++    int image_subs_colorspace;
+     int border_background;
+     float background_blur_radius;
+     float corner_rounding;
+@@ -206,6 +213,10 @@ const struct m_sub_options gl_next_conf = {
+             M_RANGE(10, 10000)},
+         {"image-subs-hdr-peak", OPT_CHOICE(image_subs_hdr_peak, {"sdr", PL_COLOR_SDR_WHITE},
+             {"video", -1}, {"video-static", -2}, {"video-dynamic", -3}),  M_RANGE(10, 10000)},
++        {"image-subs-colorspace", OPT_CHOICE(image_subs_colorspace,
++            {"video", IMAGE_SUBS_COLORSPACE_VIDEO},
++            {"sdr", IMAGE_SUBS_COLORSPACE_SDR},
++            {"auto", IMAGE_SUBS_COLORSPACE_AUTO})},
+         {"allow-delayed-peak-detect", OPT_BOOL(delayed_peak)},
+         {"border-background", OPT_CHOICE(border_background,
+             {"none",  BACKGROUND_NONE},
+@@ -232,6 +243,7 @@ const struct m_sub_options gl_next_conf = {
+         .background_blur_radius = 16.0f,
+         .inter_preserve = true,
+         .image_subs_hdr_peak = 1000,
++        .image_subs_colorspace = IMAGE_SUBS_COLORSPACE_VIDEO,
+         .target_hint = -1,
+         .target_hint_strict = true,
+     },
+@@ -398,8 +410,15 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
+         case SUBBITMAP_BGRA:
+             ol->mode = PL_OVERLAY_NORMAL;
+             ol->repr.alpha = PL_ALPHA_PREMULTIPLIED;
+-            // Infer bitmap colorspace from source
+-            if (src) {
++
++            bool use_video_colorspace = src &&
++                (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_VIDEO ||
++                 (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_AUTO &&
++                  !pl_color_transfer_is_hdr(src->params.color.transfer)));
++
++            if (use_video_colorspace) {
++                // Preserve the historical behavior when explicitly requested,
++                // or for SDR video in auto mode.
+                 ol->color = src->params.color;
+                 if (pl_color_transfer_is_hdr(ol->color.transfer)) {
+                     bool use_static = p->next_opts->image_subs_hdr_peak == -2;
+@@ -422,6 +441,16 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
+                 } else if (ref_luma) {
+                     ol->color.hdr.max_luma = ref_luma;
+                 }
++            } else {
++                // Interpret image subtitles as SDR graphics when explicitly
++                // requested (or selected by auto for HDR video). PGS streams
++                // do not carry enough metadata to infer this universally, so
++                // callers can choose the historical video-colorspace path.
++                // Keep an independent HDR diffuse white for the SDR path.
++                int peak = p->next_opts->image_subs_hdr_peak;
++                ol->color = pl_color_space_srgb;
++                ol->color.hdr.max_luma = peak >= 10
++                    ? peak : PL_COLOR_SDR_WHITE;
+             }
+             break;
+         case SUBBITMAP_LIBASS:
+-- 
+2.50.1.windows.1
