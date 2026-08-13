@@ -318,8 +318,9 @@ jobs:
             staging/0008-image-subs-colorspace-master.patch
 
           should_skip() {
-            case "$1" in
-              KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|AVRT.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*|VCRUNTIME*|api-ms-*)
+            local dll="${1^^}"
+            case "$dll" in
+              KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|SHCORE.*|SHLWAPI.*|OLE32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|AVICAP32.*|AVRT.*|D3D*|DXGI*|OPENGL32.*|SETUPAPI.*|RPCRT4.*|BCRYPT.*|BCRYPTPRIMITIVES.*|CFGMGR32.*|CRYPT32.*|COMDLG32.*|NETAPI32.*|NTDLL.*|POWRPROF.*|PSAPI.*|USERENV.*|WININET.*|WINTRUST.*|COMCTL32.*|IPHLPAPI.*|SECUR32.*|UXTHEME.*|DWMAPI.*|NCRYPT.*|DNSAPI.*|MPR.*|MSWSOCK.*|ODBC32.*|ODBCP32.*|VCRUNTIME*|API-MS-*|EXT-MS-*)
                 return 0 ;;
             esac
             return 1
