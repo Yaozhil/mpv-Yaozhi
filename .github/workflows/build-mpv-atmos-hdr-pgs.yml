@@ -69,13 +69,6 @@ jobs:
           ref: ${{ env.MPV_OMNIPHONY_REF }}
           path: mpv-omniphony
 
-      - name: Pin FEL dependency sources
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git -C mpv-omniphony apply \
-            "$GITHUB_WORKSPACE/build/atmos/pin-fel-dependencies.patch"
-
       - name: Bootstrap Arch and MinGW repository
         shell: bash
         run: |
@@ -104,6 +97,13 @@ jobs:
             mingw-w64-zlib mingw-w64-libdvdnav mingw-w64-libdvdread
           rustup default stable
           rustup target add x86_64-pc-windows-gnu
+
+      - name: Pin FEL dependency sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git -C mpv-omniphony apply \
+            "$GITHUB_WORKSPACE/build/atmos/pin-fel-dependencies.patch"
 
       - name: Install prebuilt cargo-c
         shell: bash
