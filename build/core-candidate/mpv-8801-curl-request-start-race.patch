@@ -1,0 +1,51 @@
+From 8849c4963ffeba96541614c1cd8bf02dc95bfb59 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Fri, 24 Jul 2026 19:28:36 +0200
+Subject: [PATCH] stream_curl: fix racy read of request_start when setting
+ initial pos
+
+request_start is producer state, a fast transfer can complete and roll it
+forward before curl_open gets to read it, mislabeling all stream offsets.
+Store the requested offset separately and use it for the initial pos.
+
+Fixes: 289723b41a
+---
+ stream/stream_curl.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/stream/stream_curl.c b/stream/stream_curl.c
+index d4acc51ba..71879bb29 100644
+--- a/stream/stream_curl.c
++++ b/stream/stream_curl.c
+@@ -168,6 +168,7 @@ struct priv {
+     // Stream parameters
+     bool seekable;
+     int64_t content_size; // -1 if unknown
++    int64_t start_offset; // requested initial byte offset, immutable after open
+ 
+     // Producer state. Only touched by the curl thread.
+     uint64_t request_start;    // absolute byte position of next request
+@@ -953,8 +954,10 @@ static int curl_open(stream_t *s, const struct stream_open_args *args)
+ 
+     if (args->special_arg) {
+         const struct curl_open_args *oa = args->special_arg;
+-        if (oa->offset > 0)
++        if (oa->offset > 0) {
++            p->start_offset = oa->offset;
+             p->request_start = oa->offset;
++        }
+         if (oa->end_offset > 0)
+             p->request_end = oa->end_offset;
+     }
+@@ -1001,7 +1004,7 @@ static int curl_open(stream_t *s, const struct stream_open_args *args)
+     s->get_size = curl_get_size;
+     s->control = curl_control;
+     s->close = curl_close;
+-    s->pos = p->request_start;
++    s->pos = p->start_offset;
+ 
+     return STREAM_OK;
+ }
+-- 
+2.54.0.windows.1
+

@@ -8,6 +8,7 @@ on:
       - ".github/workflows/build-mpv-atmos-hdr-pgs.yml"
       - "build/atmos/pin-mpv-master.patch"
       - "build/atmos/pin-fel-dependencies.patch"
+      - "build/core-candidate/**"
       - "patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
   workflow_dispatch:
 
@@ -290,6 +291,21 @@ jobs:
           src="$(realpath "$src")"
           git -C "$src" apply --3way \
             "$GITHUB_WORKSPACE/patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
+          for patch in \
+            mpv-8801-curl-request-start-race.patch \
+            mpv-8802-curl-range-validation.patch \
+            mpv-8803-curl-compression-bounds.patch \
+            mpv-8804-demux-interrupt-discarded-read.patch \
+            mpv-8805-hwdec-surface-pool.patch \
+            mpv-8806-spdif-reset.patch; do
+            git -C "$src" apply --3way \
+              "$GITHUB_WORKSPACE/build/core-candidate/$patch"
+          done
+          grep -Fq 'Server ignored range request at offset' \
+            "$src/stream/stream_curl.c"
+          grep -Fq 'hwdec_get_extra_frames' "$src/video/decode/vd_lavc.c"
+          grep -Fq 'Still waiting for TrueHD major sync' \
+            "$src/audio/decode/ad_spdif.c"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
           git -C "$src" diff --check
 
@@ -324,6 +340,13 @@ jobs:
           cp mpv-omniphony/THIRD-PARTY-NOTICES.md staging/
           cp patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch \
             staging/0008-image-subs-colorspace-master.patch
+
+          strings -a staging/mpv.exe > staging/mpv.strings
+          grep -Fq 'secondary-sub-scale' staging/mpv.strings
+          grep -Fq 'Server ignored range request at offset' staging/mpv.strings
+          grep -Fq 'Still waiting for TrueHD major sync' staging/mpv.strings
+          grep -Fq 'ad-orender-library' staging/mpv.strings
+          grep -Fq 'image-subs-colorspace' staging/mpv.strings
 
           should_skip() {
             local dll="${1^^}"

@@ -12,6 +12,7 @@ on:
       - "build/dolby-vision/**"
       - "build/hdr-pgs/**"
       - "build/uosc-danmaku/**"
+      - "build/core-candidate/**"
       - "portable_config/mpv.conf"
       - "portable_config/script-opts/image_subs_brightness.conf"
       - "portable_config/scripts/image-subs-brightness.lua"
@@ -184,6 +185,20 @@ jobs:
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
           cp "$GITHUB_WORKSPACE/patches/0007-swresample-use-native-canonical-input-layout.patch" \
             packages/mpv-9005-swresample-native-layout.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9900-secondary-sub-scale.patch" \
+            packages/mpv-9900-secondary-sub-scale.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9901-curl-request-start-race.patch" \
+            packages/mpv-9901-curl-request-start-race.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9902-curl-range-validation.patch" \
+            packages/mpv-9902-curl-range-validation.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9903-curl-compression-bounds.patch" \
+            packages/mpv-9903-curl-compression-bounds.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9904-demux-interrupt-discarded-read.patch" \
+            packages/mpv-9904-demux-interrupt-discarded-read.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9905-hwdec-surface-pool.patch" \
+            packages/mpv-9905-hwdec-surface-pool.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9906-spdif-reset.patch" \
+            packages/mpv-9906-spdif-reset.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-stream-group-backport-version.patch" \
             packages/mpv-8999-dovi-stream-group-backport-version.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-bluray-dovi-pair.patch" \
@@ -219,6 +234,8 @@ jobs:
             packages/ffmpeg-9007-animated-webp.patch
           cp "$GITHUB_WORKSPACE/build/ffmpeg9/ffmpeg-he-aac-960-backport.patch" \
             packages/ffmpeg-9008-he-aac-960.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/ffmpeg-8800-truehd-mat-padding.patch" \
+            packages/ffmpeg-9900-truehd-mat-padding.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
             packages/ffmpeg-8998-dovi-split.c
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
@@ -301,6 +318,7 @@ jobs:
               "ffmpeg-9003-nvenc-sdk-13.1.patch",
               "ffmpeg-9007-animated-webp.patch",
               "ffmpeg-9008-he-aac-960.patch",
+              "ffmpeg-9900-truehd-mat-padding.patch",
           ]
           source_files = [
               ("ffmpeg-8998-dovi-split.c", "libavcodec/bsf/dovi_split.c"),
@@ -494,6 +512,14 @@ jobs:
             packages/mpv-9004-sdl-spatial-channel-layouts.patch
           grep -Fq 'native_equal_layout' \
             packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'secondary-sub-scale' \
+            packages/mpv-9900-secondary-sub-scale.patch
+          grep -Fq 'Server ignored range request at offset' \
+            packages/mpv-9902-curl-range-validation.patch
+          grep -Fq 'hwdec_get_extra_frames' \
+            packages/mpv-9905-hwdec-surface-pool.patch
+          grep -Fq 'Still waiting for TrueHD major sync' \
+            packages/mpv-9906-spdif-reset.patch
           grep -Fq 'mp_chmap_equals(&map_in, &map_out) && !native_equal_layout' \
             packages/mpv-9005-swresample-native-layout.patch
           grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \
@@ -523,6 +549,9 @@ jobs:
           grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9007-animated-webp.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9008-he-aac-960.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9900-truehd-mat-padding.patch' packages/ffmpeg.cmake
+          grep -Fq 'Unusual TrueHD output_timing discontinuity' \
+            packages/ffmpeg-9900-truehd-mat-padding.patch
           grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8997-dovi-split-prerequisites.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8996-dovi-dual-track-stream-group.patch' packages/ffmpeg.cmake
@@ -597,7 +626,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/vvc/**', 'build/ffmpeg9/**', 'build/audio-layout/**', 'build/dolby-vision/**', 'patches/*.patch') }}
+          key: mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/vvc/**', 'build/ffmpeg9/**', 'build/audio-layout/**', 'build/dolby-vision/**', 'build/core-candidate/**', 'patches/*.patch') }}
           restore-keys: |
             mpv-hdr-pgs-av3a-vvdec-schannel-v1-ubuntu-gcc64-
 
@@ -792,6 +821,9 @@ jobs:
           grep -Fq 'hdr-vivid' artifact-check/mpv.strings
           grep -Fq 'libbluray version 1.5.1' artifact-check/mpv.strings
           grep -Fq 'Blu-ray Dolby Vision Profile 7' artifact-check/mpv.strings
+          grep -Fq 'secondary-sub-scale' artifact-check/mpv.strings
+          grep -Fq 'Server ignored range request at offset' artifact-check/mpv.strings
+          grep -Fq 'Still waiting for TrueHD major sync' artifact-check/mpv.strings
 
           ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
           test -f "$ffmpeg_exe"
@@ -807,6 +839,8 @@ jobs:
           grep -Fq 'force binaural rendering for spatial AV3A streams' \
             artifact-check/ffmpeg.strings
           grep -Fq 'dovi_split' artifact-check/ffmpeg.strings
+          grep -Fq 'Unusual TrueHD output_timing discontinuity' \
+            artifact-check/ffmpeg.strings
 
           mkdir artifact
           cp "$archive" artifact/
@@ -913,6 +947,18 @@ jobs:
 
           $mpv = Join-Path $mpvDir "mpv.com"
           $ffmpeg = Join-Path $artifact "ffmpeg-av3a-validation.exe"
+
+          $optionText = (& $mpv --no-config --list-options 2>&1 |
+            ForEach-Object { "$_" }) -join "`n"
+          foreach ($required in @(
+            "secondary-sub-scale",
+            "hwdec-extra-frames.*Choices: auto.*default: auto",
+            "image-subs-colorspace"
+          )) {
+            if ($optionText -notmatch $required) {
+              throw "Missing candidate option marker: $required"
+            }
+          }
 
           & (Join-Path $artifact "verify-fel.ps1") `
             -FFmpegPath $ffmpeg `

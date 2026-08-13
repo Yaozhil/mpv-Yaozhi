@@ -1,0 +1,115 @@
+From 48e6c35c0e056d9e4ff04b98e012416697736d8a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Sun, 26 Jul 2026 15:09:14 +0200
+Subject: [PATCH] demux: interrupt blocking reads whose result would be
+ discarded
+
+Add demux_read_interrupted(), true when the demuxer is being canceled,
+its thread is terminating, or a seek is queued. Poll it from
+demux_lavf's AVIO interrupt callback so blocking network I/O (e.g. the
+HLS demuxer waiting on a live playlist reload) doesn't stall queued
+seeks or shutdown for multiple seconds. The aborted read's result is
+discarded in all of these cases anyway.
+
+In normal operation demuxer reads are fast enough to not notice the
+issue. However, in the HLS/DASH demuxers, FFmpeg blocks read() calls
+on the playlist reload timeout. This is expected, but can mean multiple
+seconds of dummy wait before we can actually proceed. This change
+significantly speeds up seeking in HLS playback when it hits a playlist
+reload.
+---
+ demux/demux.c      | 17 ++++++++++++++---
+ demux/demux.h      |  1 +
+ demux/demux_lavf.c |  7 ++++---
+ 3 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index 22540bbb8..f42808983 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -184,7 +184,7 @@ struct demux_internal {
+ 
+     // -- All the following fields are protected by lock.
+ 
+-    bool thread_terminate;
++    atomic_bool thread_terminate;   // read unlocked by demux_read_interrupted()
+     bool threading;
+     bool shutdown_async;
+     void (*wakeup_cb)(void *ctx);
+@@ -242,7 +242,8 @@ struct demux_internal {
+ 
+     bool tracks_switched;       // thread needs to inform demuxer of this
+ 
+-    bool seeking;               // there's a seek queued
++    atomic_bool seeking;        // there's a seek queued; read unlocked
++                                // by demux_read_interrupted()
+     int seek_flags;             // flags for next seek (if seeking==true)
+     double seek_pts;
+ 
+@@ -2362,7 +2363,7 @@ static bool read_packet(struct demux_internal *in)
+     struct demux_packet *pkt = NULL;
+ 
+     bool eof = true;
+-    if (demux->desc->read_packet && !demux_cancel_test(demux))
++    if (demux->desc->read_packet && !demux_read_interrupted(demux))
+         eof = !demux->desc->read_packet(demux, &pkt);
+ 
+     mp_mutex_lock(&in->lock);
+@@ -4734,6 +4735,16 @@ bool demux_cancel_test(struct demuxer *demuxer)
+     return mp_cancel_test(demuxer->cancel);
+ }
+ 
++// Returns true if a blocking read should be aborted as soon as possible,
++// because its result will be discarded anyway.
++bool demux_read_interrupted(struct demuxer *demuxer)
++{
++    struct demux_internal *in = demuxer->in;
++    return atomic_load_explicit(&in->seeking, memory_order_relaxed) ||
++           atomic_load_explicit(&in->thread_terminate, memory_order_relaxed) ||
++           demux_cancel_test(demuxer);
++}
++
+ struct demux_chapter *demux_copy_chapter_data(struct demux_chapter *c, int num)
+ {
+     struct demux_chapter *new = talloc_array(NULL, struct demux_chapter, num);
+diff --git a/demux/demux.h b/demux/demux.h
+index 6fabf64b9..b300da653 100644
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -322,6 +322,7 @@ void demux_set_wakeup_cb(struct demuxer *demuxer, void (*cb)(void *ctx), void *c
+ void demux_start_prefetch(struct demuxer *demuxer);
+ 
+ bool demux_cancel_test(struct demuxer *demuxer);
++bool demux_read_interrupted(struct demuxer *demuxer);
+ 
+ void demux_flush(struct demuxer *demuxer);
+ int demux_seek(struct demuxer *demuxer, double rel_seek_secs, int flags);
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index a5d743106..4d91983e1 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -924,8 +924,7 @@ static void update_metadata(demuxer_t *demuxer)
+ 
+ static int interrupt_cb(void *ctx)
+ {
+-    struct demuxer *demuxer = ctx;
+-    return mp_cancel_test(demuxer->cancel);
++    return demux_read_interrupted(ctx);
+ }
+ 
+ static int block_io_open(struct AVFormatContext *s, AVIOContext **pb,
+@@ -1676,8 +1675,10 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
+         av_packet_free(&pkt);
+         if (r == AVERROR_EOF)
+             return false;
+-        if (mp_cancel_test(demux->cancel))
++        if (demux_read_interrupted(demux)) {
++            MP_VERBOSE(demux, "read interrupted: %s.\n", av_err2str(r));
+             return false;
++        }
+         MP_WARN(demux, "error reading packet: %s.\n", av_err2str(r));
+         if (priv->retry_counter >= 10) {
+             MP_ERR(demux, "...treating it as fatal error.\n");
+-- 
+2.54.0.windows.1
+

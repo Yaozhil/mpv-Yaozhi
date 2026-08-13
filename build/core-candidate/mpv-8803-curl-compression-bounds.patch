@@ -1,0 +1,29 @@
+From 762c5999c22381935578c08d03e769efbf9b6b81 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Fri, 24 Jul 2026 19:29:34 +0200
+Subject: [PATCH] stream_curl: only offer compression for full unbounded
+ requests
+
+The requested start/end is in file bytes, we cannot use compression in
+this case.
+---
+ stream/stream_curl.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/stream/stream_curl.c b/stream/stream_curl.c
+index 31ef67e23..ceb843bc4 100644
+--- a/stream/stream_curl.c
++++ b/stream/stream_curl.c
+@@ -789,7 +789,8 @@ static void setup_curl(struct priv *p)
+     curl_easy_setopt(c, CURLOPT_DEBUGFUNCTION, debug_callback);
+     curl_easy_setopt(c, CURLOPT_DEBUGDATA, p);
+ 
+-    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
++    bool identity = p->start_offset > 0 || p->request_end > 0;
++    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, identity ? "identity" : "");
+     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+     curl_easy_setopt(c, CURLOPT_MAXREDIRS, (long)p->opts->max_redirects);
+     curl_easy_setopt(c, CURLOPT_HTTP_VERSION, (long)p->opts->http_version);
+-- 
+2.54.0.windows.1
+
