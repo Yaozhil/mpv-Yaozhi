@@ -2,9 +2,12 @@
 
 ## 修复范围
 
-`0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch` 基于当前发行版
-`mpv v0.41.0-846-g99b4c12cc`，只修改 `vo=gpu-next` 的
-`SUBBITMAP_BGRA` overlay。它覆盖 PGS、VobSub、DVB 等图形字幕，不修改：
+主核心继续使用 `0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch`，
+基于当前发行版 `mpv v0.41.0-846-g99b4c12cc`；Atmos 侧车使用
+`0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch`，已刷新到
+`mpv-v0.4.2-fel-beta.1` 对应的 mpv master `8c67647b5`。两者运行时语义相同，
+都只修改 `vo=gpu-next` 的 `SUBBITMAP_BGRA` overlay。补丁覆盖 PGS、VobSub、
+DVB 等图形字幕，不修改：
 
 - 视频帧及 Dolby Vision Profile 5/7/8 处理；
 - ASS、SSA、SRT 等文本字幕；
