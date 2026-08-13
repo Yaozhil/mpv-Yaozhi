@@ -24,6 +24,9 @@ commit is a descendant of the TrueHD MAT fix. It therefore applies only the
 network, paired VO/hwdec, and SPDIF patches after the Omniphony and
 image-subtitle stacks. The VO frame-retention commit is a mandatory direct
 prerequisite of the hwdec auto-sizing commit and is always applied first.
+Its newly enabled libcurl is pinned to `curl@68720b4` (8.21.0) and built with
+the native Windows Schannel/CA backend; OpenSSL, ECH, HTTP/2 and HTTP/3 remain
+disabled in this sidecar to keep the added dependency surface minimal.
 
 ## Release gate
 
