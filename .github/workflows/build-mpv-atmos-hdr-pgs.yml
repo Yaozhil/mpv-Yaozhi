@@ -90,15 +90,23 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          pacman -S --noconfirm --needed \
-            base-devel git unzip zip curl rustup nasm cmake \
-            mingw-w64-gcc \
-            mingw-w64-pkg-config \
-            mingw-w64-meson \
-            mingw-w64-libass \
-            mingw-w64-vulkan-headers mingw-w64-vulkan-icd-loader \
-            mingw-w64-shaderc mingw-w64-spirv-cross mingw-w64-lcms2 \
-            mingw-w64-zlib mingw-w64-libdvdnav mingw-w64-libdvdread
+          for attempt in 1 2; do
+            # Mirrors can rotate between bootstrap and this large transaction.
+            # Refresh and upgrade immediately before each installation attempt.
+            pacman -Syyu --noconfirm
+            if pacman -S --noconfirm --needed \
+              base-devel git unzip zip curl rustup nasm cmake \
+              mingw-w64-gcc \
+              mingw-w64-pkg-config \
+              mingw-w64-meson \
+              mingw-w64-libass \
+              mingw-w64-vulkan-headers mingw-w64-vulkan-icd-loader \
+              mingw-w64-shaderc mingw-w64-spirv-cross mingw-w64-lcms2 \
+              mingw-w64-zlib mingw-w64-libdvdnav mingw-w64-libdvdread; then
+              break
+            fi
+            test "$attempt" -eq 2 && exit 1
+          done
           rustup default stable
           rustup target add x86_64-pc-windows-gnu
 
