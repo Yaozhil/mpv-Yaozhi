@@ -9,6 +9,7 @@ on:
       - "build/av3a/**"
       - "build/hdr-pgs/**"
       - "build/uosc-danmaku/**"
+      - "build/feedback/tests/verify-feedback-fixes.lua"
       - "build/dolby-vision/**"
       - "portable_config/mpv.conf"
       - "portable_config/script-opts/image_subs_brightness.conf"
