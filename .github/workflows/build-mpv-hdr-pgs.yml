@@ -502,22 +502,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cd winbuild/mpv-winbuild-cmake
-          rm -rf \
-            src_packages/avs3-audiodec \
-            src_packages/davs2 \
-            src_packages/ffmpeg \
-            src_packages/libpsl \
-            src_packages/libsdl2 \
-            src_packages/mpv \
-            build64/packages/avs3-audiodec-prefix \
-            build64/packages/davs2-prefix \
-            build64/packages/ffmpeg-prefix \
-            build64/packages/libpsl-prefix \
-            build64/packages/libsdl2-prefix \
-            build64/packages/mpv-prefix \
-            build64/packages/mpv-release-prefix \
-            build64/packages/mpv-packaging-prefix
+          # Keep the reusable source trees and ExternalProject stamps. The
+          # final build step below invalidates only the patched packages while
+          # preserving their pinned checkout/update state; deleting the trees
+          # here forces a fresh remote git update and can stall the runner.
+          test -d winbuild/mpv-winbuild-cmake/build64
 
       - name: Preflight and build libcurl dependency chain
         shell: bash
@@ -626,8 +615,24 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
-          bash ../build.sh -t 64 -c gcc -s false
+
+          # Reapply the current package patch chain without invoking the
+          # winbuild helper's unconditional `ninja update` remote fetch.
+          for package in avs3-audiodec davs2 ffmpeg libpsl libsdl2 mpv; do
+            ninja -C build64 "${package}-fullclean"
+            stamp_dir="build64/packages/${package}-prefix/src/${package}-stamp"
+            test -d "$stamp_dir"
+            touch "$stamp_dir/${package}-download" "$stamp_dir/${package}-update"
+          done
+          ninja -C build64 mpv
+
+          mkdir -p release
+          built_dir="$(find build64 -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          cp -a "$built_dir" release/
+          7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
 
       - name: Collect failed build logs
         if: steps.build.outcome == 'failure'
