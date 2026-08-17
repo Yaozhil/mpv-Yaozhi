@@ -166,7 +166,7 @@ index a5d743106..5f6fde7cf 100644
              struct sh_stream *el =
                  mp_dovi_split_el_stream(priv->streams[n]->dovi_split);
 diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
-index e9159d752..63f922f91 100644
+index e9159d752..c229f2010 100644
 --- a/demux/demux_mkv.c
 +++ b/demux/demux_mkv.c
 @@ -223,6 +223,7 @@ typedef struct mkv_demuxer {
@@ -177,7 +177,15 @@ index e9159d752..63f922f91 100644
  
      bool index_has_durations;
  
-@@ -1588,6 +1589,34 @@ static void display_create_tracks(demuxer_t *demuxer)
+@@ -1570,6 +1571,7 @@ static void init_track(demuxer_t *demuxer, mkv_track_t *track,
+ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx);
+ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track, int idx);
+ static int demux_mkv_open_sub(demuxer_t *demuxer, mkv_track_t *track, int idx);
++static void update_inactive_subtitle_cache(demuxer_t *demuxer);
+ 
+ static void display_create_tracks(demuxer_t *demuxer)
+ {
+@@ -1588,6 +1590,34 @@ static void display_create_tracks(demuxer_t *demuxer)
              break;
          }
      }
@@ -212,7 +220,7 @@ index e9159d752..63f922f91 100644
  }
  
  static const char *const mkv_video_tags[][2] = {
-@@ -3123,7 +3152,14 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
+@@ -3123,7 +3153,14 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
                                      ? mp_dovi_split_el_stream(track->dovi_split)
                                      : NULL;
      bool need_for_split = split_el && demux_stream_is_selected(split_el);
