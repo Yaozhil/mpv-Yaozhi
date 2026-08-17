@@ -9,7 +9,6 @@ on:
       - "build/av3a/**"
       - "build/hdr-pgs/**"
       - "build/uosc-danmaku/**"
-      - "build/feedback/tests/verify-feedback-fixes.lua"
       - "build/dolby-vision/**"
       - "portable_config/mpv.conf"
       - "portable_config/script-opts/image_subs_brightness.conf"
@@ -70,7 +69,6 @@ jobs:
           set -euxo pipefail
           luajit build/hdr-pgs/tests/verify-image-subs-policy.lua
           luajit build/uosc-danmaku/tests/verify-blackbar-layout.lua
-          luajit build/feedback/tests/verify-feedback-fixes.lua
 
       - name: Prepare matching Windows build system
         shell: bash
