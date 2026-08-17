@@ -1,11 +1,17 @@
-From 69e2bd75c0ec37bfedc6dbbb980d20d80e24e6a4 Mon Sep 17 00:00:00 2001
+From f3f10b008c249505ef7f33e8cc91c75aab77e309 Mon Sep 17 00:00:00 2001
 From: Yaozhi mpv build <build@local.invalid>
 Date: Mon, 17 Aug 2026 22:35:00 +0800
-Subject: [PATCH] demux: cache inactive native Matroska subtitle tracks
+Subject: [PATCH] demux: cache inactive embedded subtitle tracks
 
 ---
+ demux/demux.c      | 75 ++++++++++++++++++++++++++++++++++++++++++++--
+ demux/demux.h      |  3 ++
+ demux/demux_lavf.c | 24 +++++++++++++++
+ demux/demux_mkv.c  | 39 +++++++++++++++++++++++-
+ 4 files changed, 138 insertions(+), 3 deletions(-)
+
 diff --git a/demux/demux.c b/demux/demux.c
-index b63038b6c..57586c7c1 100644
+index b63038b6c..7d57857e0 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
 @@ -388,6 +388,7 @@ struct demux_stream {
@@ -35,10 +41,16 @@ index b63038b6c..57586c7c1 100644
  
      if (!drop) {
          // If libavformat splits packets, some packets will have pos unset, so
-@@ -4089,6 +4091,46 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4089,6 +4091,53 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
  {
      struct demux_stream *ds = stream->ds;
      ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
++    // Subtitle selection asks for packets 10 seconds before the playback
++    // point. Keep that preroll for the queue lookup, but test cache coverage
++    // at the actual playback point so a valid A/V cache range is not rejected.
++    double cache_ref_pts = ref_pts;
++    if (ds->type == STREAM_SUB)
++        cache_ref_pts = MP_ADD_PTS(cache_ref_pts, 10.0);
 +    // Sparse subtitle queues need not contain a packet at ref_pts. If the
 +    // current range has already been demuxed through ref_pts, the demuxer has
 +    // also delivered every embedded subtitle packet up to it.
@@ -48,11 +60,12 @@ index b63038b6c..57586c7c1 100644
 +        double cache_start = range->seek_start != MP_NOPTS_VALUE
 +            ? range->seek_start : ds->queue->seek_start;
 +        bool starts_before_ref = range->is_bof ||
-+            (cache_start != MP_NOPTS_VALUE && ref_pts >= cache_start);
++            (cache_start != MP_NOPTS_VALUE && cache_ref_pts >= cache_start);
 +        bool ends_after_ref = range->is_eof ||
-+            (range->seek_end != MP_NOPTS_VALUE && ref_pts <= range->seek_end);
++            (range->seek_end != MP_NOPTS_VALUE &&
++             cache_ref_pts <= range->seek_end);
 +        ends_after_ref |= in->demux_ts != MP_NOPTS_VALUE &&
-+                          in->demux_ts >= ref_pts;
++                          in->demux_ts >= cache_ref_pts;
 +        cache_covers_ref = starts_before_ref && ends_after_ref;
 +    }
 +    if (ds->cache_inactive && cache_covers_ref) {
@@ -82,7 +95,7 @@ index b63038b6c..57586c7c1 100644
  
      if (in->back_demuxing)
          ds->back_seek_pos = ref_pts;
-@@ -4190,6 +4232,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+@@ -4190,6 +4239,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
      return r;
  }
  
@@ -236,3 +249,6 @@ index e9159d752..c229f2010 100644
          return 0;
  
      current_pts = tc / 1e9 - track->codec_delay;
+-- 
+2.54.0.windows.1
+
