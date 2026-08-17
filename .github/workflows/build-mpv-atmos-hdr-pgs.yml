@@ -81,7 +81,10 @@ jobs:
           SigLevel = Optional TrustAll
           Server = https://martchus.no-ip.biz/repo/arch/$repo/os/$arch
           EOF
-          pacman -Syu --noconfirm
+          # The base container can retain a repository database that references
+          # packages already rotated off the mirrors. Force a fresh sync before
+          # the full upgrade so dependency installation is reproducible.
+          pacman -Syyu --noconfirm
 
       - name: Install MinGW and FEL build dependencies
         shell: bash
