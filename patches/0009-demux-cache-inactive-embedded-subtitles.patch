@@ -1,11 +1,17 @@
-From 9c405e6086b56972609a46404221c6fed652c0b7 Mon Sep 17 00:00:00 2001
+From 996c941edb4a1235725ae39aba9080b9da80899d Mon Sep 17 00:00:00 2001
 From: Yaozhi mpv build <build@local.invalid>
-Date: Mon, 17 Aug 2026 22:35:00 +0800
-Subject: [PATCH] demux: cache inactive native Matroska subtitle tracks
+Date: Mon, 17 Aug 2026 23:23:04 +0800
+Subject: [PATCH] demux: diagnose inactive Matroska subtitle cache
 
 ---
+ demux/demux.c      | 80 ++++++++++++++++++++++++++++++++++++++++++++--
+ demux/demux.h      |  3 ++
+ demux/demux_lavf.c | 24 ++++++++++++++
+ demux/demux_mkv.c  | 40 +++++++++++++++++++++--
+ 4 files changed, 143 insertions(+), 4 deletions(-)
+
 diff --git a/demux/demux.c b/demux/demux.c
-index 20d2739d9..4ff758898 100644
+index 20d2739d9..a4c72bd10 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
 @@ -388,6 +388,7 @@ struct demux_stream {
@@ -35,7 +41,7 @@ index 20d2739d9..4ff758898 100644
  
      if (!drop) {
          // If libavformat splits packets, some packets will have pos unset, so
-@@ -4092,6 +4094,46 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4092,6 +4094,56 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
  {
      struct demux_stream *ds = stream->ds;
      ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
@@ -54,6 +60,16 @@ index 20d2739d9..4ff758898 100644
 +        ends_after_ref |= in->demux_ts != MP_NOPTS_VALUE &&
 +                          in->demux_ts >= ref_pts;
 +        cache_covers_ref = starts_before_ref && ends_after_ref;
++        MP_VERBOSE(in, "inactive subtitle cache stream=%d enabled=%d "
++                   "range=%p queue=%p cached=%d ref=%f start=%f end=%f "
++                   "demux=%f\n", stream->index, ds->cache_inactive,
++                   (void *)range, (void *)ds->queue, cache_covers_ref,
++                   ref_pts, cache_start, range->seek_end, in->demux_ts);
++    }
++    if (ds->type == STREAM_SUB && !range) {
++        MP_VERBOSE(in, "inactive subtitle cache stream=%d enabled=%d "
++                   "has-current-range=0\n", stream->index,
++                   ds->cache_inactive);
 +    }
 +    if (ds->cache_inactive && cache_covers_ref) {
 +        struct demux_packet *target = NULL;
@@ -82,7 +98,7 @@ index 20d2739d9..4ff758898 100644
  
      if (in->back_demuxing)
          ds->back_seek_pos = ref_pts;
-@@ -4193,6 +4235,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+@@ -4193,6 +4245,30 @@ bool demux_stream_is_selected(struct sh_stream *stream)
      return r;
  }
  
@@ -95,6 +111,8 @@ index 20d2739d9..4ff758898 100644
 +    struct demux_stream *ds = stream->ds;
 +    mp_mutex_lock(&in->lock);
 +    if (ds->cache_inactive != enabled) {
++        MP_VERBOSE(in, "inactive subtitle cache %s stream %d\n",
++                   enabled ? "enabled" : "disabled", stream->index);
 +        ds->cache_inactive = enabled;
 +        if (!enabled && !ds->selected) {
 +            for (int n = 0; n < in->num_ranges; n++) {
@@ -237,3 +255,6 @@ index 0b59be5fb..4416702d7 100644
          return 0;
  
      current_pts = tc / 1e9 - track->codec_delay;
+-- 
+2.54.0.windows.1
+
