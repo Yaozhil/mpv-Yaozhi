@@ -1,3 +1,15 @@
+From 31a03f28b0a43eac20d1ffb75ec3bd180e7b1853 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Mon, 17 Aug 2026 19:21:40 +0800
+Subject: [PATCH] demux: cache inactive native Matroska subtitle tracks
+
+---
+ demux/demux.c      | 67 ++++++++++++++++++++++++++++++++++++++++++++--
+ demux/demux.h      |  3 +++
+ demux/demux_lavf.c | 24 +++++++++++++++++
+ demux/demux_mkv.c  | 40 ++++++++++++++++++++++++++-
+ 4 files changed, 131 insertions(+), 3 deletions(-)
+
 diff --git a/demux/demux.c b/demux/demux.c
 index 20d2739d9..424be5cc3 100644
 --- a/demux/demux.c

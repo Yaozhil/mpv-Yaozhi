@@ -431,7 +431,11 @@ jobs:
             packages/mpv-9005-swresample-native-layout.patch
           grep -Fq 'switchable_subs > 1' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'ds->type != STREAM_SUB' \
+          grep -Fq 'demuxer_set_stream_cache_inactive' \
+            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          grep -Fq 'cache_inactive_subtitles' \
+            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          grep -Fq 'using cached packets for stream' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
