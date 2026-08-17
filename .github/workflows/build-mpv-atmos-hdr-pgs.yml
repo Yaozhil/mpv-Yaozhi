@@ -9,7 +9,7 @@ on:
       - "build/atmos/pin-mpv-master.patch"
       - "build/atmos/pin-fel-dependencies.patch"
       - "patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
-      - "patches/0009-demux-cache-inactive-embedded-subtitles.patch"
+      - "patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch"
   workflow_dispatch:
 
 permissions:
@@ -292,7 +292,7 @@ jobs:
           git -C "$src" apply --3way \
             "$GITHUB_WORKSPACE/patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
           git -C "$src" apply --3way \
-            "$GITHUB_WORKSPACE/patches/0009-demux-cache-inactive-embedded-subtitles.patch"
+            "$GITHUB_WORKSPACE/patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
           git -C "$src" diff --check
 
@@ -327,8 +327,8 @@ jobs:
           cp mpv-omniphony/THIRD-PARTY-NOTICES.md staging/
           cp patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch \
             staging/0008-image-subs-colorspace-master.patch
-          cp patches/0009-demux-cache-inactive-embedded-subtitles.patch \
-            staging/0009-cache-inactive-embedded-subtitles.patch
+          cp patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch \
+            staging/0010-cache-inactive-embedded-subtitles-atmos.patch
 
           should_skip() {
             local dll="${1^^}"
