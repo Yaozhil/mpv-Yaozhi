@@ -157,18 +157,15 @@ jobs:
           # cppwinrt is not consumed by mpv or its dependency graph.  The
           # pinned winbuild's custom install command is misparsed by current
           # CMake as the default make-based install, which blocks cold caches.
+          import re
+
           cppwinrt = Path("toolchain/cppwinrt.cmake")
           text = cppwinrt.read_text()
-          old = (
-              "    INSTALL_COMMAND ${EXEC} ninja -C <BINARY_DIR> install\n"
-              "            COMMAND ${EXEC} wget -O <BINARY_DIR>/Windows.winmd "
-              "https://github.com/microsoft/windows-rs/raw/master/crates/libs/bindgen/default/Windows.winmd\n"
-              "            COMMAND ${EXEC} cppwinrt -input <BINARY_DIR>/Windows.winmd "
-              "-output ${MINGW_INSTALL_PREFIX}/include/\n"
-          )
-          if old not in text:
+          pattern = r"^    INSTALL_COMMAND[\s\S]*?(?=^    LOG_DOWNLOAD)"
+          if not re.search(pattern, text, flags=re.MULTILINE):
               raise SystemExit("Could not locate cppwinrt install command")
-          text = text.replace(old, '    INSTALL_COMMAND ""\n', 1)
+          text = re.sub(pattern, '    INSTALL_COMMAND ""\n', text,
+                        count=1, flags=re.MULTILINE)
           cppwinrt.write_text(text)
           PY
 
