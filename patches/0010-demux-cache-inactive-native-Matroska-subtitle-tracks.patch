@@ -1,4 +1,4 @@
-From c0343586747be86d72a19bd7ab557a765f81fab4 Mon Sep 17 00:00:00 2001
+From ac3cbf3a8f067d4313620341491a54564282184d Mon Sep 17 00:00:00 2001
 From: Yaozhi mpv build <build@local.invalid>
 Date: Mon, 17 Aug 2026 19:21:40 +0800
 Subject: [PATCH] demux: cache inactive native Matroska subtitle tracks
@@ -7,8 +7,8 @@ Subject: [PATCH] demux: cache inactive native Matroska subtitle tracks
  demux/demux.c      | 67 ++++++++++++++++++++++++++++++++++++++++++++--
  demux/demux.h      |  3 +++
  demux/demux_lavf.c | 24 +++++++++++++++++
- demux/demux_mkv.c  | 40 ++++++++++++++++++++++++++-
- 4 files changed, 131 insertions(+), 3 deletions(-)
+ demux/demux_mkv.c  | 31 +++++++++++++++++++--
+ 4 files changed, 121 insertions(+), 4 deletions(-)
 
 diff --git a/demux/demux.c b/demux/demux.c
 index b63038b6c..0113bab3a 100644
@@ -171,24 +171,31 @@ index a5d743106..5f6fde7cf 100644
              struct sh_stream *el =
                  mp_dovi_split_el_stream(priv->streams[n]->dovi_split);
 diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
-index e9159d752..93f9687bc 100644
+index e9159d752..b25f79cbf 100644
 --- a/demux/demux_mkv.c
 +++ b/demux/demux_mkv.c
-@@ -223,6 +223,7 @@ typedef struct mkv_demuxer {
+@@ -107,6 +107,7 @@ typedef struct mkv_track {
+     char *language;
+ 
+     int type;
++    bool cache_inactive;
+ 
+     uint32_t v_width, v_height, v_dwidth, v_dheight;
+     bool v_dwidth_set, v_dheight_set;
+@@ -223,7 +224,6 @@ typedef struct mkv_demuxer {
      int v_skip_to_keyframe, a_skip_to_keyframe;
      int a_skip_preroll;
      int subtitle_preroll;
-+    bool cache_inactive_subtitles;
- 
+-
      bool index_has_durations;
  
-@@ -1590,6 +1591,30 @@ static void display_create_tracks(demuxer_t *demuxer)
+     bool eof_warning, keyframe_warning;
+@@ -1590,6 +1590,21 @@ static void display_create_tracks(demuxer_t *demuxer)
      }
  }
  
-+static void update_inactive_subtitle_cache(demuxer_t *demuxer)
++static bool has_switchable_subtitle_tracks(mkv_demuxer_t *mkv_d)
 +{
-+    mkv_demuxer_t *mkv_d = demuxer->priv;
 +    int num_subtitles = 0;
 +
 +    for (int n = 0; n < mkv_d->num_tracks; n++) {
@@ -199,29 +206,13 @@ index e9159d752..93f9687bc 100644
 +        }
 +    }
 +
-+    mkv_d->cache_inactive_subtitles = num_subtitles > 1;
-+    for (int n = 0; n < mkv_d->num_tracks; n++) {
-+        mkv_track_t *track = mkv_d->tracks[n];
-+        if (track->type == MATROSKA_TRACK_SUBTITLE && track->stream) {
-+            demuxer_set_stream_cache_inactive(
-+                track->stream, mkv_d->cache_inactive_subtitles &&
-+                !track->stream->attached_picture);
-+        }
-+    }
++    return num_subtitles > 1;
 +}
 +
  static const char *const mkv_video_tags[][2] = {
      {"V_MJPEG",             "mjpeg"},
      {"V_MPEG1",             "mpeg1video"},
-@@ -2603,6 +2628,7 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
-     MP_VERBOSE(demuxer, "All headers are parsed!\n");
- 
-     display_create_tracks(demuxer);
-+    update_inactive_subtitle_cache(demuxer);
-     pair_dovi_tracks(demuxer);
-     add_coverart(demuxer);
-     process_tags(demuxer);
-@@ -3123,7 +3149,13 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
+@@ -3123,7 +3138,19 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
                                      ? mp_dovi_split_el_stream(track->dovi_split)
                                      : NULL;
      bool need_for_split = split_el && demux_stream_is_selected(split_el);
@@ -230,32 +221,17 @@ index e9159d752..93f9687bc 100644
 +    // choice. The generic cache can then serve the packets at the current
 +    // playback point instead of forcing a refresh seek on a later switch.
 +    bool cache_inactive_subtitle = track->type == MATROSKA_TRACK_SUBTITLE &&
-+                                  mkv_d->cache_inactive_subtitles;
++                                  !stream->attached_picture &&
++                                  has_switchable_subtitle_tracks(mkv_d);
++    // Enable this before the generic cache handles the track's first packet.
++    if (cache_inactive_subtitle && !track->cache_inactive) {
++        demuxer_set_stream_cache_inactive(stream, true);
++        track->cache_inactive = true;
++    }
 +    if (!demux_stream_is_selected(stream) && !need_for_split &&
 +        !cache_inactive_subtitle)
          return 0;
  
      current_pts = tc / 1e9 - track->codec_delay;
-@@ -3761,6 +3793,11 @@ static void mkv_free(struct demuxer *demuxer)
-         demux_mkv_free_trackentry(mkv_d->tracks[i]);
- }
- 
-+static void demux_mkv_switched_tracks(demuxer_t *demuxer)
-+{
-+    update_inactive_subtitle_cache(demuxer);
-+}
-+
- const demuxer_desc_t demuxer_desc_matroska = {
-     .name = "mkv",
-     .desc = "Matroska",
-@@ -3768,6 +3805,7 @@ const demuxer_desc_t demuxer_desc_matroska = {
-     .read_packet = demux_mkv_read_packet,
-     .close = mkv_free,
-     .seek = demux_mkv_seek,
-+    .switched_tracks = demux_mkv_switched_tracks,
-     .load_timeline = build_ordered_chapter_timeline,
- };
- 
 -- 
 2.54.0.windows.1
-
