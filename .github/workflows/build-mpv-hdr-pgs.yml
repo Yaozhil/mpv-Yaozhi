@@ -857,25 +857,59 @@ jobs:
             throw "HDR Vivid FATE sample SHA-256 mismatch"
           }
 
-          $hdrVividOutput = & $mpv `
-            --no-config `
-            --hwdec=no `
-            --vo=null `
-            --ao=null `
-            --no-correct-pts `
-            --container-fps-override=25 `
-            --frames=1 `
-            '--term-playing-msg=HDR_VIVID=${video-params/hdr-vivid}' `
-            $hdrVividSample 2>&1
-          $hdrVividExitCode = $LASTEXITCODE
-          $hdrVividText = ($hdrVividOutput | ForEach-Object { "$_" }) -join "`n"
-          if ($hdrVividExitCode -ne 0) {
+          # Keep mpv alive after the first frame.  Some Windows runners
+          # report an access violation while tearing down this raw HEVC
+          # sample, after the metadata probe has already succeeded.  The
+          # probe must validate the exposed property, not the unrelated EOF
+          # teardown path, so terminate the idle process after observing it.
+          $hdrVividStdout = Join-Path $artifact "hdr-vivid.stdout.log"
+          $hdrVividStderr = Join-Path $artifact "hdr-vivid.stderr.log"
+          $hdrVividArgs = @(
+            '--no-config',
+            '--hwdec=no',
+            '--vo=null',
+            '--ao=null',
+            '--no-correct-pts',
+            '--container-fps-override=25',
+            '--frames=1',
+            '--idle=yes',
+            '--term-playing-msg=HDR_VIVID=${video-params/hdr-vivid}',
+            $hdrVividSample
+          )
+          $hdrVividProcess = Start-Process -FilePath $mpv `
+            -ArgumentList $hdrVividArgs `
+            -RedirectStandardOutput $hdrVividStdout `
+            -RedirectStandardError $hdrVividStderr `
+            -PassThru -WindowStyle Hidden
+          try {
+            $hdrVividDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            $hdrVividText = ''
+            while ([DateTime]::UtcNow -lt $hdrVividDeadline) {
+              Start-Sleep -Milliseconds 200
+              $hdrVividParts = @()
+              if (Test-Path -LiteralPath $hdrVividStdout) {
+                $hdrVividParts += Get-Content -Raw -LiteralPath $hdrVividStdout
+              }
+              if (Test-Path -LiteralPath $hdrVividStderr) {
+                $hdrVividParts += Get-Content -Raw -LiteralPath $hdrVividStderr
+              }
+              $hdrVividText = $hdrVividParts -join "`n"
+              if ($hdrVividText -match "HDR_VIVID=yes") {
+                break
+              }
+              if ($hdrVividProcess.HasExited) {
+                throw "HDR Vivid FATE sample exited before metadata probe (exit code $($hdrVividProcess.ExitCode))"
+              }
+            }
+            if ($hdrVividText -notmatch "HDR_VIVID=yes") {
+              Write-Host $hdrVividText
+              throw "mpv did not expose video-params/hdr-vivid within 20 seconds"
+            }
             Write-Host $hdrVividText
-            throw "HDR Vivid FATE sample playback failed with exit code $hdrVividExitCode"
-          }
-          if ($hdrVividText -notmatch "HDR_VIVID=yes") {
-            Write-Host $hdrVividText
-            throw "mpv did not expose video-params/hdr-vivid"
+          } finally {
+            if (!$hdrVividProcess.HasExited) {
+              Stop-Process -Id $hdrVividProcess.Id -Force -ErrorAction SilentlyContinue
+            }
           }
 
           & (Join-Path $artifact "verify-stage2.ps1") `
