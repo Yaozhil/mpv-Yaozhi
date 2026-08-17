@@ -1,0 +1,91 @@
+From d88b19d11f8c703831010c008b5ac9170e929876 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Mon, 17 Aug 2026 11:32:04 +0800
+Subject: [PATCH] demux: cache inactive embedded subtitles for instant
+ switching
+
+---
+ demux/demux.c      | 20 ++++++++++++++++++--
+ demux/demux_lavf.c | 16 ++++++++++++++++
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index b63038b6c..3400e9b7e 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -923,7 +923,10 @@ static void update_stream_selection_state(struct demux_internal *in,
+     for (int n = 0; n < in->num_ranges; n++) {
+         struct demux_cached_range *range = in->ranges[n];
+ 
+-        if (!ds->selected)
++        // libavformat keeps inactive embedded subtitle packets when a file
++        // offers multiple subtitle tracks.  Retain those sparse queues so a
++        // later switch can start from the existing cache without seeking.
++        if (!ds->selected && ds->type != STREAM_SUB)
+             clear_queue(range->streams[ds->index]);
+ 
+         update_seek_ranges(range);
+@@ -2111,7 +2114,8 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+ 
+     struct demux_queue *queue = ds->queue;
+ 
+-    bool drop = !ds->selected || in->seeking || ds->sh->attached_picture;
++    bool drop = (!ds->selected && ds->type != STREAM_SUB) || in->seeking ||
++                ds->sh->attached_picture;
+ 
+     if (!drop) {
+         // If libavformat splits packets, some packets will have pos unset, so
+@@ -4090,6 +4094,18 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+     struct demux_stream *ds = stream->ds;
+     ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
+ 
++    // Multiple embedded subtitle streams are cached passively while A/V
++    // playback advances.  Reusing packets that already cover this point
++    // avoids a refresh seek, which otherwise leaves image subtitles waiting
++    // behind the demuxer read head.
++    if (ds->type == STREAM_SUB && ds->queue->head &&
++        ds->queue->head->pts != MP_NOPTS_VALUE &&
++        ds->queue->head->pts <= ref_pts &&
++        ds->queue->last_ts != MP_NOPTS_VALUE && ds->queue->last_ts >= ref_pts)
++    {
++        return;
++    }
++
+     if (in->back_demuxing)
+         ds->back_seek_pos = ref_pts;
+     // Avoid refresh seek for video streams except when immediately after a seek
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index a5d743106..97903c1f8 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -600,11 +600,27 @@ static void guess_and_set_vobsub_name(struct demuxer *demuxer, AVDictionary **d)
+ static void select_tracks(struct demuxer *demuxer, int start)
+ {
+     lavf_priv_t *priv = demuxer->priv;
++    int switchable_subs = 0;
++
++    for (int n = 0; n < priv->num_streams; n++) {
++        struct sh_stream *stream = priv->streams[n]->sh;
++        if (stream && stream->type == STREAM_SUB && !stream->attached_picture)
++            switchable_subs++;
++    }
++
+     for (int n = start; n < priv->num_streams; n++) {
+         struct sh_stream *stream = priv->streams[n]->sh;
+         AVStream *st = priv->avfc->streams[n];
+         bool selected = stream && demux_stream_is_selected(stream) &&
+                         !stream->attached_picture;
++        // Keep every embedded subtitle stream in the demux cache when there
++        // is a real choice of subtitle tracks.  Track switching can then use
++        // packets at the current playback position without a refresh seek.
++        if (switchable_subs > 1 && stream && stream->type == STREAM_SUB &&
++            !stream->attached_picture)
++        {
++            selected = true;
++        }
+         if (!selected && priv->streams[n]->dovi_split) {
+             struct sh_stream *el =
+                 mp_dovi_split_el_stream(priv->streams[n]->dovi_split);
+-- 
+2.54.0.windows.1
+

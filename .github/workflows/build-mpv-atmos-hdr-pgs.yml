@@ -8,8 +8,8 @@ on:
       - ".github/workflows/build-mpv-atmos-hdr-pgs.yml"
       - "build/atmos/pin-mpv-master.patch"
       - "build/atmos/pin-fel-dependencies.patch"
-      - "build/core-candidate/**"
       - "patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
+      - "patches/0009-demux-cache-inactive-embedded-subtitles.patch"
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,6 @@ env:
   MPV_MASTER_REF: 8c67647b50059406c5c0444903597281b81516cf
   MPV_OMNIPHONY_REF: v0.4.2-fel-beta.1
   OMNIPHONY_ENGINE_REF: v0.4.2
-  CURL_REF: 68720b4837284335b2d63cb358f8f6ce65f5bc55
 
 jobs:
   build-liborender-windows:
@@ -91,7 +90,6 @@ jobs:
           pacman -S --noconfirm --needed \
             base-devel git unzip zip curl rustup nasm cmake \
             mingw-w64-gcc \
-            mingw-w64-cmake \
             mingw-w64-pkg-config \
             mingw-w64-meson \
             mingw-w64-libass \
@@ -141,53 +139,6 @@ jobs:
           endian = 'little'
           EOF
 
-      - name: Build pinned Schannel libcurl
-        shell: bash
-        run: |
-          set -euxo pipefail
-          SYS=/usr/x86_64-w64-mingw32
-          git init curl-src
-          git -C curl-src remote add origin https://github.com/curl/curl.git
-          git -C curl-src fetch --depth=1 origin "$CURL_REF"
-          git -C curl-src checkout --detach FETCH_HEAD
-          test "$(git -C curl-src rev-parse HEAD)" = "$CURL_REF"
-
-          x86_64-w64-mingw32-cmake -S curl-src -B curl-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$SYS" \
-            -DBUILD_SHARED_LIBS=ON \
-            -DBUILD_STATIC_LIBS=OFF \
-            -DBUILD_CURL_EXE=OFF \
-            -DBUILD_EXAMPLES=OFF \
-            -DBUILD_LIBCURL_DOCS=OFF \
-            -DBUILD_MISC_DOCS=OFF \
-            -DBUILD_TESTING=OFF \
-            -DCURL_USE_OPENSSL=OFF \
-            -DCURL_USE_SCHANNEL=ON \
-            -DCURL_CA_NATIVE=ON \
-            -DUSE_ECH=OFF \
-            -DCURL_ZLIB=ON \
-            -DCURL_BROTLI=OFF \
-            -DCURL_ZSTD=OFF \
-            -DCURL_USE_LIBPSL=OFF \
-            -DCURL_USE_LIBSSH2=OFF \
-            -DUSE_NGHTTP2=OFF \
-            -DUSE_NGTCP2=OFF \
-            -DUSE_QUICHE=OFF \
-            -DCURL_DISABLE_LDAP=ON \
-            -DCURL_DISABLE_LDAPS=ON
-          cmake --build curl-build --parallel "$(nproc)"
-          cmake --install curl-build
-
-          grep -Fq '#define USE_SCHANNEL 1' curl-build/lib/curl_config.h
-          if grep -Fq '#define USE_OPENSSL 1' curl-build/lib/curl_config.h; then
-            echo "::error::Atmos libcurl unexpectedly enabled OpenSSL"
-            exit 1
-          fi
-          test -n "$(find "$SYS/bin" -maxdepth 1 -iname 'libcurl*.dll' -print -quit)"
-          x86_64-w64-mingw32-pkg-config --atleast-version=8.21.0 libcurl
-          x86_64-w64-mingw32-pkg-config --libs libcurl
-
       - name: Resolve libplacebo source
         id: libplacebo
         shell: bash
@@ -203,19 +154,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            /usr/x86_64-w64-mingw32/bin/avcodec*.dll
-            /usr/x86_64-w64-mingw32/bin/avfilter*.dll
-            /usr/x86_64-w64-mingw32/bin/avformat*.dll
-            /usr/x86_64-w64-mingw32/bin/avutil*.dll
-            /usr/x86_64-w64-mingw32/bin/avdevice*.dll
-            /usr/x86_64-w64-mingw32/bin/swresample*.dll
-            /usr/x86_64-w64-mingw32/bin/swscale*.dll
-            /usr/x86_64-w64-mingw32/bin/libplacebo*.dll
-            /usr/x86_64-w64-mingw32/bin/libdovi*.dll
-            /usr/x86_64-w64-mingw32/lib/pkgconfig/libav*.pc
-            /usr/x86_64-w64-mingw32/lib/pkgconfig/libsw*.pc
-            /usr/x86_64-w64-mingw32/lib/pkgconfig/libplacebo.pc
-            /usr/x86_64-w64-mingw32/lib/pkgconfig/dovi.pc
+            /usr/x86_64-w64-mingw32/bin
+            /usr/x86_64-w64-mingw32/lib/pkgconfig
             /usr/x86_64-w64-mingw32/lib/libplacebo*
             /usr/x86_64-w64-mingw32/lib/libav*
             /usr/x86_64-w64-mingw32/lib/libsw*
@@ -242,7 +182,6 @@ jobs:
           set -euxo pipefail
           x86_64-w64-mingw32-pkg-config --atleast-version=7.370 libplacebo
           x86_64-w64-mingw32-pkg-config --exists dovi
-          x86_64-w64-mingw32-pkg-config --atleast-version=8.21.0 libcurl
 
       - name: Build ABI-matched libsrt
         shell: bash
@@ -352,23 +291,8 @@ jobs:
           src="$(realpath "$src")"
           git -C "$src" apply --3way \
             "$GITHUB_WORKSPACE/patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
-          for patch in \
-            mpv-8801-curl-request-start-race.patch \
-            mpv-8802-curl-range-validation.patch \
-            mpv-8803-curl-compression-bounds.patch \
-            mpv-8804-demux-interrupt-discarded-read.patch \
-            mpv-8805-vo-frame-refs.patch \
-            mpv-8805-hwdec-surface-pool.patch \
-            mpv-8806-spdif-reset.patch; do
-            git -C "$src" apply --3way \
-              "$GITHUB_WORKSPACE/build/core-candidate/$patch"
-          done
-          grep -Fq 'Server ignored range request at offset' \
-            "$src/stream/stream_curl.c"
-          grep -Fq 'vo_get_num_frame_refs' "$src/video/out/vo.c"
-          grep -Fq 'hwdec_get_extra_frames' "$src/video/decode/vd_lavc.c"
-          grep -Fq 'Still waiting for TrueHD major sync' \
-            "$src/audio/decode/ad_spdif.c"
+          git -C "$src" apply --3way \
+            "$GITHUB_WORKSPACE/patches/0009-demux-cache-inactive-embedded-subtitles.patch"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
           git -C "$src" diff --check
 
@@ -381,7 +305,6 @@ jobs:
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
             -Dlua=lua52 \
-            -Dlibcurl=enabled \
             -Dasio=enabled \
             -Dd3d11=enabled \
             -Dcuda-hwaccel=enabled \
@@ -404,15 +327,8 @@ jobs:
           cp mpv-omniphony/THIRD-PARTY-NOTICES.md staging/
           cp patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch \
             staging/0008-image-subs-colorspace-master.patch
-
-          strings -a staging/mpv.exe > staging/mpv.strings
-          grep -Fq 'secondary-sub-scale' staging/mpv.strings
-          grep -Fq 'Server ignored range request at offset' staging/mpv.strings
-          grep -Fq 'Still waiting for TrueHD major sync' staging/mpv.strings
-          grep -Fq 'ad-orender-library' staging/mpv.strings
-          grep -Fq 'image-subs-colorspace' staging/mpv.strings
-          x86_64-w64-mingw32-objdump -p staging/mpv.exe > staging/mpv.imports
-          grep -Eqi 'DLL Name:.*curl' staging/mpv.imports
+          cp patches/0009-demux-cache-inactive-embedded-subtitles.patch \
+            staging/0009-cache-inactive-embedded-subtitles.patch
 
           should_skip() {
             local dll="${1^^}"
@@ -440,11 +356,6 @@ jobs:
               fi
             done
           done
-
-          curl_dll="$(find staging -maxdepth 1 -iname 'libcurl*.dll' -print -quit)"
-          test -n "$curl_dll"
-          strings -a "$curl_dll" > staging/libcurl.strings
-          grep -qi 'schannel' staging/libcurl.strings
 
           for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
             if [ -f "$SYS/bin/$dll" ] && [ ! -f "staging/$dll" ]; then
