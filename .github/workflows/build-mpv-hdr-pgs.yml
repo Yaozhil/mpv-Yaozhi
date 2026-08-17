@@ -1,1 +1,886 @@
-@.github/workflows/build-mpv-hdr-pgs.yml
+name: Build mpv HDR PGS + AV3A
+
+on:
+  push:
+    branches:
+      - codex/hdr-pgs-core-fix
+    paths:
+      - ".github/workflows/build-mpv-hdr-pgs.yml"
+      - "build/av3a/**"
+      - "build/hdr-pgs/**"
+      - "build/uosc-danmaku/**"
+      - "build/dolby-vision/**"
+      - "portable_config/mpv.conf"
+      - "portable_config/script-opts/image_subs_brightness.conf"
+      - "portable_config/scripts/image-subs-brightness.lua"
+      - "portable_config/scripts/uosc_danmaku/modules/render.lua"
+      - "patches/README.md"
+      - "patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch"
+      - "patches/0002-ao-wasapi-preserve-height-channel-layouts.patch"
+      - "patches/0003-sdl2-wasapi-spatial-speaker-mask.patch"
+      - "patches/0004-video-expose-hdr-vivid-metadata.patch"
+      - "patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch"
+      - "patches/0006-sdl2-allow-spatial-channel-counts.patch"
+      - "patches/0007-swresample-use-native-canonical-input-layout.patch"
+      - "patches/0009-demux-cache-inactive-embedded-subtitles.patch"
+      - "build/audio-layout/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
+      MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
+      MPV_COMMIT: 99b4c12cccb4d8d3f72b41944cb6c640e2156650
+      DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
+      SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
+      LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bison flex gettext git mercurial subversion \
+            ninja-build gyp cmake yasm nasm automake pkg-config libtool \
+            libtool-bin gcc-multilib g++-multilib clang lld libc++-dev \
+            libc++abi-dev libgmp-dev libmpfr-dev libmpc-dev libgcrypt20-dev \
+            gperf ragel texinfo autopoint re2c asciidoc python3-pip \
+            python3-cairo docbook2x unzip p7zip-full curl wget ccache
+          sudo apt-get install -y luajit
+          python3 -m pip install --break-system-packages \
+            rst2pdf meson mako jsonschema roman
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check out configuration and patch
+        uses: actions/checkout@v6
+
+      - name: Verify Lua subtitle and danmaku policies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          luajit build/hdr-pgs/tests/verify-image-subs-policy.lua
+          luajit build/uosc-danmaku/tests/verify-blackbar-layout.lua
+
+      - name: Prepare matching Windows build system
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          clone_commit() {
+            local repository="$1"
+            local destination="$2"
+            local commit="$3"
+            git init "$destination"
+            git -C "$destination" remote add origin "$repository"
+            git -C "$destination" fetch --depth 1 origin "$commit"
+            git -C "$destination" checkout --detach FETCH_HEAD
+            test "$(git -C "$destination" rev-parse HEAD)" = "$commit"
+          }
+
+          clone_commit \
+            https://github.com/zhongfly/mpv-winbuild.git \
+            winbuild \
+            "$MPV_WINBUILD_COMMIT"
+          clone_commit \
+            https://github.com/shinchiro/mpv-winbuild-cmake.git \
+            winbuild/mpv-winbuild-cmake \
+            "$MPV_WINBUILD_CMAKE_COMMIT"
+
+          cd winbuild/mpv-winbuild-cmake
+          for patch in ../patch/*.patch; do
+            if [ "$(basename "$patch")" = \
+              "0008-ngtcp2-nghttp3-nghttp2-add-ngtcp2-nghttp3-nghttp2.patch" ]; then
+              echo "Skipping optional HTTP/3 patch incompatible with current OpenSSL"
+              continue
+            fi
+            echo "Applying required build patch: $patch"
+            git am --3way "$patch"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("packages/mpv.cmake")
+          text = path.read_text()
+          patch_command = (
+              "    GIT_CLONE_FLAGS \"\"\n"
+              "    PATCH_COMMAND ${EXEC} git am --3way "
+              "${CMAKE_CURRENT_SOURCE_DIR}/mpv-*.patch\n"
+          )
+          if "PATCH_COMMAND ${EXEC} git am --3way ${CMAKE_CURRENT_SOURCE_DIR}/mpv-*.patch" not in text:
+              anchor = '    GIT_CLONE_FLAGS "--filter=tree:0"\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate mpv GIT_CLONE_FLAGS anchor")
+              text = text.replace(anchor, patch_command, 1)
+
+          option = "        -Dsdl2-audio=enabled\n"
+          if option not in text:
+              anchor = "        -Dsdl2-gamepad=enabled\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate SDL2 gamepad option")
+              text = text.replace(anchor, anchor + option, 1)
+
+          path.write_text(text)
+
+          sdl2 = Path("packages/libsdl2.cmake")
+          text = sdl2.read_text()
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9000-spatial-speaker-mask.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9000-spatial-speaker-mask.patch\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9001-spatial-channel-counts.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9001-spatial-channel-counts.patch\n"
+          )
+          if "sdl2-9000-spatial-speaker-mask.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate SDL2 update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+          sdl2.write_text(text)
+
+          # cppwinrt is not consumed by mpv or its dependency graph.  The
+          # pinned winbuild's custom install command is misparsed by current
+          # CMake as the default make-based install, which blocks cold caches.
+          import re
+
+          cppwinrt = Path("toolchain/cppwinrt.cmake")
+          text = cppwinrt.read_text()
+          pattern = r"^    INSTALL_COMMAND[\s\S]*?(?=^    LOG_DOWNLOAD)"
+          if not re.search(pattern, text, flags=re.MULTILINE):
+              raise SystemExit("Could not locate cppwinrt install command")
+          text = re.sub(pattern, '    INSTALL_COMMAND ""\n', text,
+                        count=1, flags=re.MULTILINE)
+          cppwinrt.write_text(text)
+          PY
+
+          cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
+            packages/mpv-9000-image-subs-colorspace.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \
+            packages/mpv-9001-avchannel-spatial-layout.patch
+          cp "$GITHUB_WORKSPACE/patches/0002-ao-wasapi-preserve-height-channel-layouts.patch" \
+            packages/mpv-9002-wasapi-height-channels.patch
+          cp "$GITHUB_WORKSPACE/patches/0004-video-expose-hdr-vivid-metadata.patch" \
+            packages/mpv-9003-hdr-vivid-metadata.patch
+          cp "$GITHUB_WORKSPACE/patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch" \
+            packages/mpv-9004-sdl-spatial-channel-layouts.patch
+          cp "$GITHUB_WORKSPACE/patches/0007-swresample-use-native-canonical-input-layout.patch" \
+            packages/mpv-9005-swresample-native-layout.patch
+          cp "$GITHUB_WORKSPACE/patches/0009-demux-cache-inactive-embedded-subtitles.patch" \
+            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
+            packages/sdl2-9000-spatial-speaker-mask.patch
+          cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
+            packages/sdl2-9001-spatial-channel-counts.patch
+
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
+            packages/avs3-audiodec.cmake
+          cp "$GITHUB_WORKSPACE/build/av3a/normalize-source-eol.py" \
+            packages/avs3-normalize-source-eol.py
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec-static-library.patch" \
+            packages/avs3-audiodec-9000-static-library.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-stage2.patch" \
+            packages/avs3-audiodec-9001-spatial-metadata.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-build.patch" \
+            packages/avs3-renderer-build.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-hardening.patch" \
+            packages/avs3-renderer-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
+            packages/ffmpeg-9000-libarcdav3a-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-spatial.patch" \
+            packages/ffmpeg-9004-libarcdav3a-spatial.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-multiframe-probe.patch" \
+            packages/ffmpeg-9001-av3a-multiframe-probe.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-frame-parser.patch" \
+            packages/ffmpeg-9002-av3a-frame-parser.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-nvenc-sdk-13.1.patch" \
+            packages/ffmpeg-9003-nvenc-sdk-13.1.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
+            packages/ffmpeg-8998-dovi-split.c
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-registration.patch" \
+            packages/ffmpeg-8998-dovi-split-registration.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
+            packages/davs2-9000-const-correctness.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/davs2-error-recovery.patch" \
+            packages/davs2-9001-error-recovery.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          packages = Path("packages/CMakeLists.txt")
+          text = packages.read_text()
+          av3a_entry = "    avs3-audiodec\n"
+          if av3a_entry not in text:
+              anchor = "    ffmpeg\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate ffmpeg package-list anchor")
+              text = text.replace(anchor, av3a_entry + anchor, 1)
+              packages.write_text(text)
+
+          ffmpeg = Path("packages/ffmpeg.cmake")
+          text = ffmpeg.read_text()
+          dependency = "        avs3-audiodec\n"
+          if dependency not in text:
+              anchor = "    DEPENDS\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg dependency anchor")
+              text = text.replace(anchor, anchor + dependency, 1)
+
+          upstream = "    GIT_REPOSITORY https://github.com/FFmpeg/FFmpeg.git\n"
+          fork = "    GIT_REPOSITORY https://github.com/llawsxx/FFmpeg.git\n"
+          if upstream in text:
+              text = text.replace(upstream, fork, 1)
+          elif fork not in text:
+              raise SystemExit("Could not locate FFmpeg repository")
+
+          tag = "    GIT_TAG 18c01ad424ca7712ef9a9d46953308efc75c4776\n"
+          if tag not in text:
+              text = text.replace(fork, fork + tag, 1)
+
+          patch_files = [
+              "ffmpeg-8997-dovi-split-prerequisites.patch",
+              "ffmpeg-8998-dovi-split-registration.patch",
+              "ffmpeg-9000-libarcdav3a-hardening.patch",
+              "ffmpeg-9004-libarcdav3a-spatial.patch",
+              "ffmpeg-9001-av3a-multiframe-probe.patch",
+              "ffmpeg-9002-av3a-frame-parser.patch",
+              "ffmpeg-9003-nvenc-sdk-13.1.patch",
+          ]
+          patch = (
+              "    PATCH_COMMAND ${CMAKE_COMMAND} -E copy "
+              "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-8998-dovi-split.c "
+              "libavcodec/bsf/dovi_split.c\n"
+          )
+          for patch_file in patch_files:
+              command = "        COMMAND"
+              patch += (
+                  command + " ${EXEC} git apply --check "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/" + patch_file + "\n"
+                  "        COMMAND ${EXEC} git apply "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/" + patch_file + "\n"
+              )
+          if "ffmpeg-9000-libarcdav3a-hardening.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+
+          option = "        --enable-libarcdav3a\n"
+          if option not in text:
+              anchor = "        --enable-libplacebo\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg configure anchor")
+              text = text.replace(anchor, anchor + option, 1)
+
+          ffmpeg.write_text(text)
+
+          davs2 = Path("packages/davs2.cmake")
+          text = davs2.read_text()
+          upstream = "    GIT_REPOSITORY https://github.com/saindriches/davs2.git\n"
+          fork = "    GIT_REPOSITORY https://github.com/llawsxx/davs2-10bit.git\n"
+          if upstream in text:
+              text = text.replace(upstream, fork, 1)
+          elif fork not in text:
+              raise SystemExit("Could not locate davs2 repository")
+
+          tag = "    GIT_TAG b42ffca966970dc788f8c57549bee038b2974346\n"
+          if tag not in text:
+              text = text.replace(fork, fork + tag, 1)
+
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9000-const-correctness.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9000-const-correctness.patch\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9001-error-recovery.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9001-error-recovery.patch\n"
+          )
+          if "davs2-9000-const-correctness.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate davs2 update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+
+          davs2.write_text(text)
+          PY
+
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/mpv-player\\/mpv.git/a\\    GIT_TAG $MPV_COMMIT" \
+            packages/mpv.cmake
+          sed -i \
+            's#https://git.videolan.org/git/ffmpeg/nv-codec-headers.git#https://github.com/FFmpeg/nv-codec-headers.git#' \
+            packages/nvcodec-headers.cmake
+          sed -i \
+            "s/GIT_TAG SDL2/GIT_TAG $SDL2_COMMIT/" \
+            packages/libsdl2.cmake
+          # A pinned commit is checked out detached. Leaving GIT_REMOTE_NAME
+          # set makes winbuild's force-update helper try to resolve @{u}.
+          sed -i \
+            '/^[[:space:]]*GIT_REMOTE_NAME origin$/d' \
+            packages/libsdl2.cmake
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/rockdaboot\\/libpsl.git/a\\    GIT_TAG $LIBPSL_COMMIT" \
+            packages/libpsl.cmake
+
+          # The Windows release must use Schannel so certificate verification
+          # follows the Windows trust store, matching the proven 7/17 build.
+          sed -i \
+            's/-DCURL_USE_OPENSSL=ON/-DCURL_USE_OPENSSL=OFF/' \
+            packages/curl.cmake
+          sed -i \
+            '/-DCURL_USE_OPENSSL=OFF/a\        -DCURL_USE_SCHANNEL=ON' \
+            packages/curl.cmake
+
+          # ECH is not available through Schannel in this build. Normal
+          # HTTP/HTTPS, Windows CA, redirects, ranges and request headers remain.
+          sed -i \
+            's/-DUSE_ECH=ON/-DUSE_ECH=OFF/' \
+            packages/curl.cmake
+
+          test -f packages/curl.cmake
+          grep -Eq '^[[:space:]]*curl[[:space:]]*$' packages/mpv.cmake
+          grep -Fq -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
+          grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
+          grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
+          if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
+            echo "::error::pinned SDL2 still uses branch-only force-update"
+            exit 1
+          fi
+          grep -n 'PATCH_COMMAND.*sdl2-9000' packages/libsdl2.cmake
+          grep -Fq 'sdl2-9001-spatial-channel-counts.patch' \
+            packages/libsdl2.cmake
+          grep -Fq 'WASAPI_ApplySpatialSpeakerMask' \
+            packages/sdl2-9000-spatial-speaker-mask.patch
+          grep -Fq 'orig->channels != 10' \
+            packages/sdl2-9001-spatial-channel-counts.patch
+          grep -Fq 'orig->channels != 12' \
+            packages/sdl2-9001-spatial-channel-counts.patch
+          if grep -E 'list\(APPEND removed .*"curl"' packages/CMakeLists.txt; then
+            echo "::error::curl is still excluded from the mpv dependency graph"
+            exit 1
+          fi
+          grep -Fq -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
+          grep -Fq -- '-DCURL_USE_SCHANNEL=ON' packages/curl.cmake
+          grep -Fq -- '-DCURL_CA_NATIVE=ON' packages/curl.cmake
+          grep -Fq -- '-DUSE_ECH=OFF' packages/curl.cmake
+          if grep -Fq -- '-DCURL_USE_OPENSSL=ON' packages/curl.cmake; then
+            echo "::error::curl OpenSSL backend is still enabled"
+            exit 1
+          fi
+          if grep -Fq -- '-DCURL_USE_SCHANNEL=OFF' packages/curl.cmake; then
+            echo "::error::curl Schannel backend is disabled"
+            exit 1
+          fi
+          if grep -Fq -- '-DUSE_ECH=ON' packages/curl.cmake; then
+            echo "::error::curl ECH is enabled in the Schannel release build"
+            exit 1
+          fi
+          if grep -Eq 'ngtcp2|nghttp3|USE_NGTCP2=ON|USE_NGHTTP3=ON' \
+            packages/CMakeLists.txt packages/curl.cmake; then
+            echo "::error::optional HTTP/3 dependencies are still enabled"
+            exit 1
+          fi
+          grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
+          grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
+          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' \
+            packages/mpv-9001-avchannel-spatial-layout.patch
+          grep -Fq 'AV_CHANNEL_ORDER_AMBISONIC' \
+            packages/mpv-9001-avchannel-spatial-layout.patch
+          grep -Fq 'mp_chmap_sel_add_any' \
+            packages/mpv-9001-avchannel-spatial-layout.patch
+          grep -Fq 'Representable layouts above 8 channels are probed as-is' \
+            packages/mpv-9002-wasapi-height-channels.patch
+          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' \
+            packages/mpv-9003-hdr-vivid-metadata.patch
+          grep -Fq 'video-params/hdr-vivid' \
+            packages/mpv-9003-hdr-vivid-metadata.patch
+          grep -Fq 'fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' \
+            packages/mpv-9004-sdl-spatial-channel-layouts.patch
+          grep -Fq 'native_equal_layout' \
+            packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'mp_chmap_equals(&map_in, &map_out) && !native_equal_layout' \
+            packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \
+            packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'mp_chmap_to_av_layout(&out_layout, &map_out)' \
+            packages/mpv-9005-swresample-native-layout.patch
+          grep -Fq 'switchable_subs > 1' \
+            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          grep -Fq 'ds->type != STREAM_SUB' \
+            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
+          grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
+          grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9001-av3a-multiframe-probe.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9002-av3a-frame-parser.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9003-nvenc-sdk-13.1.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8997-dovi-split-prerequisites.patch' packages/ffmpeg.cmake
+          grep -Fq 'AV_PKT_DATA_HEVC_CONF' \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq 'MATROSKA_BLOCK_ADD_ID_TYPE_HVCE' \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq "MKTAG('h','v','c','E')" \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq 'dovi_split_bsf_select="hevcparse"' \
+            packages/ffmpeg-8998-dovi-split-registration.patch
+          grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
+          grep -Fq 'av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
+            packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-renderer-build.patch' packages/avs3-audiodec.cmake
+          grep -Fq 'add_library(RendererCore STATIC' \
+            packages/avs3-renderer-build.patch
+          grep -Fq 'install(TARGETS RendererCore avs3_samplerate' \
+            packages/avs3-renderer-build.patch
+          grep -Fq 'avs3-renderer-hardening.patch' packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-normalize-source-eol.py' packages/avs3-audiodec.cmake
+          grep -Fq -- '-DAVS3_BUILD_RENDERER=ON' packages/avs3-audiodec.cmake
+          grep -Fq -- \
+            '-DRENDERER_ROOT=<SOURCE_DIR>/av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
+            packages/avs3-audiodec.cmake
+          grep -n -A4 -B2 'llawsxx/davs2-10bit' packages/davs2.cmake
+          grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
+          grep -n 'PATCH_COMMAND.*davs2-9000' packages/davs2.cmake
+          grep -Fq 'davs2-9001-error-recovery.patch' packages/davs2.cmake
+          grep -Fq 'decode_lcu_parse(h, i_level_next' \
+            packages/davs2-9001-error-recovery.patch
+          grep -Fq 'decode_lcu_recon(h, row_rec, i_level_next' \
+            packages/davs2-9001-error-recovery.patch
+          grep -Fq 'h->decoding_error == 0 && h->rps.refered_by_others' \
+            packages/davs2-9001-error-recovery.patch
+          grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
+          grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
+          grep -Fq "GIT_TAG $MPV_COMMIT" packages/mpv.cmake
+          grep -Fqx 'audio-device=auto' "$GITHUB_WORKSPACE/portable_config/mpv.conf"
+
+      - name: Restore reusable build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+          key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-hdr-pgs.yml', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
+          restore-keys: |
+            mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
+
+      - name: Reset cached patched sources before building
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd winbuild/mpv-winbuild-cmake
+          rm -rf \
+            src_packages/avs3-audiodec \
+            src_packages/curl \
+            src_packages/davs2 \
+            src_packages/ffmpeg \
+            src_packages/libpsl \
+            src_packages/libsdl2 \
+            src_packages/mpv \
+            build64/packages/avs3-audiodec-prefix \
+            build64/packages/curl-prefix \
+            build64/packages/davs2-prefix \
+            build64/packages/ffmpeg-prefix \
+            build64/packages/libpsl-prefix \
+            build64/packages/libsdl2-prefix \
+            build64/packages/mpv-prefix \
+            build64/packages/mpv-release-prefix \
+            build64/packages/mpv-packaging-prefix
+
+      - name: Preflight and build libcurl dependency chain
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          # The runner's rolling CMake release regressed this pinned
+          # winbuild's cppwinrt ExternalProject install command.
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          cmake -Wno-dev --fresh \
+            -DTARGET_ARCH=x86_64-w64-mingw32 \
+            -DCOMPILER_TOOLCHAIN=gcc \
+            -DENABLE_CCACHE=ON \
+            -DSINGLE_SOURCE_LOCATION="$PWD/src_packages" \
+            -DRUSTUP_LOCATION="$PWD/install_rustup" \
+            -G Ninja \
+            -S . \
+            -B build64
+
+          ninja -C build64 download || true
+          if [ ! -f build64/install/bin/cross-gcc ]; then
+            ninja -C build64 gcc
+            rm -rf build64/toolchain
+          fi
+          ninja -C build64 update
+          ninja -C build64 curl
+
+          curl_config_log=build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log
+          test -f "$curl_config_log"
+          grep -Fq -- 'Enabled SSL backends: Schannel' "$curl_config_log"
+          if grep -Fq -- 'Enabled SSL backends: OpenSSL' "$curl_config_log"; then
+            echo "::error::libcurl unexpectedly configured with OpenSSL"
+            exit 1
+          fi
+          grep -F -- 'Features:' "$curl_config_log"
+          grep -F -- 'Enabled SSL backends:' "$curl_config_log"
+
+      - name: Build and verify AV3A decoder dependency
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          ninja -C build64 avs3-audiodec
+
+          av3a_lib=build64/install/x86_64-w64-mingw32/lib/libAVS3AudioDec.a
+          renderer_lib=build64/install/x86_64-w64-mingw32/lib/libRendererCore.a
+          samplerate_lib=build64/install/x86_64-w64-mingw32/lib/libavs3_samplerate.a
+          test -f "$av3a_lib"
+          test -f "$renderer_lib"
+          test -f "$samplerate_lib"
+          test -f \
+            build64/install/x86_64-w64-mingw32/include/avs3a/avs3_spatial_metadata.h
+          test -f \
+            build64/install/x86_64-w64-mingw32/include/avs3-renderer/avs3_audio.h
+          nm -g --defined-only "$av3a_lib" > avs3-audiodec-symbols.txt
+          nm -g --defined-only "$renderer_lib" > avs3-renderer-symbols.txt
+          for symbol in \
+            avs3_create_decoder \
+            avs3_destroy_decoder \
+            parse_header \
+            avs3_decode \
+            avs3_get_spatial_stream_info \
+            avs3_get_spatial_frame; do
+            grep -Eq "[[:space:]]_?${symbol}$" avs3-audiodec-symbols.txt
+          done
+          for symbol in \
+            audio_create_context \
+            audio_destroy \
+            audio_submit_ambisonic_channel_buffer \
+            audio_submit_interleaved_ambisonic_buffer; do
+            grep -Eq "[[:space:]]_?${symbol}$" avs3-renderer-symbols.txt
+          done
+
+          av3a_prefix=build64/install/x86_64-w64-mingw32
+          build64/install/bin/cross-gcc \
+            -std=c99 -O2 -Wall -Wextra -Werror \
+            -I"$av3a_prefix/include/avs3a" \
+            "$GITHUB_WORKSPACE/build/av3a/tests/object-metadata-probe.c" \
+            "$av3a_lib" -lm \
+            -o object-metadata-probe.exe
+          test -f object-metadata-probe.exe
+
+      - name: Build static x86-64 mpv
+        id: build
+        continue-on-error: true
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          cd winbuild/mpv-winbuild-cmake
+          bash ../build.sh -t 64 -c gcc -s false
+
+      - name: Collect failed build logs
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          find winbuild/mpv-winbuild-cmake/build64 -type f \
+            \( -iname '*-*.log' -o -path '*/ffbuild/config.log' \) \
+            -print > build-log-files.txt
+          7za a build-logs.7z @build-log-files.txt
+
+      - name: Upload failed build logs
+        if: steps.build.outcome == 'failure'
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-hdr-pgs-build-logs
+          path: |
+            build-logs.7z
+            build-log-files.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stop after failed build
+        if: steps.build.outcome == 'failure'
+        run: exit 1
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          archive="$(find winbuild/mpv-winbuild-cmake/release \
+            -maxdepth 1 -type f -name 'mpv-x86_64-*.7z' -print -quit)"
+          test -n "$archive"
+          7za l "$archive" | grep -E 'mpv\.(exe|com)'
+          mkdir artifact-check
+          7za e -y -oartifact-check "$archive" mpv.exe mpv.com
+          strings -a artifact-check/mpv.exe > artifact-check/mpv.strings
+          grep -qi schannel artifact-check/mpv.strings
+          grep -qi libarcdav3a artifact-check/mpv.strings
+          grep -Fq 'SDL Audio' artifact-check/mpv.strings
+          grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
+          grep -Fq 'hdr-vivid' artifact-check/mpv.strings
+
+          ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
+          test -f "$ffmpeg_exe"
+          strings -a "$ffmpeg_exe" > artifact-check/ffmpeg.strings
+          grep -qi libarcdav3a artifact-check/ffmpeg.strings
+          grep -Fq av3a_render artifact-check/ffmpeg.strings
+          grep -Fq 'force binaural rendering for spatial AV3A streams' \
+            artifact-check/ffmpeg.strings
+          grep -Fq 'dovi_split' artifact-check/ffmpeg.strings
+
+          mkdir artifact
+          cp "$archive" artifact/
+          cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
+          cp build/dolby-vision/verify-fel.ps1 artifact/
+          cp \
+            winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
+            artifact/AV3A-SYMBOLS.txt
+          cp \
+            winbuild/mpv-winbuild-cmake/avs3-renderer-symbols.txt \
+            artifact/AV3A-RENDERER-SYMBOLS.txt
+          cp \
+            build/av3a/tests/hoa-order1-128k.av3a \
+            artifact/
+          cp \
+            build/av3a/tests/bed-object-moving.av3a \
+            artifact/
+          cp \
+            winbuild/mpv-winbuild-cmake/object-metadata-probe.exe \
+            artifact/
+          cp \
+            build/av3a/tests/verify-stage2.ps1 \
+            artifact/
+          cp \
+            build/audio-layout/verify-spatial-layouts.ps1 \
+            artifact/
+          (
+            cd artifact
+            sha256sum \
+              "$(basename "$archive")" \
+              ffmpeg-av3a-validation.exe \
+              hoa-order1-128k.av3a \
+              bed-object-moving.av3a \
+              object-metadata-probe.exe \
+              verify-stage2.ps1 \
+              verify-spatial-layouts.ps1 \
+              verify-fel.ps1 \
+              > SHA256SUMS.txt
+          )
+
+      - name: Upload custom mpv
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-hdr-pgs-av3a-x86_64
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 7
+
+  validate-windows:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download custom mpv
+        uses: actions/download-artifact@v6
+        with:
+          name: mpv-hdr-pgs-av3a-x86_64
+          path: artifact
+
+      - name: Verify spatial audio and AV3A playback on Windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifact = Join-Path $env:GITHUB_WORKSPACE "artifact"
+
+          Get-Content -LiteralPath (Join-Path $artifact "SHA256SUMS.txt") |
+            ForEach-Object {
+              if ($_ -notmatch "^([0-9a-f]{64})\s+(.+)$") {
+                throw "Invalid SHA256SUMS entry: $_"
+              }
+              $expected = $matches[1].ToUpperInvariant()
+              $path = Join-Path $artifact $matches[2]
+              $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+              if ($actual -ne $expected) {
+                throw "SHA-256 mismatch for $path"
+              }
+            }
+
+          $archive = Get-ChildItem -LiteralPath $artifact -Filter "mpv-x86_64-*.7z" |
+            Select-Object -First 1
+          if (-not $archive) {
+            throw "mpv release archive not found"
+          }
+
+          $mpvDir = Join-Path $artifact "mpv"
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$mpvDir" $archive.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip extraction failed with exit code $LASTEXITCODE"
+          }
+
+          $mpv = Join-Path $mpvDir "mpv.com"
+          $aoHelp = & $mpv --no-config --ao=help 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "mpv --ao=help failed"
+          }
+          $aoText = ($aoHelp | ForEach-Object { "$_" }) -join "`n"
+          foreach ($required in @("wasapi", "sdl", "SDL Audio")) {
+            if ($aoText -notmatch [regex]::Escape($required)) {
+              throw "Missing audio output marker: $required"
+            }
+          }
+
+          & (Join-Path $artifact "verify-fel.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv
+
+          & (Join-Path $artifact "verify-spatial-layouts.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -WorkDir (Join-Path $artifact "spatial-layout-validation")
+
+          # SDL only exposes a channel count to mpv.  The dummy backend makes
+          # negotiation deterministic and must successfully open both spatial
+          # layouts.  This catches mpv layout folds as well as SDL's historical
+          # public eight-channel limit before the Windows WASAPI endpoint applies
+          # the matching WAVEFORMATEXTENSIBLE speaker mask.
+          $sdlSpatialCases = @(
+            @{
+              Name = "5.1.4"
+              Count = 10
+              Layout = "fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr"
+            },
+            @{
+              Name = "7.1.4"
+              Count = 12
+              Layout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr"
+            }
+          )
+          $previousSdlDriver = $env:SDL_AUDIODRIVER
+          $env:SDL_AUDIODRIVER = "dummy"
+          try {
+            foreach ($spatialCase in $sdlSpatialCases) {
+              $channelCount = [int]$spatialCase.Count
+              $layout = [string]$spatialCase.Layout
+              $sample = Join-Path $artifact "sdl-$($spatialCase.Name)-silence.raw"
+              [IO.File]::WriteAllBytes(
+                $sample,
+                (New-Object byte[] (48000 * $channelCount * 2 / 10))
+              )
+              $sdlSpatialOutput = & $mpv `
+                --no-config `
+                --demuxer=rawaudio `
+                --demuxer-rawaudio-format=s16le `
+                "--demuxer-rawaudio-channels=$layout" `
+                --demuxer-rawaudio-rate=48000 `
+                "--audio-channels=$layout" `
+                --vo=null `
+                --ao=sdl `
+                --length=0.05 `
+                --msg-level=all=warn,ao/sdl=trace `
+                $sample 2>&1
+              $sdlSpatialExit = $LASTEXITCODE
+              $sdlSpatialText = `
+                ($sdlSpatialOutput | ForEach-Object { "$_" }) -join "`n"
+
+              if ($sdlSpatialExit -ne 0) {
+                throw "SDL $($spatialCase.Name) open failed:`n$sdlSpatialText"
+              }
+              $expectedResult = "result: $layout"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedResult)) {
+                throw "SDL changed the $($spatialCase.Name) channel layout"
+              }
+              $expectedRequested = `
+                "requested format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedRequested)) {
+                throw "SDL requested the wrong $($spatialCase.Name) channel count"
+              }
+              $expectedObtained = `
+                "obtained format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedObtained)) {
+                throw "SDL did not open $($spatialCase.Name) with $channelCount channels"
+              }
+              if ($sdlSpatialText -match "Unsupported number of audio channels") {
+                throw "SDL still rejects $($spatialCase.Name) before opening the device"
+              }
+            }
+          } finally {
+            $env:SDL_AUDIODRIVER = $previousSdlDriver
+          }
+
+          $hdrVividSample = Join-Path $artifact "hdr_vivid_h265_sample.hevc"
+          Invoke-WebRequest `
+            -Uri "https://fate-suite.ffmpeg.org/hevc/hdr_vivid_h265_sample.hevc" `
+            -OutFile $hdrVividSample
+          $expectedHdrVividSha = `
+            "F03A633D537C8B34B3FA81EC17C986A5E05E13F22C4B43ADCF1DF0CECE9DCBAC"
+          $actualHdrVividSha = `
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrVividSample).Hash
+          if ($actualHdrVividSha -ne $expectedHdrVividSha) {
+            throw "HDR Vivid FATE sample SHA-256 mismatch"
+          }
+
+          $hdrVividOutput = & $mpv `
+            --no-config `
+            --hwdec=no `
+            --vo=null `
+            --ao=null `
+            --no-correct-pts `
+            --container-fps-override=25 `
+            --frames=1 `
+            '--term-playing-msg=HDR_VIVID=${video-params/hdr-vivid}' `
+            $hdrVividSample 2>&1
+          $hdrVividExitCode = $LASTEXITCODE
+          $hdrVividText = ($hdrVividOutput | ForEach-Object { "$_" }) -join "`n"
+          if ($hdrVividExitCode -ne 0) {
+            Write-Host $hdrVividText
+            throw "HDR Vivid FATE sample playback failed with exit code $hdrVividExitCode"
+          }
+          if ($hdrVividText -notmatch "HDR_VIVID=yes") {
+            Write-Host $hdrVividText
+            throw "mpv did not expose video-params/hdr-vivid"
+          }
+
+          & (Join-Path $artifact "verify-stage2.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a") `
+            -ObjectSamplePath (Join-Path $artifact "bed-object-moving.av3a") `
+            -MetadataProbePath (Join-Path $artifact "object-metadata-probe.exe")
