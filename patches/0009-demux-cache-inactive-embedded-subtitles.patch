@@ -1,17 +1,17 @@
-From 996c941edb4a1235725ae39aba9080b9da80899d Mon Sep 17 00:00:00 2001
+From 8817201d92d35a78bbba7aa67e771c656ceb738f Mon Sep 17 00:00:00 2001
 From: Yaozhi mpv build <build@local.invalid>
 Date: Mon, 17 Aug 2026 23:23:04 +0800
-Subject: [PATCH] demux: diagnose inactive Matroska subtitle cache
+Subject: [PATCH] demux: cache inactive embedded subtitle tracks
 
 ---
- demux/demux.c      | 80 ++++++++++++++++++++++++++++++++++++++++++++--
+ demux/demux.c      | 75 ++++++++++++++++++++++++++++++++++++++++++++--
  demux/demux.h      |  3 ++
- demux/demux_lavf.c | 24 ++++++++++++++
- demux/demux_mkv.c  | 40 +++++++++++++++++++++--
- 4 files changed, 143 insertions(+), 4 deletions(-)
+ demux/demux_lavf.c | 24 +++++++++++++++
+ demux/demux_mkv.c  | 40 +++++++++++++++++++++++--
+ 4 files changed, 138 insertions(+), 4 deletions(-)
 
 diff --git a/demux/demux.c b/demux/demux.c
-index 20d2739d9..a4c72bd10 100644
+index 20d2739d9..9188e4db8 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
 @@ -388,6 +388,7 @@ struct demux_stream {
@@ -41,10 +41,16 @@ index 20d2739d9..a4c72bd10 100644
  
      if (!drop) {
          // If libavformat splits packets, some packets will have pos unset, so
-@@ -4092,6 +4094,56 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4092,6 +4094,53 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
  {
      struct demux_stream *ds = stream->ds;
      ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
++    // Subtitle selection asks for packets 10 seconds before the playback
++    // point.  Keep that preroll for the queue lookup, but test cache coverage
++    // at the actual playback point so a valid A/V cache range is not rejected.
++    double cache_ref_pts = ref_pts;
++    if (ds->type == STREAM_SUB)
++        cache_ref_pts = MP_ADD_PTS(cache_ref_pts, 10.0);
 +    // Sparse subtitle queues need not contain a packet at ref_pts. If the
 +    // current range has already been demuxed through ref_pts, the demuxer has
 +    // also delivered every embedded subtitle packet up to it.
@@ -54,22 +60,13 @@ index 20d2739d9..a4c72bd10 100644
 +        double cache_start = range->seek_start != MP_NOPTS_VALUE
 +            ? range->seek_start : ds->queue->seek_start;
 +        bool starts_before_ref = range->is_bof ||
-+            (cache_start != MP_NOPTS_VALUE && ref_pts >= cache_start);
++            (cache_start != MP_NOPTS_VALUE && cache_ref_pts >= cache_start);
 +        bool ends_after_ref = range->is_eof ||
-+            (range->seek_end != MP_NOPTS_VALUE && ref_pts <= range->seek_end);
++            (range->seek_end != MP_NOPTS_VALUE &&
++             cache_ref_pts <= range->seek_end);
 +        ends_after_ref |= in->demux_ts != MP_NOPTS_VALUE &&
-+                          in->demux_ts >= ref_pts;
++                          in->demux_ts >= cache_ref_pts;
 +        cache_covers_ref = starts_before_ref && ends_after_ref;
-+        MP_VERBOSE(in, "inactive subtitle cache stream=%d enabled=%d "
-+                   "range=%p queue=%p cached=%d ref=%f start=%f end=%f "
-+                   "demux=%f\n", stream->index, ds->cache_inactive,
-+                   (void *)range, (void *)ds->queue, cache_covers_ref,
-+                   ref_pts, cache_start, range->seek_end, in->demux_ts);
-+    }
-+    if (ds->type == STREAM_SUB && !range) {
-+        MP_VERBOSE(in, "inactive subtitle cache stream=%d enabled=%d "
-+                   "has-current-range=0\n", stream->index,
-+                   ds->cache_inactive);
 +    }
 +    if (ds->cache_inactive && cache_covers_ref) {
 +        struct demux_packet *target = NULL;
@@ -98,7 +95,7 @@ index 20d2739d9..a4c72bd10 100644
  
      if (in->back_demuxing)
          ds->back_seek_pos = ref_pts;
-@@ -4193,6 +4245,30 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+@@ -4193,6 +4242,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
      return r;
  }
  
@@ -111,8 +108,6 @@ index 20d2739d9..a4c72bd10 100644
 +    struct demux_stream *ds = stream->ds;
 +    mp_mutex_lock(&in->lock);
 +    if (ds->cache_inactive != enabled) {
-+        MP_VERBOSE(in, "inactive subtitle cache %s stream %d\n",
-+                   enabled ? "enabled" : "disabled", stream->index);
 +        ds->cache_inactive = enabled;
 +        if (!enabled && !ds->selected) {
 +            for (int n = 0; n < in->num_ranges; n++) {
