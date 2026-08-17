@@ -507,6 +507,9 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          # The runner's rolling CMake release regressed this pinned
+          # winbuild's cppwinrt ExternalProject install command.
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
 
           cmake -Wno-dev --fresh \
@@ -543,6 +546,7 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
 
           ninja -C build64 avs3-audiodec
