@@ -690,6 +690,7 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
 
           cmake -Wno-dev --fresh \
@@ -726,6 +727,7 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
 
           ninja -C build64 avs3-audiodec
@@ -774,6 +776,7 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
 
           ninja -C build64 vvdec
@@ -803,6 +806,7 @@ jobs:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
           set -euxo pipefail
+          export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
           bash ../build.sh -t 64 -c gcc -s false
 
