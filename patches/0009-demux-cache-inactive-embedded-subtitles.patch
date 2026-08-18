@@ -70,17 +70,22 @@ index 20d2739d9..9188e4db8 100644
 +    }
 +    if (ds->cache_inactive && cache_covers_ref) {
 +        struct demux_packet *target = NULL;
++        struct demux_packet *group_start = NULL;
++        double group_pts = MP_NOPTS_VALUE;
 +        for (struct demux_packet *dp = ds->queue->head; dp; dp = dp->next) {
 +            double pts = MP_PTS_OR_DEF(dp->pts, dp->dts);
 +            if (pts == MP_NOPTS_VALUE)
 +                continue;
-+            double duration = dp->duration > 0
-+                ? dp->duration : dp->sub_duration;
-+            double end = duration > 0 ? pts + duration : pts;
-+            if (end >= ref_pts) {
-+                target = dp;
-+                break;
++            if (!group_start || pts != group_pts) {
++                group_start = dp;
++                group_pts = pts;
 +            }
++            if (pts <= ref_pts)
++                target = group_start;
++            else if (!target)
++                target = group_start;
++            if (pts > ref_pts && target)
++                break;
 +        }
 +        // An empty span is also valid for sparse subtitles. The next packet,
 +        // if any, is beyond the cached playback interval, so a refresh seek
@@ -252,4 +257,3 @@ index 0b59be5fb..4416702d7 100644
      current_pts = tc / 1e9 - track->codec_delay;
 -- 
 2.54.0.windows.1
-
