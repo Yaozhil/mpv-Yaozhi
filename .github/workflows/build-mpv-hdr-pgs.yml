@@ -482,7 +482,7 @@ jobs:
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           grep -Fq 'using cached packets for stream' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'has_switchable_subtitle_tracks' \
+          grep -Fq 'num_subtitles > 1' \
             packages/mpv-9007-cache-inactive-native-matroska-subtitles.patch
           grep -Fq 'cache_inactive_subtitles' \
             packages/mpv-9007-cache-inactive-native-matroska-subtitles.patch
