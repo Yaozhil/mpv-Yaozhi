@@ -826,7 +826,13 @@ jobs:
             throw "7-Zip extraction failed with exit code $LASTEXITCODE"
           }
 
-          $mpv = Join-Path $mpvDir "mpv.com"
+          # The release archive preserves its staging directory. Locate the
+          # executable after extraction instead of assuming a flat archive.
+          $mpv = Get-ChildItem -LiteralPath $mpvDir -Filter "mpv.com" -File -Recurse |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $mpv) {
+            throw "mpv.com not found in release archive"
+          }
           $aoHelp = & $mpv --no-config --ao=help 2>&1
           if ($LASTEXITCODE -ne 0) {
             throw "mpv --ao=help failed"
