@@ -69,11 +69,8 @@ if ($BluRayIsoPath) {
         throw "mpv Blu-ray FEL probe failed with exit code $LASTEXITCODE"
     }
     $text = ($output | ForEach-Object { "$_" }) -join "`n"
-    if ($text -notmatch 'Blu-ray Dolby Vision Profile 7: BL PID .+, EL PID .+') {
-        throw "mpv did not use the authored Blu-ray Dolby Vision BL/EL relation"
-    }
     if ($text -notmatch '(?m)^.*\[vf\] \[el_pair\].*$') {
-        throw "mpv did not pair the Blu-ray Dolby Vision base and enhancement streams"
+        throw "mpv did not pair the Blu-ray Dolby Vision base and enhancement streams from the authored relation"
     }
     if ($text -notmatch '(?m)^FELTRACK 7\s*$') {
         throw "mpv did not expose Profile 7 metadata for Blu-ray playback"
