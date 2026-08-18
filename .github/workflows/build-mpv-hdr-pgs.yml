@@ -23,7 +23,6 @@ on:
       - "patches/0006-sdl2-allow-spatial-channel-counts.patch"
       - "patches/0007-swresample-use-native-canonical-input-layout.patch"
       - "patches/0009-demux-cache-inactive-embedded-subtitles.patch"
-      - "patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch"
       - "build/core-candidate/**"
       - "build/audio-layout/**"
   workflow_dispatch:
@@ -194,8 +193,6 @@ jobs:
             packages/mpv-9005-swresample-native-layout.patch
           cp "$GITHUB_WORKSPACE/patches/0009-demux-cache-inactive-embedded-subtitles.patch" \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          cp "$GITHUB_WORKSPACE/patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch" \
-            packages/mpv-9007-cache-inactive-native-matroska-subtitles.patch
           # Keep the candidate on the same published core capability baseline:
           # the subtitle-cache fix must not drop the independent secondary
           # subtitle scale, network/read-race fixes, hardware surface sizing,
@@ -482,10 +479,6 @@ jobs:
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           grep -Fq 'using cached packets for stream' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'num_subtitles > 1' \
-            packages/mpv-9007-cache-inactive-native-matroska-subtitles.patch
-          grep -Fq 'cache_inactive_subtitles' \
-            packages/mpv-9007-cache-inactive-native-matroska-subtitles.patch
           grep -Fq 'secondary-sub-scale' \
             packages/mpv-9010-secondary-sub-scale.patch
           grep -Fq 'request_start' \
