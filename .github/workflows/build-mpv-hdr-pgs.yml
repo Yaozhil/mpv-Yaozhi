@@ -626,11 +626,25 @@ jobs:
             test -d "$stamp_dir"
             touch "$stamp_dir/${package}-download" "$stamp_dir/${package}-update"
           done
+
+          # A pinned ExternalProject checkout is intentionally detached. Some
+          # winbuild cleanup hooks still try to reset @{u} after the install;
+          # that hook can return non-zero after mpv.exe is already complete.
+          # Accept only that narrow post-build cleanup failure and require the
+          # actual release directory/binaries below.
+          set +e
           ninja -C build64 mpv
+          mpv_status=$?
+          set -e
 
           mkdir -p release
           built_dir="$(find build64 -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
           test -n "$built_dir"
+          test -f "$built_dir/mpv.exe"
+          test -f "$built_dir/mpv.com"
+          if [ "$mpv_status" -ne 0 ]; then
+            echo "mpv target returned $mpv_status after producing a complete binary; treating detached-HEAD cleanup as non-fatal"
+          fi
           cp -a "$built_dir" release/
           7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
 
