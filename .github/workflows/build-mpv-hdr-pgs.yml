@@ -639,7 +639,23 @@ jobs:
 
           mkdir -p release
           built_dir="$(find build64 -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
-          test -n "$built_dir"
+          if [ -z "$built_dir" ]; then
+            # The detached-HEAD cleanup may remove the helper's staging
+            # directory after install. Reconstruct the same minimal runtime
+            # package from the verified install prefix in that case.
+            install_root=build64/install/x86_64-w64-mingw32
+            test -f "$install_root/bin/mpv.exe"
+            test -f "$install_root/bin/mpv.com"
+            built_dir="$PWD/release/mpv-x86_64-cached"
+            mkdir -p "$built_dir"
+            cp "$install_root/bin/mpv.exe" "$install_root/bin/mpv.com" "$built_dir/"
+            find "$install_root/bin" -maxdepth 1 -type f -iname '*.dll' -exec cp {} "$built_dir/" \;
+            for asset_dir in share shaders; do
+              if [ -d "$install_root/$asset_dir" ]; then
+                cp -a "$install_root/$asset_dir" "$built_dir/"
+              fi
+            done
+          fi
           test -f "$built_dir/mpv.exe"
           test -f "$built_dir/mpv.com"
           if [ "$mpv_status" -ne 0 ]; then
