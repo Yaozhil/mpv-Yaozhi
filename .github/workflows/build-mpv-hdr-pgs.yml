@@ -44,7 +44,9 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          # GitHub's hosted image already carries a current package index.
+          # Refreshing every run has occasionally blocked on a mirror before
+          # any source is checked out, so install directly from that index.
           sudo apt-get install -y \
             build-essential bison flex gettext git mercurial subversion \
             ninja-build gyp cmake yasm nasm automake pkg-config libtool \
