@@ -162,3 +162,9 @@ HDR Vivid，不再只依赖文件名猜测。
 `8c67647b5`，因此使用 `0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch`；
 两者的稳定补丁 ID 相同，功能一致，仅调整各自基线的上下文。Atmos 工作流只能应用
 `0010`，不得与 `0009` 同时叠加。
+
+蓝光 ISO/BDMV 还会经过 `demux_disc` 的父/子 demux 链。补丁同时为父层和子层的
+DVD/蓝光字幕轨启用 inactive cache，并让父层保留未选中的字幕包；因此切换 ISO
+字幕时可以直接使用已读入的包组，不再为了重新读取字幕触发盘流刷新。音频、视频、
+蓝光 BL/EL 配对、HDR、直通和 FEL 过滤保持原有逻辑，缓存未覆盖的位置仍回退到
+mpv 原有的刷新路径。
