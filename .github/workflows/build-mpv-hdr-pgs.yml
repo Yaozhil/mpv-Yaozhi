@@ -393,6 +393,10 @@ jobs:
           sed -i \
             "s/GIT_TAG SDL2/GIT_TAG $SDL2_COMMIT/" \
             packages/libsdl2.cmake
+          # The release package does not ship generated manuals. Keep the
+          # optional PDF target disabled when the documentation toolchain is
+          # intentionally absent from the runner.
+          sed -i 's/-Dpdf-build=enabled/-Dpdf-build=disabled/' packages/mpv.cmake
           # A pinned commit is checked out detached. Leaving GIT_REMOTE_NAME
           # set makes winbuild's force-update helper try to resolve @{u}.
           sed -i \
@@ -420,6 +424,7 @@ jobs:
           test -f packages/curl.cmake
           grep -Eq '^[[:space:]]*curl[[:space:]]*$' packages/mpv.cmake
           grep -Fq -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dpdf-build=disabled' packages/mpv.cmake
           grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
           grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
