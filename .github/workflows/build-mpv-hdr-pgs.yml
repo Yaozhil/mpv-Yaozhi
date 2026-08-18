@@ -475,7 +475,7 @@ jobs:
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'subtitle gap' \
+          grep -Fq 'group_start' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           grep -Fq 'using cached packets for stream' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch

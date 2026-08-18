@@ -1,17 +1,17 @@
-From f3f10b008c249505ef7f33e8cc91c75aab77e309 Mon Sep 17 00:00:00 2001
+From c1cd2db0e128de130dee301f1730c44dfe47c8b8 Mon Sep 17 00:00:00 2001
 From: Yaozhi mpv build <build@local.invalid>
-Date: Mon, 17 Aug 2026 22:35:00 +0800
-Subject: [PATCH] demux: cache inactive embedded subtitle tracks
+Date: Wed, 19 Aug 2026 00:58:11 +0800
+Subject: [PATCH] demux: cache inactive native Matroska subtitle tracks
 
 ---
- demux/demux.c      | 75 ++++++++++++++++++++++++++++++++++++++++++++--
+ demux/demux.c      | 80 ++++++++++++++++++++++++++++++++++++++++++++--
  demux/demux.h      |  3 ++
- demux/demux_lavf.c | 24 +++++++++++++++
- demux/demux_mkv.c  | 39 +++++++++++++++++++++++-
- 4 files changed, 138 insertions(+), 3 deletions(-)
+ demux/demux_lavf.c | 24 ++++++++++++++
+ demux/demux_mkv.c  | 39 +++++++++++++++++++++-
+ 4 files changed, 143 insertions(+), 3 deletions(-)
 
 diff --git a/demux/demux.c b/demux/demux.c
-index b63038b6c..7d57857e0 100644
+index b63038b6c..36dd8da57 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
 @@ -388,6 +388,7 @@ struct demux_stream {
@@ -41,7 +41,7 @@ index b63038b6c..7d57857e0 100644
  
      if (!drop) {
          // If libavformat splits packets, some packets will have pos unset, so
-@@ -4089,6 +4091,53 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4089,6 +4091,58 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
  {
      struct demux_stream *ds = stream->ds;
      ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
@@ -100,7 +100,7 @@ index b63038b6c..7d57857e0 100644
  
      if (in->back_demuxing)
          ds->back_seek_pos = ref_pts;
-@@ -4190,6 +4239,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+@@ -4190,6 +4244,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
      return r;
  }
  
@@ -254,5 +254,3 @@ index e9159d752..c229f2010 100644
          return 0;
  
      current_pts = tc / 1e9 - track->codec_delay;
--- 
-2.54.0.windows.1
