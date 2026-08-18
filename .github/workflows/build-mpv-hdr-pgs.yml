@@ -627,6 +627,16 @@ jobs:
             touch "$stamp_dir/${package}-download" "$stamp_dir/${package}-update"
           done
 
+          # These two winbuild packages carry upstream patches that are
+          # applied with `git am`. A reusable runner cache can retain a
+          # partially-applied patch series, which makes the next build fail
+          # before mpv is reached. Recreate only these small dependencies;
+          # the pinned download/update steps below will restore clean trees.
+          for package in openssl luajit; do
+            rm -rf "src_packages/$package" \
+              "build64/packages/${package}-prefix"
+          done
+
           # A pinned ExternalProject checkout is intentionally detached. Some
           # winbuild cleanup hooks still try to reset @{u} after the install;
           # that hook can return non-zero after mpv.exe is already complete.
