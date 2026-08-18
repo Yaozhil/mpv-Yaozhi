@@ -502,11 +502,22 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # Keep the reusable source trees and ExternalProject stamps. The
-          # final build step below invalidates only the patched packages while
-          # preserving their pinned checkout/update state; deleting the trees
-          # here forces a fresh remote git update and can stall the runner.
-          test -d winbuild/mpv-winbuild-cmake/build64
+          cd winbuild/mpv-winbuild-cmake
+
+          # winbuild applies package changes with `git am`. Its cache stores
+          # source trees, so a failed or interrupted prior run can leave any
+          # patched package mid-series. Recreate exactly the package sources
+          # that define PATCH_COMMANDs; unpatched and expensive dependencies
+          # remain cached.
+          for package_file in packages/*.cmake; do
+            package="$(basename "$package_file" .cmake)"
+            if grep -q 'PATCH_COMMAND' "$package_file"; then
+              rm -rf "src_packages/$package" \
+                "build64/packages/${package}-prefix"
+            fi
+          done
+          rm -rf build64/packages/mpv-release-prefix \
+            build64/packages/mpv-packaging-prefix
 
       - name: Preflight and build libcurl dependency chain
         shell: bash
@@ -621,20 +632,11 @@ jobs:
           # Reapply the current package patch chain without invoking the
           # winbuild helper's unconditional `ninja update` remote fetch.
           for package in avs3-audiodec davs2 ffmpeg libpsl libsdl2 mpv; do
-            ninja -C build64 "${package}-fullclean"
             stamp_dir="build64/packages/${package}-prefix/src/${package}-stamp"
-            test -d "$stamp_dir"
-            touch "$stamp_dir/${package}-download" "$stamp_dir/${package}-update"
-          done
-
-          # These two winbuild packages carry upstream patches that are
-          # applied with `git am`. A reusable runner cache can retain a
-          # partially-applied patch series, which makes the next build fail
-          # before mpv is reached. Recreate only these small dependencies;
-          # the pinned download/update steps below will restore clean trees.
-          for package in openssl luajit; do
-            rm -rf "src_packages/$package" \
-              "build64/packages/${package}-prefix"
+            if [ -d "$stamp_dir" ]; then
+              ninja -C build64 "${package}-fullclean"
+              touch "$stamp_dir/${package}-download" "$stamp_dir/${package}-update"
+            fi
           done
 
           # A pinned ExternalProject checkout is intentionally detached. Some
