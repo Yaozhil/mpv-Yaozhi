@@ -578,7 +578,12 @@ jobs:
             fi
           done
           rm -rf build64/packages/mpv-release-prefix \
-            build64/packages/mpv-packaging-prefix
+            build64/packages/mpv-packaging-prefix \
+            build64/mpv-x86_64-* \
+            release/mpv-x86_64-*
+          rm -f release/mpv-x86_64-*.7z \
+            install/x86_64-w64-mingw32/bin/mpv.exe \
+            install/x86_64-w64-mingw32/bin/mpv.com
 
           # FFmpeg's patched headers and executable can be rebuilt while an
           # older static libavformat archive remains in the shared install
@@ -728,6 +733,9 @@ jobs:
             fi
           done
 
+          build_marker="$(mktemp)"
+          touch "$build_marker"
+
           # A pinned ExternalProject checkout is intentionally detached. Some
           # winbuild cleanup hooks still try to reset @{u} after the install;
           # that hook can return non-zero after mpv.exe is already complete.
@@ -738,15 +746,17 @@ jobs:
           mpv_status=$?
           set -e
 
+          install_root=build64/install/x86_64-w64-mingw32
+          test -f "$install_root/bin/mpv.exe"
+          test -f "$install_root/bin/mpv.com"
+          test "$install_root/bin/mpv.exe" -nt "$build_marker"
+
           mkdir -p release
           built_dir="$(find build64 -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
           if [ -z "$built_dir" ]; then
             # The detached-HEAD cleanup may remove the helper's staging
             # directory after install. Reconstruct the same minimal runtime
             # package from the verified install prefix in that case.
-            install_root=build64/install/x86_64-w64-mingw32
-            test -f "$install_root/bin/mpv.exe"
-            test -f "$install_root/bin/mpv.com"
             built_dir="$PWD/release/mpv-x86_64-cached"
             mkdir -p "$built_dir"
             cp "$install_root/bin/mpv.exe" "$install_root/bin/mpv.com" "$built_dir/"
@@ -809,6 +819,7 @@ jobs:
           strings -a "$mpv_binary" > artifact-check/mpv.strings
           grep -qi schannel artifact-check/mpv.strings
           grep -qi libarcdav3a artifact-check/mpv.strings
+          grep -Fq 'secondary-sub-scale' artifact-check/mpv.strings
           grep -Fq 'SDL Audio' artifact-check/mpv.strings
           grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
           grep -Fq 'hdr-vivid' artifact-check/mpv.strings
@@ -942,6 +953,12 @@ jobs:
           $versionText = (& $mpv --version 2>&1 | ForEach-Object { "$_" }) -join "`n"
           if ($versionText -notmatch 'libavformat\s+62\.13\.102') {
             throw "mpv linked an unexpected libavformat version; expected 62.13.102 for Dolby Vision stream groups:`n$versionText"
+          }
+
+          $optionText = (& $mpv --no-config --list-options 2>&1 |
+            ForEach-Object { "$_" }) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $optionText -notmatch 'secondary-sub-scale') {
+            throw "mpv is missing the formal core secondary-sub-scale option"
           }
 
           & (Join-Path $artifact "verify-fel.ps1") `
