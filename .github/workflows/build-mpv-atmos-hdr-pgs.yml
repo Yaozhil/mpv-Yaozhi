@@ -84,7 +84,7 @@ jobs:
           # The base container can retain a repository database that references
           # packages already rotated off the mirrors. Force a fresh sync before
           # the full upgrade so dependency installation is reproducible.
-          pacman -Syyu --noconfirm
+          timeout --foreground --kill-after=2m 45m pacman -Syyu --noconfirm
 
       - name: Install MinGW and FEL build dependencies
         shell: bash
@@ -93,8 +93,9 @@ jobs:
           for attempt in 1 2; do
             # Mirrors can rotate between bootstrap and this large transaction.
             # Refresh and upgrade immediately before each installation attempt.
-            pacman -Syyu --noconfirm
-            if pacman -S --noconfirm --needed \
+            timeout --foreground --kill-after=2m 45m pacman -Syyu --noconfirm
+            if timeout --foreground --kill-after=2m 45m \
+              pacman -S --noconfirm --needed \
               base-devel git unzip zip curl rustup nasm cmake \
               mingw-w64-gcc \
               mingw-w64-pkg-config \
@@ -321,7 +322,7 @@ jobs:
             -Dcuda-hwaccel=enabled \
             -Dlibbluray=enabled \
             -Ddvdnav=enabled
-          meson compile -C _b
+          timeout --foreground --kill-after=2m 120m meson compile -C _b
 
       - name: Package custom Atmos player
         shell: bash
