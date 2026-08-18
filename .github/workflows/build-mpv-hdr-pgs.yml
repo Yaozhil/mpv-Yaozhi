@@ -541,6 +541,34 @@ jobs:
           rm -rf build64/packages/mpv-release-prefix \
             build64/packages/mpv-packaging-prefix
 
+          # FFmpeg's patched headers and executable can be rebuilt while an
+          # older static libavformat archive remains in the shared install
+          # prefix. That lets mpv link 62.13.101 even though the FFmpeg
+          # validation binary reports 62.13.102, silently disabling the
+          # backported Dolby Vision stream-group handler. Remove only the
+          # FFmpeg install outputs so the next mpv link cannot reuse them.
+          rm -f \
+            install/x86_64-w64-mingw32/bin/ffmpeg.exe \
+            install/x86_64-w64-mingw32/bin/ffprobe.exe \
+            install/x86_64-w64-mingw32/bin/ffplay.exe \
+            install/x86_64-w64-mingw32/lib/libavcodec.* \
+            install/x86_64-w64-mingw32/lib/libavdevice.* \
+            install/x86_64-w64-mingw32/lib/libavfilter.* \
+            install/x86_64-w64-mingw32/lib/libavformat.* \
+            install/x86_64-w64-mingw32/lib/libavutil.* \
+            install/x86_64-w64-mingw32/lib/libpostproc.* \
+            install/x86_64-w64-mingw32/lib/libswresample.* \
+            install/x86_64-w64-mingw32/lib/libswscale.*
+          rm -rf \
+            install/x86_64-w64-mingw32/include/libavcodec \
+            install/x86_64-w64-mingw32/include/libavdevice \
+            install/x86_64-w64-mingw32/include/libavfilter \
+            install/x86_64-w64-mingw32/include/libavformat \
+            install/x86_64-w64-mingw32/include/libavutil \
+            install/x86_64-w64-mingw32/include/postproc \
+            install/x86_64-w64-mingw32/include/libswresample \
+            install/x86_64-w64-mingw32/include/libswscale
+
       - name: Preflight and build libcurl dependency chain
         shell: bash
         env:
@@ -870,6 +898,11 @@ jobs:
             if ($aoText -notmatch [regex]::Escape($required)) {
               throw "Missing audio output marker: $required"
             }
+          }
+
+          $versionText = (& $mpv --version 2>&1 | ForEach-Object { "$_" }) -join "`n"
+          if ($versionText -notmatch 'libavformat\s+62\.13\.102') {
+            throw "mpv linked an unexpected libavformat version; expected 62.13.102 for Dolby Vision stream groups:`n$versionText"
           }
 
           & (Join-Path $artifact "verify-fel.ps1") `
