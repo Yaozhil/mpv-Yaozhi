@@ -72,13 +72,13 @@ jobs:
             ninja-build gyp cmake yasm nasm automake pkg-config libtool \
             libtool-bin gcc-multilib g++-multilib clang lld libc++-dev \
             libc++abi-dev libgmp-dev libmpfr-dev libmpc-dev libgcrypt20-dev \
-            gperf ragel texinfo autopoint re2c asciidoc python3-pip \
-            python3-cairo docbook2x unzip p7zip-full curl wget ccache
+            gperf ragel texinfo autopoint re2c python3-pip \
+            python3-cairo unzip p7zip-full curl wget ccache
           apt_install luajit
           timeout --foreground --kill-after=1m 20m \
             python3 -m pip install --break-system-packages \
             --retries 3 --default-timeout 30 \
-            rst2pdf meson mako jsonschema roman
+            meson mako jsonschema roman
           git config --global user.name "github-actions[bot]"
           git config --global user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
