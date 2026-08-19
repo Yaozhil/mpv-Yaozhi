@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Wed, 19 Aug 2026 10:30:00 +0800
+Subject: [PATCH] demux: enable cache after inactive subtitle discovery
+
+---
+ demux/demux.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index 6e2cbad16..b7fde7b94 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -214,3 +214,6 @@ struct demux_internal {
+     bool seekable_cache;
++    // Demuxers with multiple embedded subtitle tracks request a bounded
++    // seekable cache even when the source is a local file or disc stream.
++    bool cache_inactive_streams;
+     bool using_network_cache_opts;
+     char *record_filename;
+@@ -2570,3 +2573,5 @@ static void update_opts(struct demuxer *demuxer)
+-    bool use_cache = is_streaming;
++    bool use_cache = is_streaming || in->cache_inactive_streams;
++    bool implicit_subtitle_cache = in->cache_inactive_streams &&
++                                   !is_streaming && opts->enable_cache < 0;
+     if (opts->enable_cache >= 0)
+         use_cache = opts->enable_cache == 1;
+@@ -2575,3 +2580,4 @@ static void update_opts(struct demuxer *demuxer)
+     if (use_cache) {
+-        in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
++        if (!implicit_subtitle_cache)
++            in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
+         if (seekable < 0)
+@@ -4249,3 +4256,12 @@ void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
+         ds->cache_inactive = enabled;
++        if (enabled && !in->cache_inactive_streams) {
++            // A disc wrapper enables this on its lavf child after that child
++            // has opened. Allow its bounded cache at that point and recompute
++            // the cache options once a range exists.
++            in->cache_inactive_streams = true;
++            in->can_cache = true;
++            if (in->current_range)
++                update_opts(in->d_user);
++        }
+         if (!enabled && !ds->selected) {
+             for (int n = 0; n < in->num_ranges; n++) {
+--
+2.54.0.windows.1

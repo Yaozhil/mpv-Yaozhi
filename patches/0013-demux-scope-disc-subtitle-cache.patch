@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yaozhi mpv build <build@local.invalid>
+Date: Wed, 19 Aug 2026 10:30:00 +0800
+Subject: [PATCH] demux: scope disc subtitle cache to switchable tracks
+
+---
+ demux/demux_disc.c | 34 +++++++++++++++++++++++++++++++---
+ 1 file changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index f63ac0291..40b2e72c8 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -45,6 +45,7 @@ struct priv {
+     bool seek_reinit;   // needs reinit after seek
+ 
+     bool is_dvd, is_cdda;
++    bool cache_inactive_subtitles;
+ };
+ 
+ // If the timestamp difference between subsequent packets is this big, assume
+@@ -52,6 +53,27 @@ struct priv {
+ // large audio frames, and 2. bad interleaving.
+ #define DTS_RESET_THRESHOLD 5.0
+ 
++static void update_inactive_subtitle_cache(demuxer_t *demuxer)
++{
++    struct priv *p = demuxer->priv;
++    int num_subtitles = 0;
++
++    for (int n = 0; n < p->num_streams; n++) {
++        struct sh_stream *sh = p->streams[n];
++        if (sh && sh->type == STREAM_SUB && !sh->attached_picture)
++            num_subtitles++;
++    }
++
++    p->cache_inactive_subtitles = num_subtitles > 1;
++    for (int n = 0; n < p->num_streams; n++) {
++        struct sh_stream *sh = p->streams[n];
++        if (sh && sh->type == STREAM_SUB) {
++            demuxer_set_stream_cache_inactive(
++                sh, p->cache_inactive_subtitles && !sh->attached_picture);
++        }
++    }
++}
++
+ static void reselect_streams(demuxer_t *demuxer)
+ {
+     struct priv *p = demuxer->priv;
+@@ -62,9 +84,9 @@ static void reselect_streams(demuxer_t *demuxer)
+             bool selected = demux_stream_is_selected(p->streams[n]);
+             demuxer_select_track(p->slave, src, MP_NOPTS_VALUE, selected);
+             if (src && src->type == STREAM_SUB)
+-                demuxer_set_stream_cache_inactive(src, true);
+-            if (p->streams[n]->type == STREAM_SUB)
+-                demuxer_set_stream_cache_inactive(p->streams[n], true);
++                demuxer_set_stream_cache_inactive(
++                    src, p->cache_inactive_subtitles &&
++                    !src->attached_picture);
+         }
+     }
+ }
+@@ -121,7 +143,6 @@ static void add_dvd_streams(demuxer_t *demuxer)
+             sh->codec->extradata_size = strlen(s);
+ 
+             demux_add_sh_stream(demuxer, sh);
+-            demuxer_set_stream_cache_inactive(sh, true);
+         }
+     }
+ }
+@@ -140,7 +161,6 @@ static void add_streams(demuxer_t *demuxer)
+             if (sub) {
+                 mp_assert(p->num_streams == n); // directly mapped
+                 MP_TARRAY_APPEND(p, p->streams, p->num_streams, sub);
+-                demuxer_set_stream_cache_inactive(sub, true);
+                 continue;
+             }
+         }
+@@ -165,8 +185,6 @@ static void add_streams(demuxer_t *demuxer)
+         }
+         get_disc_lang(demuxer->stream, sh, p->is_dvd);
+         demux_add_sh_stream(demuxer, sh);
+-        if (src->type == STREAM_SUB)
+-            demuxer_set_stream_cache_inactive(sh, true);
+     }
+ 
+     // Mirror slave sh_stream_group onto the disc-level sh_streams. This is needed
+@@ -193,6 +211,7 @@ static void add_streams(demuxer_t *demuxer)
+         }
+     }
+ 
++    update_inactive_subtitle_cache(demuxer);
+     reselect_streams(demuxer);
+ }
+ 
+-- 
+2.54.0.windows.1

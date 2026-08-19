@@ -163,8 +163,12 @@ HDR Vivid，不再只依赖文件名猜测。
 两者的稳定补丁 ID 相同，功能一致，仅调整各自基线的上下文。Atmos 工作流只能应用
 `0010`，不得与 `0009` 同时叠加。
 
-蓝光 ISO/BDMV 还会经过 `demux_disc` 的父/子 demux 链。补丁同时为父层和子层的
-DVD/蓝光字幕轨启用 inactive cache，并让父层保留未选中的字幕包；因此切换 ISO
-字幕时可以直接使用已读入的包组，不再为了重新读取字幕触发盘流刷新。音频、视频、
-蓝光 BL/EL 配对、HDR、直通和 FEL 过滤保持原有逻辑，缓存未覆盖的位置仍回退到
-mpv 原有的刷新路径。
+`0012-demux-enable-inactive-subtitle-cache.patch` 为主核心补齐缓存策略：在存在可
+切换内嵌字幕时才开启 seekable cache，并将本地/光盘的预读上限保持在 30 秒。光盘
+包装器在 lavf 子 demux 已打开后才能发现字幕轨，因此它会由 `0013` 触发一次安全的
+运行期重算；未初始化缓存范围时不重算。
+
+`0013-demux-scope-disc-subtitle-cache.patch` 同时覆盖蓝光/DVD 外层和 lavf 子层，
+仅在两条或以上非封面字幕轨时保留未选字幕包。它必须在 `0009` 或 `0010` 之后应用。
+Atmos 使用基线专属的 `0014-demux-enable-inactive-subtitle-cache-atmos.patch` 替代
+`0012`。三个补丁共同确保光盘路径命中已有字幕包，而不是通过 refresh seek 刷新播放。

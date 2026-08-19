@@ -10,6 +10,8 @@ on:
       - "build/atmos/pin-fel-dependencies.patch"
       - "patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
       - "patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch"
+      - "patches/0013-demux-scope-disc-subtitle-cache.patch"
+      - "patches/0014-demux-enable-inactive-subtitle-cache-atmos.patch"
   workflow_dispatch:
 
 permissions:
@@ -305,6 +307,13 @@ jobs:
             "$GITHUB_WORKSPACE/patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
           git -C "$src" apply --3way \
             "$GITHUB_WORKSPACE/patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch"
+          git -C "$src" apply --3way \
+            "$GITHUB_WORKSPACE/patches/0014-demux-enable-inactive-subtitle-cache-atmos.patch"
+          git -C "$src" apply --3way \
+            "$GITHUB_WORKSPACE/patches/0013-demux-scope-disc-subtitle-cache.patch"
+          grep -Fq 'cache_inactive_streams' "$src/demux/demux.c"
+          grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
+            "$src/demux/demux_disc.c"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
           git -C "$src" diff --check
 
@@ -341,6 +350,10 @@ jobs:
             staging/0008-image-subs-colorspace-master.patch
           cp patches/0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch \
             staging/0010-cache-inactive-embedded-subtitles-atmos.patch
+          cp patches/0014-demux-enable-inactive-subtitle-cache-atmos.patch \
+            staging/0014-enable-inactive-subtitle-cache-atmos.patch
+          cp patches/0013-demux-scope-disc-subtitle-cache.patch \
+            staging/0013-cache-switchable-disc-subtitles.patch
 
           should_skip() {
             local dll="${1^^}"
