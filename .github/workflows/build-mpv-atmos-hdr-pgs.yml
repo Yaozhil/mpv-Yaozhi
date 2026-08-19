@@ -159,7 +159,11 @@ jobs:
         run: |
           set -euxo pipefail
           source mpv-omniphony/deps-fel/pins-fel.env
-          sha="$(git ls-remote "$LIBPLACEBO_URL" "$LIBPLACEBO_REF" | cut -f1)"
+          if [[ "$LIBPLACEBO_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            sha="$LIBPLACEBO_REF"
+          else
+            sha="$(git ls-remote "$LIBPLACEBO_URL" "$LIBPLACEBO_REF" | cut -f1)"
+          fi
           test -n "$sha"
           echo "ref=$sha" >> "$GITHUB_OUTPUT"
 

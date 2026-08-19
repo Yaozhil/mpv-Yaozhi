@@ -1,5 +1,17 @@
 # 当前任务进度
 
+## 多字幕轨切换即时生效（2026-08-19，构建中）
+
+- 目标：普通本地多字幕视频切换后立即显示；带多个可切换内嵌字幕的 ISO/BD 切换不再触发 3 至 4 秒刷新暂停。手动拖动进度条只能作为根因线索，不能作为最终方案。
+- 根因：只保留未选字幕包不足以服务本地/光盘切换；缓存策略仍只对流媒体启用。光盘封装层还需要在其 lavf 子 demux 发现字幕后同步启用缓存。
+- 方案：仅当内嵌、非封面字幕轨超过一条时启用有界 seekable cache；保持单字幕与没有字幕的文件默认行为。光盘父/子 demux 同步缓存状态。未修改 Lua、PGS 色彩、HDR/FEL、音频直通或字幕样式。
+- 补丁：主核心 `0009 -> 0012 -> 0013`；Atmos 核心 `0010 -> 0014 -> 0013`。
+- 本地验证：主核心在 `4b0052d28` 基线完成 `0012` 后，`0013` 通过 `git am --3way`；Atmos 依赖补丁通过 `v0.4.2-fel-beta.1` 的 `git apply --check`。
+- 首轮重建失败：主核心 `32209935162` 因浅克隆缺失 `0013` 索引引用的旧 blob；已移除该索引，让补丁按上下文直接应用。Atmos `32209935152` 因 runner 不能访问 `code.videolan.org`；已固定 GitHub 镜像的 libplacebo 与 FFmpeg 提交，并对固定提交缓存键作直接解析。
+- 下一步：推送构建修正，等待两条 CI 构建成功；下载候选并用普通多字幕 MKV、真实含多字幕 ISO/BD 回归。通过后再回归 FEL、HDR Vivid、Audio Vivid、VVC，最后才部署正式核心与更新公告。
+
+---
+
 ## 蓝光 ISO/BDMV Dolby Vision Profile 7 FEL（2026-08-10，已完成并部署）
 
 - 用户样片 `C:\Users\杳知\Desktop\FEL RPU_EL测试.iso` 已确认是 UHD Blu-ray：主视频 PID `0x1011` 为 HEVC HDR10/BT.2020 BL，`dv_streams[]` 中 PID `0x1015` 为 HEVC Dolby Vision EL；现有 MPEG-TS 层未形成 stream group，所以只选择 BL 并显示 HDR10。

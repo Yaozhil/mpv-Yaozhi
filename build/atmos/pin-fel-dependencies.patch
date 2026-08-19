@@ -1,7 +1,17 @@
 diff --git a/deps-fel/pins-fel.env b/deps-fel/pins-fel.env
+index 8715ca9..22ec51e 100644
 --- a/deps-fel/pins-fel.env
 +++ b/deps-fel/pins-fel.env
-@@ -21,8 +21,8 @@ LIBPLACEBO_REF="master"
+@@ -11,15 +11,15 @@
+ # Upstream master is at PL_API_VER 370; the >= 7.370 gate in build-fel-deps.sh
+ # still holds. (Was code.videolan.org/kasper93/libplacebo dv-fel, now merged via
+ # MR !851 — no released tag has it yet: latest is v7.360.1.)
+-LIBPLACEBO_URL="https://code.videolan.org/videolan/libplacebo.git"
+-LIBPLACEBO_REF="master"
++LIBPLACEBO_URL="https://github.com/haasn/libplacebo.git"
++LIBPLACEBO_REF="22ee762e8e0890fc54068beb670310f0edce7263"
+ 
+ # ffmpeg — master registers the dovi_split BSF (libavcodec/bsf/dovi_split.c) and
  # the AV_STREAM_GROUP_PARAMS_DOLBY_VISION stream group that mpv's demux/dovi_split
  # and demux_lavf now rely on. release/8.1 has NEITHER, so master is required until
  # an ffmpeg release ships them. The vendored dovi_split patch is gone (upstream).
@@ -13,23 +23,54 @@ diff --git a/deps-fel/pins-fel.env b/deps-fel/pins-fel.env
  # NB: the mpv base is no longer pinned. The old MPV_FEL_BASE pin existed only to
  # keep the vendored FEL mpv patch (patches-fel/) from rotting against a moving
 diff --git a/scripts/build-fel-deps.sh b/scripts/build-fel-deps.sh
+index 9cd61e9..1a4fc45 100755
 --- a/scripts/build-fel-deps.sh
 +++ b/scripts/build-fel-deps.sh
-@@ -175,14 +175,24 @@ if [ "$MACOS" = 0 ]; then
- # 3. ffmpeg (upstream master — carries the dovi_split BSF + DoVi stream group).
+@@ -97,12 +97,26 @@ fi
+ # ---------------------------------------------------------------------------
+ log "libplacebo $LIBPLACEBO_REF"
+ if [ ! -d "$WORK/libplacebo/.git" ]; then
+-    git clone --branch "$LIBPLACEBO_REF" --recurse-submodules "$LIBPLACEBO_URL" "$WORK/libplacebo"
++    mkdir -p "$WORK/libplacebo"
++    git -C "$WORK/libplacebo" init -q
++    git -C "$WORK/libplacebo" remote add origin "$LIBPLACEBO_URL"
+ else
+-    git -C "$WORK/libplacebo" fetch origin "$LIBPLACEBO_REF"
+-    git -C "$WORK/libplacebo" reset --hard "origin/$LIBPLACEBO_REF"
+-    git -C "$WORK/libplacebo" submodule update --init --recursive
++    git -C "$WORK/libplacebo" remote set-url origin "$LIBPLACEBO_URL"
+ fi
++fetched=0
++for attempt in 1 2 3; do
++    if git -C "$WORK/libplacebo" fetch --depth 1 origin "$LIBPLACEBO_REF"; then
++        fetched=1
++        break
++    fi
++    [ "$attempt" = 3 ] || sleep $((attempt * 2))
++done
++if [ "$fetched" != 1 ]; then
++    echo "failed to fetch pinned libplacebo ref $LIBPLACEBO_REF" >&2
++    exit 1
++fi
++git -C "$WORK/libplacebo" reset --hard -q FETCH_HEAD
++git -C "$WORK/libplacebo" submodule update --init --recursive
+ PLACEBO_SHA="$(git -C "$WORK/libplacebo" rev-parse --short HEAD)"
+ 
+ # Keep local integration fixes separate from upstream tracking. In particular,
+@@ -176,13 +190,25 @@ fi
  # ---------------------------------------------------------------------------
  log "ffmpeg $FFMPEG_REF"
  if [ ! -d "$WORK/ffmpeg/.git" ]; then
 -    git clone --branch "$FFMPEG_REF" "$FFMPEG_URL" "$WORK/ffmpeg"
--else
--    # We track master now, so an existing clone must re-fetch (like libplacebo
--    # above) — a bare reset would freeze it at the clone-time origin/master.
--    git -C "$WORK/ffmpeg" fetch origin "${FFMPEG_REF##*/}"
 +    mkdir -p "$WORK/ffmpeg"
 +    git -C "$WORK/ffmpeg" init -q
 +    git -C "$WORK/ffmpeg" remote add origin "$FFMPEG_URL"
- fi
--git -C "$WORK/ffmpeg" reset --hard -q "origin/${FFMPEG_REF##*/}" 2>/dev/null || true
+ else
+-    # We track master now, so an existing clone must re-fetch (like libplacebo
+-    # above) — a bare reset would freeze it at the clone-time origin/master.
+-    git -C "$WORK/ffmpeg" fetch origin "${FFMPEG_REF##*/}"
++    git -C "$WORK/ffmpeg" remote set-url origin "$FFMPEG_URL"
++fi
 +fetched=0
 +for attempt in 1 2 3; do
 +    if git -C "$WORK/ffmpeg" fetch --depth 1 origin "$FFMPEG_REF"; then
@@ -41,7 +82,8 @@ diff --git a/scripts/build-fel-deps.sh b/scripts/build-fel-deps.sh
 +if [ "$fetched" != 1 ]; then
 +    echo "failed to fetch pinned FFmpeg ref $FFMPEG_REF" >&2
 +    exit 1
-+fi
+ fi
+-git -C "$WORK/ffmpeg" reset --hard -q "origin/${FFMPEG_REF##*/}" 2>/dev/null || true
 +git -C "$WORK/ffmpeg" reset --hard -q FETCH_HEAD
  git -C "$WORK/ffmpeg" clean -fdx >/dev/null 2>&1 || true
  

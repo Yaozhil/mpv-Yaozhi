@@ -1,5 +1,14 @@
 # 问题与风险
 
+## 多字幕轨切换即时生效（2026-08-19）
+
+- 现象：普通本地片源切换字幕后约 20 至 30 秒才显示，手动拖动进度条会立即显示；ISO/BD 会出现约 3 至 4 秒刷新暂停。
+- 根因：现有 `cache-inactive` 仅避免丢弃字幕包，未让本地或光盘 demux 启用 seekable packet cache；disc wrapper 子 lavf demux 又在打开后才知道字幕轨数量。
+- 风险控制：缓存只在两条以上非封面内嵌字幕时启用，且沿用 mpv 已有缓存上限；不模拟 seek，不改 PGS 色彩/HDR/FEL/音频直通链。
+- 构建失败记录：Run `32209935162` 的 `git am --3way` 会尝试下载补丁索引指定的浅克隆外 blob；去掉 `0013` 的 `index` 行后，本地 `git am --3way` 已成功。Run `32209935152` 的 `code.videolan.org` 被 runner 拒绝连接；已改用可固定的 GitHub 镜像，依赖构建脚本对两个固定提交均有三次浅拉取重试。
+
+---
+
 ## 已知问题
 
 - 蓝光 FEL ISO 的 libbluray DV BL/EL 依赖关系已由 v854 修复并部署；真实 ISO、正式配置入口与固定 SDR 画面对照均通过。
