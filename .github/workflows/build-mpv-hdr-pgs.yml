@@ -25,6 +25,7 @@ on:
       - "patches/0009-demux-cache-inactive-embedded-subtitles.patch"
       - "patches/0012-demux-enable-inactive-subtitle-cache.patch"
       - "patches/0013-demux-scope-disc-subtitle-cache.patch"
+      - "patches/0015-demux-scope-disc-subtitle-cache-main.diff"
       - "build/core-candidate/**"
       - "build/audio-layout/**"
   workflow_dispatch:
@@ -224,7 +225,7 @@ jobs:
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           cp "$GITHUB_WORKSPACE/patches/0012-demux-enable-inactive-subtitle-cache.patch" \
             packages/mpv-9007-enable-inactive-subtitle-cache.patch
-          cp "$GITHUB_WORKSPACE/patches/0013-demux-scope-disc-subtitle-cache.patch" \
+          cp "$GITHUB_WORKSPACE/patches/0015-demux-scope-disc-subtitle-cache-main.diff" \
             packages/mpv-9008-scope-disc-subtitle-cache.diff
           # Keep the candidate on the same published core capability baseline:
           # the subtitle-cache fix must not drop the independent secondary
