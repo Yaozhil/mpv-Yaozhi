@@ -8,7 +8,7 @@ Subject: [PATCH] demux: scope disc subtitle cache to switchable tracks
  1 file changed, 31 insertions(+), 3 deletions(-)
 
 diff --git a/demux/demux_disc.c b/demux/demux_disc.c
-index f63ac0291..40b2e72c8 100644
+index f63ac0291e9de007e93e7b8cd4df867f5efeb0bf..40b2e72c8af56a15b685eb4b074f448e1f86796a 100644
 --- a/demux/demux_disc.c
 +++ b/demux/demux_disc.c
 @@ -45,6 +45,7 @@ struct priv {
