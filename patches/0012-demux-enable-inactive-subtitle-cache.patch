@@ -1,53 +1,33 @@
-From af9f9075a40852085ff17c70bea5a7ea47e4cb7f Mon Sep 17 00:00:00 2001
+From 19f54f77ce619c03c7f7e34cbcc6b6853973727c Mon Sep 17 00:00:00 2001
 From: Codex Patch Check <codex-patch-check@local.invalid>
-Date: Wed, 19 Aug 2026 09:22:39 +0800
-Subject: [PATCH] demux: enable bounded cache for inactive subtitles
+Date: Wed, 19 Aug 2026 09:29:29 +0800
+Subject: [PATCH] demux: bound implicit subtitle cache prefetch
 
 ---
- demux/demux.c | 12 ++++++++++--
- 1 file changed, 10 insertions(+), 2 deletions(-)
+ demux/demux.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/demux/demux.c b/demux/demux.c
-index 952a2f720..f89158f23 100644
+index f89158f23..ad35fac55 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
-@@ -212,6 +212,9 @@ struct demux_internal {
-     size_t max_bytes;
-     size_t max_bytes_bw;
-     bool seekable_cache;
-+    // Demuxers with multiple embedded subtitle tracks request a bounded
-+    // seekable cache even when the source is a local file or disc stream.
-+    bool cache_inactive_streams;
-     bool using_network_cache_opts;
-     char *record_filename;
- 
-@@ -2570,12 +2573,15 @@ static void update_opts(struct demuxer *demuxer)
- 
+@@ -2574,13 +2574,13 @@ static void update_opts(struct demuxer *demuxer)
      int seekable = opts->seekable_cache;
      bool is_streaming = in->d_thread->is_streaming;
--    bool use_cache = is_streaming;
-+    bool use_cache = is_streaming || in->cache_inactive_streams;
-+    bool implicit_subtitle_cache = in->cache_inactive_streams &&
-+                                   !is_streaming && opts->enable_cache < 0;
+     bool use_cache = is_streaming || in->cache_inactive_streams;
+-    bool implicit_subtitle_cache = in->cache_inactive_streams &&
+-                                   !is_streaming && opts->enable_cache < 0;
      if (opts->enable_cache >= 0)
          use_cache = opts->enable_cache == 1;
  
      if (use_cache) {
--        in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
-+        if (!implicit_subtitle_cache)
-+            in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
+-        if (!implicit_subtitle_cache)
++        if (in->cache_inactive_streams && !is_streaming && opts->enable_cache < 0)
++            in->min_secs = MPMIN(in->min_secs, 30.0);
++        else
+             in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
          if (seekable < 0)
              seekable = 1;
-     }
-@@ -4262,6 +4268,8 @@ void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
-     mp_mutex_lock(&in->lock);
-     if (ds->cache_inactive != enabled) {
-         ds->cache_inactive = enabled;
-+        if (enabled)
-+            in->cache_inactive_streams = true;
-         if (!enabled && !ds->selected) {
-             for (int n = 0; n < in->num_ranges; n++) {
-                 struct demux_cached_range *range = in->ranges[n];
 -- 
 2.54.0.windows.1
 
