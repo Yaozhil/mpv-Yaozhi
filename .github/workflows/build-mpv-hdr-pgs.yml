@@ -23,6 +23,8 @@ on:
       - "patches/0006-sdl2-allow-spatial-channel-counts.patch"
       - "patches/0007-swresample-use-native-canonical-input-layout.patch"
       - "patches/0009-demux-cache-inactive-embedded-subtitles.patch"
+      - "patches/0012-demux-enable-inactive-subtitle-cache.patch"
+      - "patches/0013-demux-scope-disc-subtitle-cache.patch"
       - "build/core-candidate/**"
       - "build/audio-layout/**"
   workflow_dispatch:
@@ -193,6 +195,10 @@ jobs:
             packages/mpv-9005-swresample-native-layout.patch
           cp "$GITHUB_WORKSPACE/patches/0009-demux-cache-inactive-embedded-subtitles.patch" \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          cp "$GITHUB_WORKSPACE/patches/0012-demux-enable-inactive-subtitle-cache.patch" \
+            packages/mpv-9007-enable-inactive-subtitle-cache.patch
+          cp "$GITHUB_WORKSPACE/patches/0013-demux-scope-disc-subtitle-cache.patch" \
+            packages/mpv-9008-scope-disc-subtitle-cache.patch
           # Keep the candidate on the same published core capability baseline:
           # the subtitle-cache fix must not drop the independent secondary
           # subtitle scale, network/read-race fixes, hardware surface sizing,
@@ -479,6 +485,10 @@ jobs:
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           grep -Fq 'using cached packets for stream' \
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
+          grep -Fq 'cache_inactive_streams' \
+            packages/mpv-9007-enable-inactive-subtitle-cache.patch
+          grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
+            packages/mpv-9008-scope-disc-subtitle-cache.patch
           grep -Fq 'secondary-sub-scale' \
             packages/mpv-9010-secondary-sub-scale.patch
           grep -Fq 'request_start' \
@@ -739,29 +749,13 @@ jobs:
           mpv_status=$?
           set -e
 
-          install_root=build64/install/x86_64-w64-mingw32
-          test -f "$install_root/bin/mpv.exe"
-          test -f "$install_root/bin/mpv.com"
-          test "$install_root/bin/mpv.exe" -nt "$build_marker"
-
           mkdir -p release
           built_dir="$(find build64 -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
-          if [ -z "$built_dir" ]; then
-            # The detached-HEAD cleanup may remove the helper's staging
-            # directory after install. Reconstruct the same minimal runtime
-            # package from the verified install prefix in that case.
-            built_dir="$PWD/release/mpv-x86_64-cached"
-            mkdir -p "$built_dir"
-            cp "$install_root/bin/mpv.exe" "$install_root/bin/mpv.com" "$built_dir/"
-            find "$install_root/bin" -maxdepth 1 -type f -iname '*.dll' -exec cp {} "$built_dir/" \;
-            for asset_dir in share shaders; do
-              if [ -d "$install_root/$asset_dir" ]; then
-                cp -a "$install_root/$asset_dir" "$built_dir/"
-              fi
-            done
-          fi
+          test -n "$built_dir"
           test -f "$built_dir/mpv.exe"
           test -f "$built_dir/mpv.com"
+          test "$built_dir/mpv.exe" -nt "$build_marker"
+          test "$built_dir/mpv.com" -nt "$build_marker"
           if [ "$mpv_status" -ne 0 ]; then
             echo "mpv target returned $mpv_status after producing a complete binary; treating detached-HEAD cleanup as non-fatal"
           fi
