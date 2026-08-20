@@ -1,6 +1,6 @@
-From 6c1767d492bf1af12751fad2fd3b03bee9efde44 Mon Sep 17 00:00:00 2001
-From: Codex Patch Check <codex-patch-check@local.invalid>
-Date: Wed, 19 Aug 2026 06:39:42 +0800
+From f72a822b9dfa29f623a876d80b4e11b6368b7746 Mon Sep 17 00:00:00 2001
+From: Codex validation <codex-validation@example.invalid>
+Date: Thu, 20 Aug 2026 12:54:54 +0800
 Subject: [PATCH] demux: cache inactive native Matroska and disc subtitles
 
 ---
@@ -12,10 +12,10 @@ Subject: [PATCH] demux: cache inactive native Matroska and disc subtitles
  5 files changed, 153 insertions(+), 6 deletions(-)
 
 diff --git a/demux/demux.c b/demux/demux.c
-index b63038b6c4c411db960b134f9743bf63c7e5f08f..94d80b069bfc8c0fd21fd1e25686bf503986625e 100644
+index f428089..82ec69e 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
-@@ -388,6 +388,7 @@ struct demux_stream {
+@@ -389,6 +389,7 @@ struct demux_stream {
  
      // demuxer state
      bool selected;          // user wants packets from this stream
@@ -23,7 +23,7 @@ index b63038b6c4c411db960b134f9743bf63c7e5f08f..94d80b069bfc8c0fd21fd1e25686bf50
      bool eager;             // try to keep at least 1 packet queued
                              // if false, this stream is disabled, or passively
                              // read (like subtitles)
-@@ -923,7 +924,7 @@ static void update_stream_selection_state(struct demux_internal *in,
+@@ -924,7 +925,7 @@ static void update_stream_selection_state(struct demux_internal *in,
      for (int n = 0; n < in->num_ranges; n++) {
          struct demux_cached_range *range = in->ranges[n];
  
@@ -32,7 +32,7 @@ index b63038b6c4c411db960b134f9743bf63c7e5f08f..94d80b069bfc8c0fd21fd1e25686bf50
              clear_queue(range->streams[ds->index]);
  
          update_seek_ranges(range);
-@@ -2111,7 +2112,8 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+@@ -2112,7 +2113,8 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
  
      struct demux_queue *queue = ds->queue;
  
@@ -42,7 +42,7 @@ index b63038b6c4c411db960b134f9743bf63c7e5f08f..94d80b069bfc8c0fd21fd1e25686bf50
  
      if (!drop) {
          // If libavformat splits packets, some packets will have pos unset, so
-@@ -4089,6 +4091,56 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4094,6 +4096,56 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
  {
      struct demux_stream *ds = stream->ds;
      ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
@@ -99,7 +99,7 @@ index b63038b6c4c411db960b134f9743bf63c7e5f08f..94d80b069bfc8c0fd21fd1e25686bf50
  
      if (in->back_demuxing)
          ds->back_seek_pos = ref_pts;
-@@ -4190,6 +4242,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+@@ -4195,6 +4247,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
      return r;
  }
  
@@ -129,7 +129,7 @@ index b63038b6c4c411db960b134f9743bf63c7e5f08f..94d80b069bfc8c0fd21fd1e25686bf50
                                  void (*cb)(void *ctx), void *ctx)
  {
 diff --git a/demux/demux.h b/demux/demux.h
-index 6fabf64b9940ee9b100050807eacd7c16a1c9258..d3c54e5067d328019f6405fc7cb9af0ba11ff337 100644
+index b300da6..9a37395 100644
 --- a/demux/demux.h
 +++ b/demux/demux.h
 @@ -300,6 +300,9 @@ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
@@ -143,7 +143,7 @@ index 6fabf64b9940ee9b100050807eacd7c16a1c9258..d3c54e5067d328019f6405fc7cb9af0b
                                  void (*cb)(void *ctx), void *ctx);
  struct demux_packet *demux_read_any_packet(struct demuxer *demuxer);
 diff --git a/demux/demux_disc.c b/demux/demux_disc.c
-index 86557a711c2daa257ebb9fcdf79868787a7da62b..f63ac0291e9de007e93e7b8cd4df867f5efeb0bf 100644
+index 86557a7..f63ac02 100644
 --- a/demux/demux_disc.c
 +++ b/demux/demux_disc.c
 @@ -58,8 +58,13 @@ static void reselect_streams(demuxer_t *demuxer)
@@ -197,7 +197,7 @@ index 86557a711c2daa257ebb9fcdf79868787a7da62b..f63ac0291e9de007e93e7b8cd4df867f
          return true;
      }
 diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
-index a5d7431068284234edd49bc60b1dfe2d427175cc..5f6fde7cff0d1a48b2fcfd6014000d972f36afab 100644
+index 4d91983..500ad91 100644
 --- a/demux/demux_lavf.c
 +++ b/demux/demux_lavf.c
 @@ -600,11 +600,35 @@ static void guess_and_set_vobsub_name(struct demuxer *demuxer, AVDictionary **d)
@@ -226,7 +226,7 @@ index a5d7431068284234edd49bc60b1dfe2d427175cc..5f6fde7cff0d1a48b2fcfd6014000d97
          bool selected = stream && demux_stream_is_selected(stream) &&
                          !stream->attached_picture;
 +        // Keep every embedded subtitle stream in the demux cache when there
-+        // is a real choice of subtitle tracks.  Track switching can then use
++        // is a real choice of subtitle tracks. Track switching can then use
 +        // packets at the current playback position without a refresh seek.
 +        if (switchable_subs > 1 && stream && stream->type == STREAM_SUB &&
 +            !stream->attached_picture)
@@ -237,7 +237,7 @@ index a5d7431068284234edd49bc60b1dfe2d427175cc..5f6fde7cff0d1a48b2fcfd6014000d97
              struct sh_stream *el =
                  mp_dovi_split_el_stream(priv->streams[n]->dovi_split);
 diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
-index e9159d752b5c796261d00d7d5178a371d2255f64..c229f20106d15447bff1f8b1dff39306c2c3eff2 100644
+index e9159d7..c229f20 100644
 --- a/demux/demux_mkv.c
 +++ b/demux/demux_mkv.c
 @@ -223,6 +223,7 @@ typedef struct mkv_demuxer {
@@ -309,4 +309,5 @@ index e9159d752b5c796261d00d7d5178a371d2255f64..c229f20106d15447bff1f8b1dff39306
      current_pts = tc / 1e9 - track->codec_delay;
 -- 
 2.54.0.windows.1
+
 

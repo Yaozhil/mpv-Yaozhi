@@ -5,7 +5,8 @@
 主核心继续使用 `0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch`，
 基于当前发行版 `mpv v0.41.0-846-g99b4c12cc`；Atmos 侧车使用
 `0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch`，已刷新到
-`mpv-v0.4.2-fel-beta.1` 对应的 mpv master `8c67647b5`。两者运行时语义相同，
+`mpv-v0.5.0-fel-beta.4` 对应的 mpv `e167836802da6d5a4301bd4c4eeb3c5c3c17ccb8`。
+两者运行时语义相同，
 都只修改 `vo=gpu-next` 的 `SUBBITMAP_BGRA` overlay。补丁覆盖 PGS、VobSub、
 DVB 等图形字幕，不修改：
 
@@ -158,8 +159,9 @@ HDR Vivid，不再只依赖文件名猜测。
 音频、HDR 或直通输出链。单内嵌字幕、外置字幕、无字幕文件及既有视频/音频缓存预算
 保持原行为；缓存尚未覆盖当前位置时，安全回退到 mpv 原有的刷新路径。
 
-`0009` 只对应主核心固定基线。Atmos 侧车固定在较早的
-`8c67647b5`，因此使用 `0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch`；
+`0009` 只对应主核心固定基线。Atmos 侧车固定在 beta.4 的
+`e167836802da6d5a4301bd4c4eeb3c5c3c17ccb8`，因此使用
+`0010-demux-cache-inactive-native-Matroska-subtitle-tracks.patch`；
 两者的稳定补丁 ID 相同，功能一致，仅调整各自基线的上下文。Atmos 工作流只能应用
 `0010`，不得与 `0009` 同时叠加。
 
@@ -168,7 +170,11 @@ HDR Vivid，不再只依赖文件名猜测。
 包装器在 lavf 子 demux 已打开后才能发现字幕轨，因此它会由 `0013` 触发一次安全的
 运行期重算；未初始化缓存范围时不重算。
 
-`0013-demux-scope-disc-subtitle-cache.patch` 同时覆盖蓝光/DVD 外层和 lavf 子层，
-仅在两条或以上非封面字幕轨时保留未选字幕包。它必须在 `0009` 或 `0010` 之后应用。
-Atmos 使用基线专属的 `0014-demux-enable-inactive-subtitle-cache-atmos.patch` 替代
-`0012`。三个补丁共同确保光盘路径命中已有字幕包，而不是通过 refresh seek 刷新播放。
+`0013-demux-scope-disc-subtitle-cache.patch`（Atmos）与
+`0015-demux-scope-disc-subtitle-cache-main.diff`（主核心）同时覆盖蓝光/DVD 外层和
+lavf 子层，仅在两条或以上非封面字幕轨时保留未选字幕包。它们还会原子保留播放器
+切轨时传入的精确参考 PTS，并按 `inner = outer + base_dts - base_time` 换算到内层
+MPEG 时间轴，避免把 libbluray 预读头时间或外层时间直接交给 lavf。二者必须在各自
+基线的 `0009` 或 `0010` 之后应用。Atmos 使用基线专属的
+`0014-demux-enable-inactive-subtitle-cache-atmos.patch` 替代 `0012`。三个补丁共同确保
+光盘路径命中当前播放点已有的字幕包，而不是通过 refresh seek 刷新播放。

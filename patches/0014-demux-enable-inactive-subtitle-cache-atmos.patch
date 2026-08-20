@@ -1,6 +1,6 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Yaozhi mpv build <build@local.invalid>
-Date: Wed, 19 Aug 2026 10:30:00 +0800
+From 2db418954c511d612015fa427afae29eec7e01e9 Mon Sep 17 00:00:00 2001
+From: Codex validation <codex-validation@example.invalid>
+Date: Thu, 20 Aug 2026 12:55:42 +0800
 Subject: [PATCH] demux: enable cache after inactive subtitle discovery
 
 ---
@@ -8,30 +8,40 @@ Subject: [PATCH] demux: enable cache after inactive subtitle discovery
  1 file changed, 17 insertions(+), 2 deletions(-)
 
 diff --git a/demux/demux.c b/demux/demux.c
-index 6e2cbad16..b7fde7b94 100644
+index 82ec69e..6acdb59 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
-@@ -214,3 +214,6 @@ struct demux_internal {
+@@ -212,6 +212,9 @@ struct demux_internal {
+     size_t max_bytes;
+     size_t max_bytes_bw;
      bool seekable_cache;
 +    // Demuxers with multiple embedded subtitle tracks request a bounded
 +    // seekable cache even when the source is a local file or disc stream.
 +    bool cache_inactive_streams;
      bool using_network_cache_opts;
      char *record_filename;
-@@ -2570,3 +2573,5 @@ static void update_opts(struct demuxer *demuxer)
+ 
+@@ -2568,12 +2571,15 @@ static void update_opts(struct demuxer *demuxer)
+ 
+     int seekable = opts->seekable_cache;
+     bool is_streaming = in->d_thread->is_streaming;
 -    bool use_cache = is_streaming;
 +    bool use_cache = is_streaming || in->cache_inactive_streams;
 +    bool implicit_subtitle_cache = in->cache_inactive_streams &&
 +                                   !is_streaming && opts->enable_cache < 0;
      if (opts->enable_cache >= 0)
          use_cache = opts->enable_cache == 1;
-@@ -2575,3 +2580,4 @@ static void update_opts(struct demuxer *demuxer)
+ 
      if (use_cache) {
 -        in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
 +        if (!implicit_subtitle_cache)
 +            in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
          if (seekable < 0)
-@@ -4249,3 +4256,12 @@ void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
+             seekable = 1;
+     }
+@@ -4257,6 +4263,15 @@ void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
+     mp_mutex_lock(&in->lock);
+     if (ds->cache_inactive != enabled) {
          ds->cache_inactive = enabled;
 +        if (enabled && !in->cache_inactive_streams) {
 +            // A disc wrapper enables this on its lavf child after that child
@@ -44,5 +54,8 @@ index 6e2cbad16..b7fde7b94 100644
 +        }
          if (!enabled && !ds->selected) {
              for (int n = 0; n < in->num_ranges; n++) {
---
+                 struct demux_cached_range *range = in->ranges[n];
+-- 
 2.54.0.windows.1
+
+

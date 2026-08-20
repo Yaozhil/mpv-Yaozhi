@@ -517,6 +517,10 @@ jobs:
             packages/mpv-9007-enable-inactive-subtitle-cache.patch
           grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
             packages/mpv-9008-scope-disc-subtitle-cache.diff
+          grep -Fq 'demux_stream_get_selection_state' \
+            packages/mpv-9008-scope-disc-subtitle-cache.diff
+          grep -Fq 'p->base_dts - p->base_time' \
+            packages/mpv-9008-scope-disc-subtitle-cache.diff
           grep -Fq 'secondary-sub-scale' \
             packages/mpv-9010-secondary-sub-scale.patch
           grep -Fq 'request_start' \

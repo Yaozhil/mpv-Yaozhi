@@ -18,9 +18,9 @@ permissions:
   contents: read
 
 env:
-  MPV_MASTER_REF: 8c67647b50059406c5c0444903597281b81516cf
-  MPV_OMNIPHONY_REF: v0.4.2-fel-beta.1
-  OMNIPHONY_ENGINE_REF: v0.4.2
+  MPV_MASTER_REF: e167836802da6d5a4301bd4c4eeb3c5c3c17ccb8
+  MPV_OMNIPHONY_REF: v0.5.0-fel-beta.4
+  OMNIPHONY_ENGINE_REF: v0.5.0
 
 jobs:
   build-liborender-windows:
@@ -51,7 +51,7 @@ jobs:
       - name: Upload liborender artifact
         uses: actions/upload-artifact@v6
         with:
-          name: liborender-windows-v0.4.2
+          name: liborender-windows-v0.5.0
           path: out
           if-no-files-found: error
 
@@ -65,7 +65,7 @@ jobs:
       - name: Check out mpv-Yaozhi patch
         uses: actions/checkout@v6
 
-      - name: Check out mpv-omniphony beta.1 integration
+      - name: Check out mpv-omniphony beta.4 integration
         uses: actions/checkout@v6
         with:
           repository: mgth/mpv-omniphony
@@ -119,6 +119,12 @@ jobs:
           set -euxo pipefail
           git -C mpv-omniphony apply \
             "$GITHUB_WORKSPACE/build/atmos/pin-fel-dependencies.patch"
+          grep -Fqx \
+            'LIBPLACEBO_REF="22ee762e8e0890fc54068beb670310f0edce7263"' \
+            mpv-omniphony/deps-fel/pins-fel.env
+          grep -Fqx \
+            'FFMPEG_REF="df86c5ef3a5524b92c4083473bf816f7df8a1df4"' \
+            mpv-omniphony/deps-fel/pins-fel.env
 
       - name: Install prebuilt cargo-c
         shell: bash
@@ -261,7 +267,7 @@ jobs:
       - name: Download pinned liborender
         uses: actions/download-artifact@v7
         with:
-          name: liborender-windows-v0.4.2
+          name: liborender-windows-v0.5.0
           path: /tmp/liborender
 
       - name: Install pinned liborender
@@ -307,6 +313,7 @@ jobs:
             ! -name 'mpv-master-clone' -print -quit)"
           test -n "$src"
           src="$(realpath "$src")"
+          test "$(git -C "$src" rev-parse HEAD)" = "$MPV_MASTER_REF"
           git -C "$src" apply --3way \
             "$GITHUB_WORKSPACE/patches/0008-vo_gpu_next-add-image-subtitle-colorspace-control-master.patch"
           git -C "$src" apply --3way \
@@ -316,8 +323,11 @@ jobs:
           git -C "$src" apply --3way \
             "$GITHUB_WORKSPACE/patches/0013-demux-scope-disc-subtitle-cache.patch"
           grep -Fq 'cache_inactive_streams' "$src/demux/demux.c"
+          grep -Fq 'select_ref_pts' "$src/demux/demux.c"
           grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
             "$src/demux/demux_disc.c"
+          grep -Fq 'p->base_dts - p->base_time' "$src/demux/demux_disc.c"
+          grep -Fq 'image-subs-colorspace' "$src/video/out/vo_gpu_next.c"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
           git -C "$src" diff --check
 
@@ -392,7 +402,7 @@ jobs:
             fi
           done
 
-          archive=mpv-omniphony-fel-beta.1-yaozhi-image-subs-windows-x86_64.zip
+          archive=mpv-omniphony-fel-beta.4-yaozhi-image-subs-windows-x86_64.zip
           (
             cd staging
             zip -r "../$archive" .
@@ -404,7 +414,7 @@ jobs:
         with:
           name: mpv-atmos-hdr-pgs-windows-x86_64
           path: |
-            mpv-omniphony-fel-beta.1-yaozhi-image-subs-windows-x86_64.zip
+            mpv-omniphony-fel-beta.4-yaozhi-image-subs-windows-x86_64.zip
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

@@ -1,5 +1,7 @@
+warning: in the working copy of 'deps-fel/pins-fel.env', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/build-fel-deps.sh', LF will be replaced by CRLF the next time Git touches it
 diff --git a/deps-fel/pins-fel.env b/deps-fel/pins-fel.env
-index 8715ca9..22ec51e 100644
+index 34eeb55..1dc1773 100644
 --- a/deps-fel/pins-fel.env
 +++ b/deps-fel/pins-fel.env
 @@ -11,15 +11,15 @@
@@ -15,15 +17,14 @@ index 8715ca9..22ec51e 100644
  # the AV_STREAM_GROUP_PARAMS_DOLBY_VISION stream group that mpv's demux/dovi_split
  # and demux_lavf now rely on. release/8.1 has NEITHER, so master is required until
  # an ffmpeg release ships them. The vendored dovi_split patch is gone (upstream).
--FFMPEG_URL="https://git.ffmpeg.org/ffmpeg.git"
+ FFMPEG_URL="https://github.com/FFmpeg/FFmpeg.git"
 -FFMPEG_REF="master"
-+FFMPEG_URL="https://github.com/FFmpeg/FFmpeg.git"
-+FFMPEG_REF="b397eba2f0d3d86daf1098d0f27daffccc74fea5"
++FFMPEG_REF="df86c5ef3a5524b92c4083473bf816f7df8a1df4"
  
  # NB: the mpv base is no longer pinned. The old MPV_FEL_BASE pin existed only to
  # keep the vendored FEL mpv patch (patches-fel/) from rotting against a moving
 diff --git a/scripts/build-fel-deps.sh b/scripts/build-fel-deps.sh
-index 9cd61e9..1a4fc45 100755
+index 07173ef..0e7c012 100644
 --- a/scripts/build-fel-deps.sh
 +++ b/scripts/build-fel-deps.sh
 @@ -97,12 +97,26 @@ fi
@@ -87,4 +88,4 @@ index 9cd61e9..1a4fc45 100755
 +git -C "$WORK/ffmpeg" reset --hard -q FETCH_HEAD
  git -C "$WORK/ffmpeg" clean -fdx >/dev/null 2>&1 || true
  
- ff_args=(--prefix="$PREFIX" --enable-shared --disable-static
+ # libopus: the wrapper decoder must be available as a fallback next to the

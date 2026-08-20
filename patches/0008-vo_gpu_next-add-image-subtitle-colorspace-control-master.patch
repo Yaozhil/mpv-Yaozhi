@@ -1,7 +1,7 @@
-From 03b17140ec4cc2f6eac20d0c595dfe034a3e4b02 Mon Sep 17 00:00:00 2001
-From: Yaozhi mpv build <build@local.invalid>
-Date: Fri, 24 Jul 2026 13:15:50 +0800
-Subject: [PATCH] vo_gpu_next: add image subtitle colorspace and brightness control
+From 5b4d1a132fb7fd0a5abfbc7a9245a1f2315e871c Mon Sep 17 00:00:00 2001
+From: Codex validation <codex-validation@example.invalid>
+Date: Thu, 20 Aug 2026 12:51:56 +0800
+Subject: [PATCH] vo_gpu_next: add image subtitle colorspace control
 
 ---
  DOCS/interface-changes.rst |  1 +
@@ -22,10 +22,10 @@ index 230a5b5..49a64a1 100644
      - add `--hwdec-threads`
      - add `--hdr-reference-white`
 diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
-index f9f1763..2274a65 100644
+index 09b9075..4893a19 100644
 --- a/DOCS/man/options.rst
 +++ b/DOCS/man/options.rst
-@@ -2816,9 +2816,24 @@ Subtitles
+@@ -2855,9 +2855,24 @@ Subtitles
      ``video-dynamic`` uses only per-scene video metadata,
      ``video-static`` uses only static video metadata, (``--vo=gpu-next`` only)
  
@@ -51,7 +51,7 @@ index f9f1763..2274a65 100644
      Controls the text subtitle and OSD diffuse white level in cd/m² (nits)
      for HDR output (default: auto). In ``auto`` mode, subtitles and OSD follow
 diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 87d6610..ca126b7 100644
+index bf4f80b..fc88ccf 100644
 --- a/video/out/vo_gpu_next.c
 +++ b/video/out/vo_gpu_next.c
 @@ -174,10 +174,17 @@ struct priv {
@@ -127,4 +127,6 @@ index 87d6610..ca126b7 100644
              break;
          case SUBBITMAP_LIBASS:
 -- 
-2.50.1.windows.1
+2.54.0.windows.1
+
+

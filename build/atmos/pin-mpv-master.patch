@@ -1,5 +1,6 @@
+warning: in the working copy of 'scripts/apply-patches-master.sh', LF will be replaced by CRLF the next time Git touches it
 diff --git a/scripts/apply-patches-master.sh b/scripts/apply-patches-master.sh
-index 32bbb39..f06e44a 100755
+index 32bbb39..0b62d39 100644
 --- a/scripts/apply-patches-master.sh
 +++ b/scripts/apply-patches-master.sh
 @@ -16,6 +16,7 @@ CLONE_DIR="$WORKDIR/mpv-master-clone"
@@ -10,7 +11,7 @@ index 32bbb39..f06e44a 100755
  if [ ! -d "$CLONE_DIR/.git" ]; then
      echo ">> cloning mpv master (full history, --3way needs blobs)"
      git clone --branch master "$MPV_URL" "$CLONE_DIR"
-@@ -24,7 +25,9 @@ else
+@@ -25,8 +26,10 @@ else
      git -C "$CLONE_DIR" reset --hard origin/master
      git -C "$CLONE_DIR" clean -fdx
  fi
@@ -21,3 +22,5 @@ index 32bbb39..f06e44a 100755
 +SHORT_SHA="$(git -C "$CLONE_DIR" rev-parse --short "$MPV_REF")"
  SRC="$WORKDIR/mpv-master-${SHORT_SHA}"
  
+ if [ -d "$SRC" ]; then
+

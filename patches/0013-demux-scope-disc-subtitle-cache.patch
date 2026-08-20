@@ -1,13 +1,83 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Yaozhi mpv build <build@local.invalid>
-Date: Wed, 19 Aug 2026 10:30:00 +0800
-Subject: [PATCH] demux: scope disc subtitle cache to switchable tracks
+From a823ed8a56d5d2b932e7593e60478d86ff04232c Mon Sep 17 00:00:00 2001
+From: Codex validation <codex-validation@example.invalid>
+Date: Thu, 20 Aug 2026 12:57:49 +0800
+Subject: [PATCH] demux: preserve disc subtitle switch reference PTS
 
 ---
- demux/demux_disc.c | 34 +++++++++++++++++++++++++++++++---
- 1 file changed, 31 insertions(+), 3 deletions(-)
+ demux/demux.c      | 20 ++++++++++++++++++++
+ demux/demux.h      |  4 ++++
+ demux/demux_disc.c | 46 +++++++++++++++++++++++++++++++++++++---------
+ 3 files changed, 61 insertions(+), 9 deletions(-)
 
+diff --git a/demux/demux.c b/demux/demux.c
+index 6acdb59..4fd4316 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -392,6 +392,7 @@ struct demux_stream {
+ 
+     // demuxer state
+     bool selected;          // user wants packets from this stream
++    double select_ref_pts;  // ref PTS of the latest logical selection change
+     bool cache_inactive;    // demuxer wants packets while this is unselected
+     bool eager;             // try to keep at least 1 packet queued
+                             // if false, this stream is disabled, or passively
+@@ -999,6 +1000,7 @@ static void demux_add_sh_stream_locked(struct demux_internal *in,
+         .sh = sh,
+         .type = sh->type,
+         .index = sh->index,
++        .select_ref_pts = MP_NOPTS_VALUE,
+         .global_correct_dts = true,
+         .global_correct_pos = true,
+     };
+@@ -4189,6 +4191,7 @@ static bool select_track(struct demux_internal *in,
+         return false;
+     MP_VERBOSE(in, "%sselect track %d\n", selected ? "" : "de", stream->index);
+     ds->selected = selected;
++    ds->select_ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
+     update_stream_selection_state(in, ds);
+     in->tracks_switched = true;
+     if (ds->selected)
+@@ -4253,6 +4256,23 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+     return r;
+ }
+ 
++bool demux_stream_get_selection_state(struct sh_stream *stream,
++                                      double *ref_pts)
++{
++    if (!stream) {
++        if (ref_pts)
++            *ref_pts = MP_NOPTS_VALUE;
++        return false;
++    }
++    struct demux_stream *ds = stream->ds;
++    mp_mutex_lock(&ds->in->lock);
++    bool selected = ds->selected;
++    if (ref_pts)
++        *ref_pts = ds->select_ref_pts;
++    mp_mutex_unlock(&ds->in->lock);
++    return selected;
++}
++
+ void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
+ {
+     if (!stream)
+diff --git a/demux/demux.h b/demux/demux.h
+index 9a37395..33dc20c 100644
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -300,6 +300,10 @@ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
+ int demux_read_packet_async_until(struct sh_stream *sh, double min_pts,
+                                   struct demux_packet **out_pkt);
+ bool demux_stream_is_selected(struct sh_stream *stream);
++// Query logical selection and its latest reference PTS atomically. The PTS is
++// normalized to the demuxer's packet timeline. Intended for wrappers only.
++bool demux_stream_get_selection_state(struct sh_stream *stream,
++                                      double *ref_pts);
+ // Let a demuxer retain packets for an inactive stream. This is intended for
+ // sparse, switchable embedded subtitle tracks only.
+ void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled);
 diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index f63ac02..e826030 100644
 --- a/demux/demux_disc.c
 +++ b/demux/demux_disc.c
 @@ -45,6 +45,7 @@ struct priv {
@@ -46,9 +116,23 @@ diff --git a/demux/demux_disc.c b/demux/demux_disc.c
  static void reselect_streams(demuxer_t *demuxer)
  {
      struct priv *p = demuxer->priv;
-@@ -62,9 +84,9 @@ static void reselect_streams(demuxer_t *demuxer)
-             bool selected = demux_stream_is_selected(p->streams[n]);
-             demuxer_select_track(p->slave, src, MP_NOPTS_VALUE, selected);
+@@ -59,12 +81,21 @@ static void reselect_streams(demuxer_t *demuxer)
+     for (int n = 0; n < MPMIN(num_slave, p->num_streams); n++) {
+         if (p->streams[n]) {
+             struct sh_stream *src = demux_get_stream(p->slave, n);
+-            bool selected = demux_stream_is_selected(p->streams[n]);
+-            demuxer_select_track(p->slave, src, MP_NOPTS_VALUE, selected);
++            double outer_ref_pts = MP_NOPTS_VALUE;
++            bool selected = demux_stream_get_selection_state(
++                p->streams[n], &outer_ref_pts);
++            double ref_pts = MP_NOPTS_VALUE;
++            if (src && src->type == STREAM_SUB && selected &&
++                p->base_dts != MP_NOPTS_VALUE)
++            {
++                ref_pts = MP_ADD_PTS(outer_ref_pts,
++                                     p->base_dts - p->base_time);
++            }
++            demuxer_select_track(p->slave, src, ref_pts, selected);
              if (src && src->type == STREAM_SUB)
 -                demuxer_set_stream_cache_inactive(src, true);
 -            if (p->streams[n]->type == STREAM_SUB)
@@ -59,7 +143,7 @@ diff --git a/demux/demux_disc.c b/demux/demux_disc.c
          }
      }
  }
-@@ -121,7 +143,6 @@ static void add_dvd_streams(demuxer_t *demuxer)
+@@ -121,7 +152,6 @@ static void add_dvd_streams(demuxer_t *demuxer)
              sh->codec->extradata_size = strlen(s);
  
              demux_add_sh_stream(demuxer, sh);
@@ -67,7 +151,7 @@ diff --git a/demux/demux_disc.c b/demux/demux_disc.c
          }
      }
  }
-@@ -140,7 +161,6 @@ static void add_streams(demuxer_t *demuxer)
+@@ -140,7 +170,6 @@ static void add_streams(demuxer_t *demuxer)
              if (sub) {
                  mp_assert(p->num_streams == n); // directly mapped
                  MP_TARRAY_APPEND(p, p->streams, p->num_streams, sub);
@@ -75,7 +159,7 @@ diff --git a/demux/demux_disc.c b/demux/demux_disc.c
                  continue;
              }
          }
-@@ -165,8 +185,6 @@ static void add_streams(demuxer_t *demuxer)
+@@ -165,8 +194,6 @@ static void add_streams(demuxer_t *demuxer)
          }
          get_disc_lang(demuxer->stream, sh, p->is_dvd);
          demux_add_sh_stream(demuxer, sh);
@@ -84,7 +168,7 @@ diff --git a/demux/demux_disc.c b/demux/demux_disc.c
      }
  
      // Mirror slave sh_stream_group onto the disc-level sh_streams. This is needed
-@@ -193,6 +211,7 @@ static void add_streams(demuxer_t *demuxer)
+@@ -193,6 +220,7 @@ static void add_streams(demuxer_t *demuxer)
          }
      }
  
@@ -94,3 +178,5 @@ diff --git a/demux/demux_disc.c b/demux/demux_disc.c
  
 -- 
 2.54.0.windows.1
+
+
