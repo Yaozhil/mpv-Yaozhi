@@ -18,7 +18,42 @@ index d452453a4..1d3c9bd7b 100644
          .global_correct_dts = true,
          .global_correct_pos = true,
      };
-@@ -4194,6 +4196,7 @@ static bool select_track(struct demux_internal *in,
+@@ -4124,29 +4126,11 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+         cache_covers_ref = starts_before_ref && ends_after_ref;
+     }
+     if (ds->cache_inactive && cache_covers_ref) {
+-        // ref_pts includes mpv's subtitle preroll. PGS packets are sparse and
+-        // a visible composition can start before that preroll point, so resume
+-        // decoding from the most recent PGS packet group at the display time.
+-        double display_pts = ds->type == STREAM_SUB
+-            ? MP_ADD_PTS(ref_pts, 10.0) : ref_pts;
+-        struct demux_packet *target = NULL;
+-        struct demux_packet *group_start = NULL;
+-        double group_pts = MP_NOPTS_VALUE;
+-        for (struct demux_packet *dp = ds->queue->head; dp; dp = dp->next) {
+-            double pts = MP_PTS_OR_DEF(dp->pts, dp->dts);
+-            if (pts == MP_NOPTS_VALUE)
+-                continue;
+-            if (!group_start || fabs(pts - group_pts) > 0.000001) {
+-                group_start = dp;
+-                group_pts = pts;
+-            }
+-            if (pts <= display_pts)
+-                target = group_start;
+-            else if (!target)
+-                target = group_start;
+-            if (pts > display_pts && target)
+-                break;
+-        }
++        // Packet boundaries are not subtitle display-set boundaries. In PGS,
++        // one display set is split into PCS/WDS/PDS/ODS/END packets with
++        // different timestamps. Replay the bounded queue from its head so the
++        // decoder rebuilds palette, object, and composition state completely.
++        struct demux_packet *target = ds->queue->head;
+         // An empty span is also valid for sparse subtitles. The next packet,
+         // if any, is beyond the cached playback interval, so a refresh seek
+         // would only disrupt the A/V cache without producing a subtitle.
+@@ -4194,6 +4178,7 @@ static bool select_track(struct demux_internal *in,
          return false;
      MP_VERBOSE(in, "%sselect track %d\n", selected ? "" : "de", stream->index);
      ds->selected = selected;
