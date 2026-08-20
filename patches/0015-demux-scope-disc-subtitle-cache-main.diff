@@ -26,7 +26,7 @@ index d452453a4..1d3c9bd7b 100644
      update_stream_selection_state(in, ds);
      in->tracks_switched = true;
      if (ds->selected)
-@@ -4258,6 +4261,23 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+@@ -4258,6 +4261,35 @@ bool demux_stream_is_selected(struct sh_stream *stream)
      return r;
  }
  
@@ -47,6 +47,18 @@ index d452453a4..1d3c9bd7b 100644
 +    return selected;
 +}
 +
++bool demux_stream_is_selected_or_cached(struct sh_stream *stream)
++{
++    if (!stream)
++        return false;
++
++    struct demux_stream *ds = stream->ds;
++    mp_mutex_lock(&ds->in->lock);
++    bool readable = ds->selected || ds->cache_inactive;
++    mp_mutex_unlock(&ds->in->lock);
++    return readable;
++}
++
  void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
  {
      if (!stream)
@@ -54,7 +66,7 @@ diff --git a/demux/demux.h b/demux/demux.h
 index d3c54e506..6684a7a52 100644
 --- a/demux/demux.h
 +++ b/demux/demux.h
-@@ -300,6 +300,10 @@ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
+@@ -300,6 +300,14 @@ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
  int demux_read_packet_async_until(struct sh_stream *sh, double min_pts,
                                    struct demux_packet **out_pkt);
  bool demux_stream_is_selected(struct sh_stream *stream);
@@ -62,9 +74,25 @@ index d3c54e506..6684a7a52 100644
 +// normalized to the demuxer's packet timeline. Intended for wrappers only.
 +bool demux_stream_get_selection_state(struct sh_stream *stream,
 +                                      double *ref_pts);
++// Whether the stream is selected for playback or retained by its demuxer for
++// an inactive-stream cache. Packet producers can use this to avoid dropping
++// data before it reaches the bounded cache.
++bool demux_stream_is_selected_or_cached(struct sh_stream *stream);
  // Let a demuxer retain packets for an inactive stream. This is intended for
  // sparse, switchable embedded subtitle tracks only.
  void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled);
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1720,7 +1720,7 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
+                                     ? mp_dovi_split_el_stream(info->dovi_split)
+                                     : NULL;
+     bool need_for_split = split_el && demux_stream_is_selected(split_el);
+-    if (!demux_stream_is_selected(stream) && !need_for_split) {
++    if (!demux_stream_is_selected_or_cached(stream) && !need_for_split) {
+         av_packet_free(&pkt);
+         return true; // don't signal EOF if skipping a packet
+     }
 diff --git a/demux/demux_disc.c b/demux/demux_disc.c
 index 7c457db8f..f8bc6a080 100644
 --- a/demux/demux_disc.c
