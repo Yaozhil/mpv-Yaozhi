@@ -103,6 +103,7 @@ jobs:
               mingw-w64-pkg-config \
               mingw-w64-meson \
               mingw-w64-libass \
+              mingw-w64-opus \
               mingw-w64-vulkan-headers mingw-w64-vulkan-icd-loader \
               mingw-w64-shaderc mingw-w64-spirv-cross mingw-w64-lcms2 \
               mingw-w64-zlib mingw-w64-libdvdnav mingw-w64-libdvdread; then
