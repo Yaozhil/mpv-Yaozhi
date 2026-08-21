@@ -686,7 +686,20 @@ jobs:
             -S . \
             -B build64
 
-          timeout --foreground 20m ninja -C build64 download || true
+          # ExternalProject fans out dozens of public Git clones. Hosted
+          # runners can be throttled when all of them start together, so keep
+          # the network phase bounded, low-concurrency and retry only the
+          # unfinished stamp targets.
+          download_complete=no
+          for attempt in 1 2 3; do
+            if timeout --foreground 20m ninja -j2 -C build64 download; then
+              download_complete=yes
+              break
+            fi
+            echo "::warning::Dependency download attempt ${attempt}/3 was throttled; retrying unfinished sources"
+            sleep $((attempt * 15))
+          done
+          test "$download_complete" = yes
           if [ ! -f build64/install/bin/cross-gcc ]; then
             timeout --foreground 30m ninja -C build64 gcc
             rm -rf build64/toolchain
@@ -701,7 +714,7 @@ jobs:
           if [ -f "$curl_done" ]; then
             echo "Reusing cached libcurl Schannel build"
           else
-            timeout --foreground 25m ninja -C build64 update
+            timeout --foreground 25m ninja -j2 -C build64 update
             timeout --foreground 25m ninja -C build64 curl
           fi
 
