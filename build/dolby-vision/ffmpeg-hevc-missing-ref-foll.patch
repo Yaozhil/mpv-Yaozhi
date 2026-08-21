@@ -1,0 +1,87 @@
+From 265d39e551956d911a0c1c52bff5186a6bae660e Mon Sep 17 00:00:00 2001
+From: Frank Plowman <post@frankplowman.com>
+Date: Sat, 11 Jul 2026 15:23:17 +0100
+Subject: [PATCH] lavc/hevc: Always generate missing refs for foll pictures
+
+Since bc1a3bfd2cbc01ffa386312662af8a014890d861, missing reference
+pictures are not replaced with generated pictures unless `-flags
+show_corrupt` is used.  For `ST_FOLL`/`LT_FOLL` reference pictures,
+however, generation of missing references is required by the spec per
+8.3.3.  We should not require the `show_corrupt` flag to be used in
+order to be spec-conformant, so this patch removes the `show_corrupt`
+behaviour added in bc1a3bfd2cbc01ffa386312662af8a014890d861 for
+`ST_FOLL`/`LT_FOLL` references and instead unconditionally generates
+reference pictures in these sets when unavailable
+
+Fixes: NUT_A_ericsson_5
+Fixes: RPS_D_ericsson_6
+---
+ libavcodec/hevc/refs.c | 11 ++++++-----
+ tests/fate/hevc.mak    |  2 +-
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/libavcodec/hevc/refs.c b/libavcodec/hevc/refs.c
+index 2acffd72d911f..005f416bf3d01 100644
+--- a/libavcodec/hevc/refs.c
++++ b/libavcodec/hevc/refs.c
+@@ -497,15 +497,16 @@ static HEVCFrame *generate_missing_ref(HEVCContext *s, HEVCLayerContext *l, int
+ 
+ /* add a reference with the given poc to the list and mark it as used in DPB */
+ static int add_candidate_ref(HEVCContext *s, HEVCLayerContext *l,
+-                             RefPicList *list,
++                             RefPicList *rps, int list_idx,
+                              int poc, int ref_flag, uint8_t use_msb)
+ {
++    RefPicList *list = &rps[list_idx];
+     HEVCFrame *ref = find_ref_idx(s, l, poc, use_msb);
+ 
+     if (ref == s->cur_frame || list->nb_refs >= HEVC_MAX_REFS)
+         return AVERROR_INVALIDDATA;
+ 
+-    if (!IS_IRAP(s)) {
++    if (!IS_IRAP(s) && list_idx != ST_FOLL && list_idx != LT_FOLL) {
+         int ref_corrupt = !ref || ref->flags & (HEVC_FRAME_FLAG_CORRUPT |
+                                                 HEVC_FRAME_FLAG_UNAVAILABLE);
+         int recovering = HEVC_IS_RECOVERING(s);
+@@ -570,7 +571,7 @@ int ff_hevc_frame_rps(HEVCContext *s, HEVCLayerContext *l)
+         else
+             list = ST_CURR_AFT;
+ 
+-        ret = add_candidate_ref(s, l, &rps[list], poc,
++        ret = add_candidate_ref(s, l, rps, list, poc,
+                                 HEVC_FRAME_FLAG_SHORT_REF, 1);
+         if (ret < 0)
+             goto fail;
+@@ -581,7 +582,7 @@ int ff_hevc_frame_rps(HEVCContext *s, HEVCLayerContext *l)
+         int poc  = long_rps->poc[i];
+         int list = long_rps->used[i] ? LT_CURR : LT_FOLL;
+ 
+-        ret = add_candidate_ref(s, l, &rps[list], poc,
++        ret = add_candidate_ref(s, l, rps, list, poc,
+                                 HEVC_FRAME_FLAG_LONG_REF, long_rps->poc_msb_present[i]);
+         if (ret < 0)
+             goto fail;
+@@ -598,7 +599,7 @@ int ff_hevc_frame_rps(HEVCContext *s, HEVCLayerContext *l)
+          * always 1, so only RefPicSetInterLayer0 can ever contain a frame. */
+         if (l0->cur_frame) {
+             // inter-layer refs are treated as short-term here, cf. F.8.1.6
+-            ret = add_candidate_ref(s, l0, &rps[INTER_LAYER0], l0->cur_frame->poc,
++            ret = add_candidate_ref(s, l0, rps, INTER_LAYER0, l0->cur_frame->poc,
+                                     HEVC_FRAME_FLAG_SHORT_REF, 1);
+             if (ret < 0)
+                 goto fail;
+diff --git a/tests/fate/hevc.mak b/tests/fate/hevc.mak
+index 697618e2d9e38..83330b3e089de 100644
+--- a/tests/fate/hevc.mak
++++ b/tests/fate/hevc.mak
+@@ -207,7 +207,7 @@ $(HEVC_TESTS_444_8BIT): SCALE_OPTS := -pix_fmt yuv444p
+ $(HEVC_TESTS_10BIT): SCALE_OPTS := -pix_fmt yuv420p10le -vf scale
+ $(HEVC_TESTS_422_10BIT) $(HEVC_TESTS_422_10BIN): SCALE_OPTS := -pix_fmt yuv422p10le -vf scale
+ $(HEVC_TESTS_444_12BIT): SCALE_OPTS := -pix_fmt yuv444p12le -vf scale
+-fate-hevc-conformance-%: CMD = framecrc -flags output_corrupt -i $(TARGET_SAMPLES)/hevc-conformance/$(subst fate-hevc-conformance-,,$(@)).bit $(SCALE_OPTS)
++fate-hevc-conformance-%: CMD = framecrc -i $(TARGET_SAMPLES)/hevc-conformance/$(subst fate-hevc-conformance-,,$(@)).bit $(SCALE_OPTS)
+ $(HEVC_TESTS_422_10BIN): CMD = framecrc -i $(TARGET_SAMPLES)/hevc-conformance/$(subst fate-hevc-conformance-,,$(@)).bin $(SCALE_OPTS)
+ $(HEVC_TESTS_MULTIVIEW): CMD = framecrc -i $(TARGET_SAMPLES)/hevc-conformance/$(subst fate-hevc-conformance-,,$(@)).bit \
+ 	-pix_fmt yuv420p -map "0:view:0" -map "0:view:1" -vf setpts=N:strip_fps=1
+-- 
+2.54.0.windows.1

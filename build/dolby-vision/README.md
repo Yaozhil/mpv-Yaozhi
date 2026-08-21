@@ -21,6 +21,11 @@ enhancement-layer HEVC configuration to the splitter.
   before a trailing suffix-SEI NAL instead of assuming the RPU is always the
   final NAL in the access unit; without it a valid BL/EL pair can still render
   as base-layer-only after opening or seeking an M2TS title.
+- `ffmpeg-hevc-missing-ref-foll.patch` backports upstream commit
+  `265d39e551956d911a0c1c52bff5186a6bae660e`. It always synthesizes missing
+  `ST_FOLL`/`LT_FOLL` reference pictures as required by HEVC section 8.3.3,
+  allowing a valid M2TS enhancement layer to reconstruct after an arbitrary
+  seek without enabling the global `show_corrupt`/`vd-lavc-show-all` policy.
 - `ffmpeg-mpegts-dovi-stream-group.patch` adapts official FFmpeg commit
   `29bc8ec8d15493abf3bcbdea68b3046d150334e5` to the pinned baseline, with the
   failed stream-group insertion path stopped immediately after cleanup. It
