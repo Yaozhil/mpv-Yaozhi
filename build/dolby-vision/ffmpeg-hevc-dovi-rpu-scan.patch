@@ -1,0 +1,61 @@
+From 89bdd9e1a50735be7478ab8c07303f3d2fe59d85 Mon Sep 17 00:00:00 2001
+From: James Almer <jamrial@gmail.com>
+Date: Fri, 5 Jun 2026 01:08:08 +0000
+Subject: [PATCH] avcodec/hevc: look for the DOVI RPU in all NALs, not just the
+ last one
+
+Some encoders place a suffix SEI NAL after the Dolby Vision RPU. Scanning only
+the final NAL therefore drops the per-frame RPU which is required to compose a
+paired Profile 7 enhancement layer.
+
+Upstream-Commit: 89bdd9e1a50735be7478ab8c07303f3d2fe59d85
+---
+ libavcodec/hevc/hevcdec.c | 30 ++++++++++++++++++------------
+ 1 file changed, 18 insertions(+), 12 deletions(-)
+
+diff --git a/libavcodec/hevc/hevcdec.c b/libavcodec/hevc/hevcdec.c
+index 5579469f93..b6ff57d4d9 100644
+--- a/libavcodec/hevc/hevcdec.c
++++ b/libavcodec/hevc/hevcdec.c
+@@ -3749,25 +3749,31 @@ static int decode_nal_units(HEVCContext *s, const uint8_t *buf, int length)
+      * Dolby Vision RPUs masquerade as unregistered NALs of type 62.
+      *
+      * We have to do this check here an create the rpu buffer, since RPUs are appended
+-     * to the end of an AU; they are the last non-EOB/EOS NAL in the AU.
++     * to the end of an AU; they are normally the last non-EOB/EOS NAL in the AU.
+      */
+-    if (s->pkt.nb_nals > 1 && s->pkt.nals[s->pkt.nb_nals - 1].type == HEVC_NAL_UNSPEC62 &&
+-        s->pkt.nals[s->pkt.nb_nals - 1].size > 2 && !s->pkt.nals[s->pkt.nb_nals - 1].nuh_layer_id
+-        && !s->pkt.nals[s->pkt.nb_nals - 1].temporal_id) {
+-        H2645NAL *nal = &s->pkt.nals[s->pkt.nb_nals - 1];
++    H2645NAL *rpu_nal = NULL;
++    for (int i = s->pkt.nb_nals - 1; i > 0 ; i--) {
++        if (s->pkt.nals[i].type == HEVC_NAL_UNSPEC62 && s->pkt.nals[i].size > 2
++            && !s->pkt.nals[i].nuh_layer_id && !s->pkt.nals[i].temporal_id) {
++                rpu_nal = &s->pkt.nals[i];
++                break;
++        }
++    }
++
++    if (rpu_nal) {
+         if (s->rpu_buf) {
+             av_buffer_unref(&s->rpu_buf);
+             av_log(s->avctx, AV_LOG_WARNING, "Multiple Dolby Vision RPUs found in one AU. Skipping previous.\n");
+         }
+ 
+-        s->rpu_buf = av_buffer_alloc(nal->raw_size - 2);
++        s->rpu_buf = av_buffer_alloc(rpu_nal->raw_size - 2);
+         if (!s->rpu_buf) {
+             ret = AVERROR(ENOMEM);
+             goto fail;
+         }
+-        memcpy(s->rpu_buf->data, nal->raw_data + 2, nal->raw_size - 2);
++        memcpy(s->rpu_buf->data, rpu_nal->raw_data + 2, rpu_nal->raw_size - 2);
+ 
+-        ret = ff_dovi_rpu_parse(&s->dovi_ctx, nal->data + 2, nal->size - 2,
++        ret = ff_dovi_rpu_parse(&s->dovi_ctx, rpu_nal->data + 2, rpu_nal->size - 2,
+                                 s->avctx->err_recognition);
+         if (ret < 0) {
+             av_buffer_unref(&s->rpu_buf);
+-- 
+2.54.0.windows.1

@@ -16,6 +16,11 @@ enhancement-layer HEVC configuration to the splitter.
 - `ffmpeg-dovi-split-registration.patch` is the minimal registration and
   build-system subset adapted to the pinned FFmpeg baseline. Documentation
   and library version changes are intentionally not backported.
+- `ffmpeg-hevc-dovi-rpu-scan.patch` backports upstream commit
+  `89bdd9e1a50735be7478ab8c07303f3d2fe59d85`. It finds a Dolby Vision RPU
+  before a trailing suffix-SEI NAL instead of assuming the RPU is always the
+  final NAL in the access unit; without it a valid BL/EL pair can still render
+  as base-layer-only after opening or seeking an M2TS title.
 - `ffmpeg-mpegts-dovi-stream-group.patch` adapts official FFmpeg commit
   `29bc8ec8d15493abf3bcbdea68b3046d150334e5` to the pinned baseline, with the
   failed stream-group insertion path stopped immediately after cleanup. It

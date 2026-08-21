@@ -276,6 +276,8 @@ jobs:
             packages/ffmpeg-9003-nvenc-sdk-13.1.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
             packages/ffmpeg-8998-dovi-split.c
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-hevc-dovi-rpu-scan.patch" \
+            packages/ffmpeg-8996-hevc-dovi-rpu-scan.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
             packages/ffmpeg-8997-dovi-split-prerequisites.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-registration.patch" \
@@ -325,6 +327,7 @@ jobs:
               text = text.replace(fork, fork + tag, 1)
 
           patch_files = [
+              "ffmpeg-8996-hevc-dovi-rpu-scan.patch",
               "ffmpeg-8997-dovi-split-prerequisites.patch",
               "ffmpeg-8998-dovi-split-registration.patch",
               "ffmpeg-8999-dovi-dual-track-stream-group.patch",
@@ -504,6 +507,8 @@ jobs:
             packages/mpv-9005-swresample-native-layout.patch
           grep -Fq 'AV_VERSION_INT(62, 13, 102)' \
             packages/mpv-8998-dovi-stream-group-backport-version.patch
+          grep -Fq 'H2645NAL *rpu_nal = NULL' \
+            packages/ffmpeg-8996-hevc-dovi-rpu-scan.patch
           grep -Fq 'Blu-ray Dolby Vision Profile 7: BL PID' \
             packages/mpv-8999-bluray-dovi-pair.patch
           grep -Fq 'switchable_subs > 1' \
