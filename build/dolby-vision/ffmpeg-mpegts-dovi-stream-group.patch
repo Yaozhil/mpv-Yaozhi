@@ -26,11 +26,12 @@ index bd1f3f3f..59f12271 100644
  
      /** have we found pmt for this program */
      int pmt_found;
-@@ -309,6 +320,7 @@ static void clear_program(struct Program *p)
+@@ -309,6 +320,8 @@ static void clear_program(struct Program *p)
          return;
      p->nb_pids = 0;
      p->nb_streams = 0;
 +    p->nb_stream_groups = 0;
++    memset(p->stream_groups, 0, sizeof(p->stream_groups));
      p->pmt_found = 0;
  }
  
