@@ -282,6 +282,8 @@ jobs:
             packages/ffmpeg-8998-dovi-split-registration.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-dual-track-stream-group.patch" \
             packages/ffmpeg-8999-dovi-dual-track-stream-group.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-mpegts-dovi-stream-group.patch" \
+            packages/ffmpeg-8999a-mpegts-dovi-stream-group.patch
           cp "$GITHUB_WORKSPACE/build/core-candidate/ffmpeg-8800-truehd-mat-padding.patch" \
             packages/ffmpeg-9010-truehd-mat-padding.patch
           cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
@@ -326,6 +328,7 @@ jobs:
               "ffmpeg-8997-dovi-split-prerequisites.patch",
               "ffmpeg-8998-dovi-split-registration.patch",
               "ffmpeg-8999-dovi-dual-track-stream-group.patch",
+              "ffmpeg-8999a-mpegts-dovi-stream-group.patch",
               "ffmpeg-9000-libarcdav3a-hardening.patch",
               "ffmpeg-9004-libarcdav3a-spatial.patch",
               "ffmpeg-9001-av3a-multiframe-probe.patch",
@@ -548,6 +551,10 @@ jobs:
             packages/ffmpeg-8999-dovi-dual-track-stream-group.patch
           grep -Fq 'AV_STREAM_GROUP_PARAMS_DOLBY_VISION' \
             packages/ffmpeg-8999-dovi-dual-track-stream-group.patch
+          grep -Fq 'M2TS_VIDEO_EL_PID' \
+            packages/ffmpeg-8999a-mpegts-dovi-stream-group.patch
+          grep -Fq 'dependency_pid' \
+            packages/ffmpeg-8999a-mpegts-dovi-stream-group.patch
           grep -Fq 'ffmpeg-8999-dovi-dual-track-stream-group.patch' \
             packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9010-truehd-mat-padding.patch' \

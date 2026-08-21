@@ -16,6 +16,12 @@ enhancement-layer HEVC configuration to the splitter.
 - `ffmpeg-dovi-split-registration.patch` is the minimal registration and
   build-system subset adapted to the pinned FFmpeg baseline. Documentation
   and library version changes are intentionally not backported.
+- `ffmpeg-mpegts-dovi-stream-group.patch` adapts official FFmpeg commit
+  `29bc8ec8d15493abf3bcbdea68b3046d150334e5` to the pinned baseline, with the
+  failed stream-group insertion path stopped immediately after cleanup. It
+  turns the explicit Profile 7 MPEG-TS dependency PID (and the UHD Blu-ray
+  `0x1011`/`0x1015` convention) into the layered-video stream group already
+  consumed by mpv's FEL path. It never pairs arbitrary HEVC tracks.
 - `ffmpeg-dovi-dual-track-stream-group.patch` backports the official MP4
   layered-video stream group and `vdep` reference parsing required for
   Profile 7 files that store BL and EL in separate tracks. Only the
