@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Mon, 24 Aug 2026 03:00:00 +0800
+Subject: [PATCH] demux_disc: publish authored Profile 7 metadata with streams
+
+Raw UHD Blu-ray MPEG-TS can expose a layered-video group while omitting the
+generic Dolby Vision descriptor. In that case the disc wrapper mirrored the
+group first and then skipped libbluray's authored BL/EL relation because the
+EL was already grouped. Playback still paired both decoders, but the
+selectable BL looked like HDR10 to current-tracks and the UI.
+
+Accept an existing group only when libbluray identifies the exact same pair,
+apply Profile 7 metadata to the BL, and publish newly discovered disc streams
+only after their topology is complete. This keeps stream metadata immutable
+after publication and does not infer relationships from PID order or size.
+---
+ demux/demux_disc.c | 36 +++++++++++++++++++++++++++---------
+ 1 file changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index d317ecb..faa95dc 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -157,7 +157,6 @@ static void add_streams(demuxer_t *demuxer)
+             }
+         }
+         get_disc_lang(demuxer->stream, sh, p->is_dvd);
+-        demux_add_sh_stream(demuxer, sh);
+     }
+ 
+     // Mirror slave sh_stream_group onto the disc-level sh_streams. This is needed
+@@ -190,7 +189,7 @@ static void add_streams(demuxer_t *demuxer)
+     // by resolution, PID range, or track order.
+     for (int n = 0; n < p->num_streams; n++) {
+         struct sh_stream *el = p->streams[n];
+-        if (!el || el->type != STREAM_VIDEO || el->group)
++        if (!el || el->type != STREAM_VIDEO)
+             continue;
+ 
+         struct stream_dovi_pair_req req = {
+@@ -216,14 +215,24 @@ static void add_streams(demuxer_t *demuxer)
+                 bl = candidate;
+             }
+         }
+-        if (!bl || bl == el || bl->group)
++        if (!bl || bl == el)
+             continue;
+ 
+-        struct sh_stream_group *grp = talloc_zero(bl, struct sh_stream_group);
+-        MP_TARRAY_APPEND(grp, grp->members, grp->num_members, bl);
+-        MP_TARRAY_APPEND(grp, grp->members, grp->num_members, el);
+-        bl->group = grp;
+-        el->group = grp;
++        if (bl->group || el->group) {
++            // lavf may already expose the exact layered-video relation, but
++            // raw UHD Blu-ray MPEG-TS can omit the Dolby Vision descriptor.
++            // Accept only the same authored pair; never replace a different
++            // stream group based on PID order or resolution.
++            if (!bl->group || bl->group != el->group)
++                continue;
++        } else {
++            struct sh_stream_group *grp =
++                talloc_zero(bl, struct sh_stream_group);
++            MP_TARRAY_APPEND(grp, grp->members, grp->num_members, bl);
++            MP_TARRAY_APPEND(grp, grp->members, grp->num_members, el);
++            bl->group = grp;
++            el->group = grp;
++        }
+         el->dependent_track = true;
+ 
+         // UHD Blu-ray Dolby Vision dual-layer carriage is Profile 7. Frame
+@@ -239,6 +248,15 @@ static void add_streams(demuxer_t *demuxer)
+                    bl->demuxer_id, el->demuxer_id);
+     }
+ 
++    // Stream metadata and group membership become immutable once published.
++    // Build the complete disc-level topology first so the player and timeline
++    // wrappers see Profile 7 on the selectable BL from their first snapshot.
++    for (int n = old_num; n < p->num_streams; n++) {
++        struct sh_stream *sh = p->streams[n];
++        if (sh && !sh->ds)
++            demux_add_sh_stream(demuxer, sh);
++    }
++
+     reselect_streams(demuxer);
+ }
+ 
+-- 
+2.54.0.windows.1

@@ -36,6 +36,11 @@ enhancement-layer HEVC configuration to the splitter.
   arbitrary seek. A full queue no longer drops a still-pending first FEL
   match; fallback still occurs when EL reaches EOF or its PTS has advanced
   beyond the BL frame.
+- `mpv-disc-dovi-metadata-before-publish.patch` accepts an existing lavf
+  layered-video group only when libbluray declares the exact same authored
+  BL/EL pair, then publishes the disc streams with Profile 7 metadata already
+  present on the selectable BL. This keeps ISO playback and the UI in sync
+  without guessing from PID order, resolution, or filenames.
 - `ffmpeg-mpegts-dovi-stream-group.patch` adapts official FFmpeg commit
   `29bc8ec8d15493abf3bcbdea68b3046d150334e5` to the pinned baseline, with the
   failed stream-group insertion path stopped immediately after cleanup. It
