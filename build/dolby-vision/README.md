@@ -31,6 +31,11 @@ enhancement-layer HEVC configuration to the splitter.
   metadata and applies mpv's existing `OUTPUT_CORRUPT` recovery policy to that
   decoder; normal HEVC, the selectable base layer, HDR10, and non-Profile-7
   streams retain the standard decoder policy.
+- `mpv-dovi-el-pair-backpressure.patch` keeps a bounded base-layer queue as
+  backpressure while a declared enhancement-layer decoder starts after an
+  arbitrary seek. A full queue no longer drops a still-pending first FEL
+  match; fallback still occurs when EL reaches EOF or its PTS has advanced
+  beyond the BL frame.
 - `ffmpeg-mpegts-dovi-stream-group.patch` adapts official FFmpeg commit
   `29bc8ec8d15493abf3bcbdea68b3046d150334e5` to the pinned baseline, with the
   failed stream-group insertion path stopped immediately after cleanup. It

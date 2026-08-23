@@ -211,6 +211,8 @@ jobs:
             packages/mpv-8999-bluray-dovi-pair.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-el-seek-recovery.patch" \
             packages/mpv-8999a-dovi-el-seek-recovery.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-el-pair-backpressure.patch" \
+            packages/mpv-8999b-dovi-el-pair-backpressure.patch
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
             packages/mpv-9000-image-subs-colorspace.patch
           cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \

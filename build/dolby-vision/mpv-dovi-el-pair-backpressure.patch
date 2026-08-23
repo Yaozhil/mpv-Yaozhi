@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Mon, 24 Aug 2026 01:00:00 +0800
+Subject: [PATCH] enhancement_pair: wait for late Dolby Vision EL frames
+
+The enhancement pair queue previously treated a full base-layer queue as
+evidence that no matching enhancement frame would arrive. After an arbitrary
+MPEG-TS seek the BL decoder can fill all 16 slots before the EL decoder emits
+its first recovered picture, causing the first paired frame to be rendered
+without FEL depending on decoder scheduling.
+
+Keep the bounded BL queue as backpressure, but only give up when the EL reaches
+EOF or has advanced past the BL PTS. This prevents the scheduling race without
+growing the queue or changing single-layer playback.
+---
+ filters/f_enhancement_pair.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/filters/f_enhancement_pair.c b/filters/f_enhancement_pair.c
+index 18cea54..4acae51 100644
+--- a/filters/f_enhancement_pair.c
++++ b/filters/f_enhancement_pair.c
+@@ -159,8 +159,7 @@ static void pair_process(struct mp_filter *f)
+         // No EL match for the oldest BL. Hold BL unless we have affirmative
+         // evidence no EL is coming.
+         bool give_up = p->el_eof ||
+-                       (p->num_el_pending > 0 && cmp > 0) ||
+-                       p->num_bl_pending >= QUEUE_MAX;
++                       (p->num_el_pending > 0 && cmp > 0);
+         if (!give_up)
+             return;
+ 
+-- 
+2.54.0.windows.1
+
