@@ -25,11 +25,12 @@ enhancement-layer HEVC configuration to the splitter.
   `265d39e551956d911a0c1c52bff5186a6bae660e`. It always synthesizes missing
   `ST_FOLL`/`LT_FOLL` reference pictures as required by HEVC section 8.3.3,
   covering follower-picture reconstruction without changing ordinary streams.
-- `mpv-dovi-el-seek-recovery.patch` completes arbitrary-seek recovery for the
-  virtual Profile 7 enhancement-layer decoder. It marks only the virtual EL and
-  applies mpv's existing `OUTPUT_CORRUPT` recovery policy to that decoder;
-  normal HEVC, the selectable base layer, HDR10, and non-Profile-7 streams
-  retain the standard decoder policy.
+- `mpv-dovi-el-seek-recovery.patch` completes arbitrary-seek recovery for
+  Profile 7 enhancement-layer decoders. It marks only EL streams explicitly
+  declared by `dovi_split`, a Dolby Vision stream group, or libbluray authored
+  metadata and applies mpv's existing `OUTPUT_CORRUPT` recovery policy to that
+  decoder; normal HEVC, the selectable base layer, HDR10, and non-Profile-7
+  streams retain the standard decoder policy.
 - `ffmpeg-mpegts-dovi-stream-group.patch` adapts official FFmpeg commit
   `29bc8ec8d15493abf3bcbdea68b3046d150334e5` to the pinned baseline, with the
   failed stream-group insertion path stopped immediately after cleanup. It

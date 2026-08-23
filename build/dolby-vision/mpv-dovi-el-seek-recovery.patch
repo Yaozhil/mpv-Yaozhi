@@ -1,22 +1,51 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local.invalid>
 Date: Sun, 23 Aug 2026 15:00:00 +0800
-Subject: [PATCH] vd_lavc: recover Profile 7 virtual EL after seek
+Subject: [PATCH] vd_lavc: recover Profile 7 enhancement layers after seek
 
-The dovi_split virtual enhancement stream is intentionally decoded from an
-arbitrary access point when opening or seeking MPEG-TS. Its first pictures can
-reference frames before that point, so the default HEVC corruption policy can
-discard the enhancement layer even though the base layer remains playable.
+Profile 7 enhancement streams can be decoded from an arbitrary access point
+when opening or seeking MPEG-TS, Blu-ray, and split single-track carriage.
+Their first pictures can reference frames before that point, so the default
+HEVC corruption policy can discard the enhancement layer even though the base
+layer remains playable.
 
-Mark only the virtual Profile 7 EL and apply the same OUTPUT_CORRUPT recovery
-policy as --vd-lavc-show-all to that decoder. Ordinary HEVC, HDR10, the
-selectable base layer, and non-Profile-7 Dolby Vision retain the default policy.
+Mark only enhancement streams whose relation is explicitly declared by a
+Dolby Vision stream group, libbluray authored metadata, or dovi_split. Apply
+the same OUTPUT_CORRUPT recovery policy as --vd-lavc-show-all to that decoder.
+Ordinary HEVC, HDR10, the selectable base layer, and non-Profile-7 Dolby Vision
+retain the default policy.
 ---
+ demux/demux_disc.c     | 1 +
+ demux/demux_lavf.c     | 1 +
  demux/dovi_split.c      | 1 +
  demux/stheader.h        | 1 +
  video/decode/vd_lavc.c | 6 +++++-
- 3 files changed, 7 insertions(+), 1 deletion(-)
+ 5 files changed, 9 insertions(+), 1 deletion(-)
 
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 0f376d5..d317ecb 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -232,6 +232,7 @@ static void add_streams(demuxer_t *demuxer)
+         bl->codec->dv_profile = 7;
+         el->codec->dovi = true;
+         el->codec->dv_profile = 7;
++        el->codec->dovi_el_only = true;
+ 
+         MP_VERBOSE(demuxer, "Blu-ray Dolby Vision Profile 7: BL PID %#x, "
+                    "EL PID %#x (libbluray authored relation).\n",
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 7fae1df..5083632 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1310,6 +1310,7 @@ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+     bl_sh->group = group;
+     el_sh->group = group;
+     el_sh->dependent_track = true;
++    el_sh->codec->dovi_el_only = true;
+ 
+     // The Dolby Vision config record belongs to the dependent EL track in
+     // this carriage. Expose the presentation metadata on the selectable BL
 diff --git a/demux/dovi_split.c b/demux/dovi_split.c
 index 2476fde..170e7cc 100644
 --- a/demux/dovi_split.c
@@ -61,4 +90,3 @@ index a662992..2cdf448 100644
      avctx->skip_idct = lavc_param->skip_idct;
 -- 
 2.54.0.windows.1
-

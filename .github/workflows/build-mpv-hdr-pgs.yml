@@ -516,6 +516,10 @@ jobs:
             packages/ffmpeg-8995-hevc-missing-ref-foll.patch
           grep -Fq 'dovi_el_only' \
             packages/mpv-8999a-dovi-el-seek-recovery.patch
+          grep -Fq 'el_sh->codec->dovi_el_only = true' \
+            packages/mpv-8999a-dovi-el-seek-recovery.patch
+          grep -Fq 'el->codec->dovi_el_only = true' \
+            packages/mpv-8999a-dovi-el-seek-recovery.patch
           grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' \
             packages/mpv-8999a-dovi-el-seek-recovery.patch
           grep -Fq 'H2645NAL *rpu_nal = NULL' \

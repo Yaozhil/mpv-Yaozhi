@@ -42,11 +42,14 @@ if ($SamplePath) {
     if ($text -notmatch 'Dolby Vision Profile 7 splitter.+virtual EL stream') {
         throw "mpv did not create the Dolby Vision Profile 7 enhancement-layer stream"
     }
+    if ($text -notmatch 'Dolby Vision Profile 7 enhancement layer: enabled complete seek recovery') {
+        throw "mpv did not enable targeted seek recovery for the virtual Profile 7 EL"
+    }
 }
 
 if ($DualTrackSamplePath) {
     $text = Get-MpvProbeText -Path $DualTrackSamplePath
-    if ($text -notmatch 'Found Dolby Vision config record: profile 7') {
+    if ($text -notmatch '(Found Dolby Vision config record: profile 7|Dolby Vision Profile 7 splitter.+virtual EL stream)') {
         throw "mpv did not detect Dolby Vision Profile 7 metadata in the dual-track sample"
     }
     if ($text -notmatch '(?m)^.*\[vf\] \[el_pair\].*$') {
@@ -54,6 +57,9 @@ if ($DualTrackSamplePath) {
     }
     if ($text -notmatch '(?m)^FELTRACK 7\s*$') {
         throw "mpv did not expose Profile 7 metadata on the selectable base-layer track"
+    }
+    if ($text -notmatch 'Dolby Vision Profile 7 enhancement layer: enabled complete seek recovery') {
+        throw "mpv did not enable targeted seek recovery for the paired Profile 7 EL"
     }
 }
 
@@ -74,6 +80,9 @@ if ($BluRayIsoPath) {
     }
     if ($text -notmatch '(?m)^FELTRACK 7\s*$') {
         throw "mpv did not expose Profile 7 metadata for Blu-ray playback"
+    }
+    if ($text -notmatch 'Dolby Vision Profile 7 enhancement layer: enabled complete seek recovery') {
+        throw "mpv did not enable targeted seek recovery for the authored Blu-ray Profile 7 EL"
     }
 }
 
