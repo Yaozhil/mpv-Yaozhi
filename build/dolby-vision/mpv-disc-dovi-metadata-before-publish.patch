@@ -14,14 +14,14 @@ apply Profile 7 metadata to the BL, and publish newly discovered disc streams
 only after their topology is complete. This keeps stream metadata immutable
 after publication and does not infer relationships from PID order or size.
 ---
- demux/demux_disc.c | 36 +++++++++++++++++++++++++++---------
- 1 file changed, 27 insertions(+), 9 deletions(-)
+ demux/demux_disc.c | 34 ++++++++++++++++++++++++++--------
+ 1 file changed, 26 insertions(+), 8 deletions(-)
 
 diff --git a/demux/demux_disc.c b/demux/demux_disc.c
-index d317ecb..faa95dc 100644
+index 588b6b0..3c22a01 100644
 --- a/demux/demux_disc.c
 +++ b/demux/demux_disc.c
-@@ -157,7 +157,6 @@ static void add_streams(demuxer_t *demuxer)
+@@ -193,7 +193,6 @@ static void add_streams(demuxer_t *demuxer)
              }
          }
          get_disc_lang(demuxer->stream, sh, p->is_dvd);
@@ -29,7 +29,7 @@ index d317ecb..faa95dc 100644
      }
  
      // Mirror slave sh_stream_group onto the disc-level sh_streams. This is needed
-@@ -190,7 +189,7 @@ static void add_streams(demuxer_t *demuxer)
+@@ -226,7 +225,7 @@ static void add_streams(demuxer_t *demuxer)
      // by resolution, PID range, or track order.
      for (int n = 0; n < p->num_streams; n++) {
          struct sh_stream *el = p->streams[n];
@@ -38,7 +38,7 @@ index d317ecb..faa95dc 100644
              continue;
  
          struct stream_dovi_pair_req req = {
-@@ -216,14 +215,24 @@ static void add_streams(demuxer_t *demuxer)
+@@ -252,14 +251,24 @@ static void add_streams(demuxer_t *demuxer)
                  bl = candidate;
              }
          }
@@ -69,7 +69,7 @@ index d317ecb..faa95dc 100644
          el->dependent_track = true;
  
          // UHD Blu-ray Dolby Vision dual-layer carriage is Profile 7. Frame
-@@ -239,6 +248,15 @@ static void add_streams(demuxer_t *demuxer)
+@@ -275,6 +284,15 @@ static void add_streams(demuxer_t *demuxer)
                     bl->demuxer_id, el->demuxer_id);
      }
  
@@ -82,8 +82,6 @@ index d317ecb..faa95dc 100644
 +            demux_add_sh_stream(demuxer, sh);
 +    }
 +
+     update_inactive_subtitle_cache(demuxer);
      reselect_streams(demuxer);
  }
- 
--- 
-2.54.0.windows.1

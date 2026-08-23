@@ -148,8 +148,14 @@ jobs:
               "        COMMAND ${EXEC} git apply "
               "${CMAKE_CURRENT_SOURCE_DIR}/"
               "mpv-9008-scope-disc-subtitle-cache.diff\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "mpv-9009-disc-dovi-metadata-before-publish.diff\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "mpv-9009-disc-dovi-metadata-before-publish.diff\n"
           )
-          if "mpv-9008-scope-disc-subtitle-cache.diff" not in text:
+          if "mpv-9009-disc-dovi-metadata-before-publish.diff" not in text:
               anchor = '    GIT_CLONE_FLAGS "--filter=tree:0"\n'
               if anchor not in text:
                   raise SystemExit("Could not locate mpv GIT_CLONE_FLAGS anchor")
@@ -213,8 +219,6 @@ jobs:
             packages/mpv-8999a-dovi-el-seek-recovery.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-el-pair-backpressure.patch" \
             packages/mpv-8999b-dovi-el-pair-backpressure.patch
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-disc-dovi-metadata-before-publish.patch" \
-            packages/mpv-8999c-disc-dovi-metadata-before-publish.patch
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
             packages/mpv-9000-image-subs-colorspace.patch
           cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \
@@ -231,6 +235,11 @@ jobs:
             packages/mpv-9006-cache-inactive-embedded-subtitles.patch
           cp "$GITHUB_WORKSPACE/patches/0012-demux-enable-inactive-subtitle-cache.patch" \
             packages/mpv-9007-enable-inactive-subtitle-cache.patch
+          # This patch also changes demux_disc.c. Apply it after the two mail
+          # subtitle-cache patches so both changes retain their original
+          # three-way context; the scope-only .diff still follows git am.
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-disc-dovi-metadata-before-publish.patch" \
+            packages/mpv-9009-disc-dovi-metadata-before-publish.diff
           cp "$GITHUB_WORKSPACE/patches/0015-demux-scope-disc-subtitle-cache-main.diff" \
             packages/mpv-9008-scope-disc-subtitle-cache.diff
           # Keep the candidate on the same published core capability baseline:
@@ -548,6 +557,8 @@ jobs:
             packages/mpv-9008-scope-disc-subtitle-cache.diff
           grep -Fq 'p->base_dts - p->base_time' \
             packages/mpv-9008-scope-disc-subtitle-cache.diff
+          grep -Fq 'Stream metadata and group membership become immutable' \
+            packages/mpv-9009-disc-dovi-metadata-before-publish.diff
           grep -Fq 'secondary-sub-scale' \
             packages/mpv-9010-secondary-sub-scale.patch
           grep -Fq 'request_start' \
