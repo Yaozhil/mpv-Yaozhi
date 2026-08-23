@@ -209,6 +209,8 @@ jobs:
             packages/mpv-8998-dovi-stream-group-backport-version.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-bluray-dovi-pair.patch" \
             packages/mpv-8999-bluray-dovi-pair.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-el-seek-recovery.patch" \
+            packages/mpv-8999a-dovi-el-seek-recovery.patch
           cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
             packages/mpv-9000-image-subs-colorspace.patch
           cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \
@@ -278,8 +280,6 @@ jobs:
             packages/ffmpeg-8998-dovi-split.c
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-hevc-missing-ref-foll.patch" \
             packages/ffmpeg-8995-hevc-missing-ref-foll.patch
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-hevc-dovi-el-seek.patch" \
-            packages/ffmpeg-8995a-hevc-dovi-el-seek.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-hevc-dovi-rpu-scan.patch" \
             packages/ffmpeg-8996-hevc-dovi-rpu-scan.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
@@ -332,7 +332,6 @@ jobs:
 
           patch_files = [
               "ffmpeg-8995-hevc-missing-ref-foll.patch",
-              "ffmpeg-8995a-hevc-dovi-el-seek.patch",
               "ffmpeg-8996-hevc-dovi-rpu-scan.patch",
               "ffmpeg-8997-dovi-split-prerequisites.patch",
               "ffmpeg-8998-dovi-split-registration.patch",
@@ -515,8 +514,10 @@ jobs:
             packages/mpv-8998-dovi-stream-group-backport-version.patch
           grep -Fq 'list_idx != ST_FOLL && list_idx != LT_FOLL' \
             packages/ffmpeg-8995-hevc-missing-ref-foll.patch
-          grep -Fq 'Enabled complete reference recovery for Dolby Vision Profile 7 enhancement layer' \
-            packages/ffmpeg-8995a-hevc-dovi-el-seek.patch
+          grep -Fq 'dovi_el_only' \
+            packages/mpv-8999a-dovi-el-seek-recovery.patch
+          grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' \
+            packages/mpv-8999a-dovi-el-seek-recovery.patch
           grep -Fq 'H2645NAL *rpu_nal = NULL' \
             packages/ffmpeg-8996-hevc-dovi-rpu-scan.patch
           grep -Fq 'Blu-ray Dolby Vision Profile 7: BL PID' \

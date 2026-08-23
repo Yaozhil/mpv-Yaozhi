@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Sun, 23 Aug 2026 15:00:00 +0800
+Subject: [PATCH] vd_lavc: recover Profile 7 virtual EL after seek
+
+The dovi_split virtual enhancement stream is intentionally decoded from an
+arbitrary access point when opening or seeking MPEG-TS. Its first pictures can
+reference frames before that point, so the default HEVC corruption policy can
+discard the enhancement layer even though the base layer remains playable.
+
+Mark only the virtual Profile 7 EL and apply the same OUTPUT_CORRUPT recovery
+policy as --vd-lavc-show-all to that decoder. Ordinary HEVC, HDR10, the
+selectable base layer, and non-Profile-7 Dolby Vision retain the default policy.
+---
+ demux/dovi_split.c      | 1 +
+ demux/stheader.h        | 1 +
+ video/decode/vd_lavc.c | 6 +++++-
+ 3 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/demux/dovi_split.c b/demux/dovi_split.c
+index 2476fde..170e7cc 100644
+--- a/demux/dovi_split.c
++++ b/demux/dovi_split.c
+@@ -114,6 +114,7 @@ struct mp_dovi_split *mp_dovi_split_create(struct demuxer *demuxer,
+         el->codec->dv_el_present = cfg->el_present_flag;
+         break;
+     }
++    el->codec->dovi_el_only = true;
+     el->title = talloc_strdup(el, "Dolby Vision enhancement layer");
+     el->dependent_track = true;
+ 
+diff --git a/demux/stheader.h b/demux/stheader.h
+index 0175474..53b62f4 100644
+--- a/demux/stheader.h
++++ b/demux/stheader.h
+@@ -176,6 +176,7 @@ struct mp_codec_params {
+     uint8_t dv_profile;
+     uint8_t dv_level;
+     bool dv_el_present;     // BL and EL interleaved in this stream (Profile 7)
++    bool dovi_el_only;      // virtual/standalone Profile 7 enhancement layer
+ 
+     // STREAM_VIDEO + STREAM_AUDIO
+     int bits_per_coded_sample;
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+index a662992..2cdf448 100644
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -819,8 +819,12 @@ static void init_avctx(struct mp_filter *vd)
+     avctx->flags |= lavc_param->bitexact ? AV_CODEC_FLAG_BITEXACT : 0;
+     avctx->flags2 |= lavc_param->fast ? AV_CODEC_FLAG2_FAST : 0;
+ 
+-    if (lavc_param->show_all)
++    bool recover_dovi_el = c->dovi && c->dv_profile == 7 && c->dovi_el_only;
++    if (lavc_param->show_all || recover_dovi_el)
+         avctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
++    if (recover_dovi_el)
++        MP_VERBOSE(vd, "Dolby Vision Profile 7 enhancement layer: enabled "
++                       "complete seek recovery.\n");
+ 
+     avctx->skip_loop_filter = lavc_param->skip_loop_filter;
+     avctx->skip_idct = lavc_param->skip_idct;
+-- 
+2.54.0.windows.1
+
