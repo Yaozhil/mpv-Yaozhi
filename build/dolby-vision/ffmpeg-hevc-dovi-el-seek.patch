@@ -1,0 +1,31 @@
+diff --git a/libavcodec/hevc/hevcdec.c b/libavcodec/hevc/hevcdec.c
+--- a/libavcodec/hevc/hevcdec.c
++++ b/libavcodec/hevc/hevcdec.c
+@@ -3887,6 +3887,13 @@ static int hevc_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+     if (sd && sd_size >= sizeof(s->dovi_ctx.cfg)) {
+         int old = s->dovi_ctx.cfg.dv_profile;
+         s->dovi_ctx.cfg = *(AVDOVIDecoderConfigurationRecord *) sd;
++        if (s->dovi_ctx.cfg.dv_profile == 7 &&
++            s->dovi_ctx.cfg.el_present_flag &&
++            !s->dovi_ctx.cfg.bl_present_flag) {
++            avctx->flags2 |= AV_CODEC_FLAG2_SHOW_ALL;
++            av_log(avctx, AV_LOG_DEBUG,
++                   "Enabled complete reference recovery for Dolby Vision Profile 7 enhancement layer.\n");
++        }
+         if (old)
+             av_log(avctx, AV_LOG_DEBUG,
+                    "New DOVI configuration record from input packet (profile %d -> %u).\n",
+@@ -4214,4 +4221,12 @@ static av_cold int hevc_decode_init(AVCodecContext *avctx)
+         sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
+-        if (sd && sd->size >= sizeof(s->dovi_ctx.cfg))
++        if (sd && sd->size >= sizeof(s->dovi_ctx.cfg)) {
+             s->dovi_ctx.cfg = *(AVDOVIDecoderConfigurationRecord *) sd->data;
++            if (s->dovi_ctx.cfg.dv_profile == 7 &&
++                s->dovi_ctx.cfg.el_present_flag &&
++                !s->dovi_ctx.cfg.bl_present_flag) {
++                avctx->flags2 |= AV_CODEC_FLAG2_SHOW_ALL;
++                av_log(avctx, AV_LOG_DEBUG,
++                       "Enabled complete reference recovery for Dolby Vision Profile 7 enhancement layer.\n");
++            }
++        }
+     }
