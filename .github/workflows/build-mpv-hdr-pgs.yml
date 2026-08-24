@@ -26,6 +26,7 @@ on:
       - "patches/0012-demux-enable-inactive-subtitle-cache.patch"
       - "patches/0013-demux-scope-disc-subtitle-cache.patch"
       - "patches/0015-demux-scope-disc-subtitle-cache-main.diff"
+      - "patches/0016-stream-bluray-support-seekable-remote-images.patch"
       - "build/core-candidate/**"
       - "build/audio-layout/**"
   workflow_dispatch:
@@ -262,6 +263,8 @@ jobs:
             packages/mpv-9016-hwdec-surface-pool.patch
           cp "$GITHUB_WORKSPACE/build/core-candidate/main-9906-spdif-reset.patch" \
             packages/mpv-9017-spdif-reset.patch
+          cp "$GITHUB_WORKSPACE/patches/0016-stream-bluray-support-seekable-remote-images.patch" \
+            packages/mpv-9018-seekable-remote-bluray-image.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
@@ -565,6 +568,10 @@ jobs:
             packages/mpv-9011-curl-request-start-race.patch
           grep -Fq 'hwdec-extra-frames' \
             packages/mpv-9016-hwdec-surface-pool.patch
+          grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' \
+            packages/mpv-9018-seekable-remote-bluray-image.patch
+          grep -Fq 'Remote Blu-ray image is not seekable' \
+            packages/mpv-9018-seekable-remote-bluray-image.patch
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake

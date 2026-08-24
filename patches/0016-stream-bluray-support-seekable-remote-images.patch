@@ -1,0 +1,161 @@
+From 28cb91593f7ece1ef038e06c81898c1a75582790 Mon Sep 17 00:00:00 2001
+From: Yaozhi Build <local@yaozhi.invalid>
+Date: Mon, 24 Aug 2026 13:20:13 +0800
+Subject: [PATCH] stream_bluray: support seekable remote images
+
+---
+ stream/stream_bluray.c | 97 +++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 90 insertions(+), 7 deletions(-)
+
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index e314e33..1d0f19e 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -26,8 +26,9 @@
+  *
+  */
+ 
+-#include <string.h>
+ #include <assert.h>
++#include <limits.h>
++#include <string.h>
+ 
+ #include <libbluray/bluray.h>
+ #include <libbluray/meta_data.h>
+@@ -46,12 +47,14 @@
+ #include "options/path.h"
+ #include "stream.h"
+ #include "osdep/io.h"
++#include "osdep/threads.h"
+ #include "osdep/timer.h"
+ #include "sub/osd.h"
+ #include "sub/img_convert.h"
+ #include "video/mp_image.h"
+ 
+ #define BLURAY_SECTOR_SIZE     6144
++#define BLURAY_UDF_BLOCK_SIZE  2048
+ 
+ #define BLURAY_DEFAULT_ANGLE      0
+ #define BLURAY_DEFAULT_CHAPTER    0
+@@ -90,6 +93,9 @@ const struct m_sub_options stream_bluray_conf = {
+ 
+ struct bluray_priv_s {
+     BLURAY *bd;
++    stream_t *remote_stream;
++    mp_mutex remote_stream_lock;
++    bool remote_stream_lock_initialized;
+     BLURAY_TITLE_INFO *title_info;
+     int num_titles;
+     int current_angle;
+@@ -104,6 +110,38 @@ struct bluray_priv_s {
+     struct m_config_cache *opts_cache;
+ };
+ 
++static bool is_http_url(const char *device)
++{
++    return strncasecmp(device, "http://", 7) == 0 ||
++           strncasecmp(device, "https://", 8) == 0;
++}
++
++static int remote_read_blocks(void *handle, void *buf, int lba, int num_blocks)
++{
++    struct bluray_priv_s *priv = handle;
++    if (!priv->remote_stream || lba < 0 || num_blocks <= 0 ||
++        num_blocks > INT_MAX / BLURAY_UDF_BLOCK_SIZE)
++    {
++        return -1;
++    }
++
++    int64_t pos = (int64_t)lba * BLURAY_UDF_BLOCK_SIZE;
++    int bytes = num_blocks * BLURAY_UDF_BLOCK_SIZE;
++    int got = -1;
++
++    // libbluray can issue block reads from more than one internal context.
++    // Keep seek + read atomic, matching libbluray's local image adapter.
++    mp_mutex_lock(&priv->remote_stream_lock);
++    if (stream_seek(priv->remote_stream, pos)) {
++        int read = stream_read(priv->remote_stream, buf, bytes);
++        if (read > 0)
++            got = read / BLURAY_UDF_BLOCK_SIZE;
++    }
++    mp_mutex_unlock(&priv->remote_stream_lock);
++
++    return got;
++}
++
+ inline static int play_playlist(struct bluray_priv_s *priv, int playlist)
+ {
+     return bd_select_playlist(priv->bd, playlist);
+@@ -122,8 +160,19 @@ static void bluray_stream_close(stream_t *s)
+ 
+     if (priv->title_info)
+         bd_free_title_info(priv->title_info);
+-    if (priv->bd)
++    priv->title_info = NULL;
++    if (priv->bd) {
+         bd_close(priv->bd);
++        priv->bd = NULL;
++    }
++    if (priv->remote_stream) {
++        free_stream(priv->remote_stream);
++        priv->remote_stream = NULL;
++    }
++    if (priv->remote_stream_lock_initialized) {
++        mp_mutex_destroy(&priv->remote_stream_lock);
++        priv->remote_stream_lock_initialized = false;
++    }
+ }
+ 
+ static void handle_event(stream_t *s, const BD_EVENT *ev)
+@@ -493,12 +542,46 @@ static int bluray_stream_open_internal(stream_t *s)
+     if (!mp_msg_test(s->log, MSGL_DEBUG))
+         bd_set_debug_mask(0);
+ 
+-    /* open device */
+-    char *device_tmp = mp_get_user_path(NULL, s->global, device);
+-    BLURAY *bd = bd_open(device_tmp, NULL);
+-    talloc_free(device_tmp);
++    /* Open local paths exactly as before. HTTP(S) images are exposed to
++     * libbluray as a seekable 2048-byte block device. */
++    BLURAY *bd = NULL;
++    if (is_http_url(device)) {
++        b->remote_stream = stream_create(device, STREAM_READ | s->stream_origin,
++                                         s->cancel, s->global);
++        if (!b->remote_stream || !b->remote_stream->seekable) {
++            MP_ERR(s, "Remote Blu-ray image is not seekable; the server must "
++                      "support HTTP byte ranges.\n");
++            ret = STREAM_UNSUPPORTED;
++            goto err;
++        }
++
++        int64_t size = stream_get_size(b->remote_stream);
++        if (size < BLURAY_UDF_BLOCK_SIZE || size % BLURAY_UDF_BLOCK_SIZE) {
++            MP_ERR(s, "Remote Blu-ray image has no stable block-aligned size.\n");
++            ret = STREAM_UNSUPPORTED;
++            goto err;
++        }
++
++        mp_mutex_init(&b->remote_stream_lock);
++        b->remote_stream_lock_initialized = true;
++        bd = bd_init();
++        if (bd && !bd_open_stream(bd, b, remote_read_blocks)) {
++            bd_close(bd);
++            bd = NULL;
++        }
++        if (bd)
++            MP_INFO(s, "Opened seekable remote Blu-ray image (%" PRId64 " bytes).\n",
++                    size);
++    } else {
++        char *device_tmp = mp_get_user_path(NULL, s->global, device);
++        bd = bd_open(device_tmp, NULL);
++        talloc_free(device_tmp);
++    }
+     if (!bd) {
+-        MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
++        if (is_http_url(device))
++            MP_ERR(s, "Couldn't open seekable remote Blu-ray image.\n");
++        else
++            MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
+         ret = STREAM_UNSUPPORTED;
+         goto err;
+     }

@@ -178,3 +178,15 @@ MPEG 时间轴，避免把 libbluray 预读头时间或外层时间直接交给 
 基线的 `0009` 或 `0010` 之后应用。Atmos 使用基线专属的
 `0014-demux-enable-inactive-subtitle-cache-atmos.patch` 替代 `0012`。三个补丁共同确保
 光盘路径命中当前播放点已有的字幕包，而不是通过 refresh seek 刷新播放。
+
+## 可随机读取的远程 Blu-ray ISO
+
+`0016-stream-bluray-support-seekable-remote-images.patch` 让 `bd://` 在设备参数为
+HTTP(S) ISO 时，通过 mpv 自身的网络流和 HTTP Range 请求为 libbluray 提供
+2048 字节块读取。服务端必须返回稳定、正数且按 2048 字节对齐的文件大小，并支持
+可寻址的字节范围；不满足条件时明确拒绝，不退回整盘下载，也不把远程 Blu-ray
+误试为 DVD。
+
+本地目录、本地 ISO 与物理光驱仍走原有 `bd_open()` 路径。该补丁只解决远程
+Blu-ray ISO 的随机读取入口，不改变 Dolby Vision P7/FEL 配对、RPU、字幕缓存、
+音频直通或普通 HTTP 视频播放逻辑。
