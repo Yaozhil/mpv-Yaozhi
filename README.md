@@ -204,7 +204,8 @@ LICENSE.md              本项目自有代码与文档的 MIT 许可证
 自定义核心的 mpv / SDL2 补丁、AV3A 构建集成与 Windows 自动回归位于 [`codex/hdr-pgs-core-fix`](https://github.com/Yaozhil/mpv-Yaozhi/tree/codex/hdr-pgs-core-fix) 维护分支；稳定整合包通过 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 发布。
 
 ## 支持杳知
-https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E8%B5%9E%E8%B5%8F%E7%A0%81.png
+
+![杳知个人赞赏码](github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E8%B5%9E%E8%B5%8F%E7%A0%81.png)
 
 感谢你赐予我持续维护的力量
 
