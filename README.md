@@ -203,6 +203,11 @@ LICENSE.md              本项目自有代码与文档的 MIT 许可证
 
 自定义核心的 mpv / SDL2 补丁、AV3A 构建集成与 Windows 自动回归位于 [`codex/hdr-pgs-core-fix`](https://github.com/Yaozhil/mpv-Yaozhi/tree/codex/hdr-pgs-core-fix) 维护分支；稳定整合包通过 [Releases](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) 发布。
 
+## 支持杳知
+https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E8%B5%9E%E8%B5%8F%E7%A0%81.png
+
+感谢你赐予我持续维护的力量
+
 ## 反馈问题
 
 提交 [Issue](https://github.com/Yaozhil/mpv-Yaozhi/issues) 时，建议提供：
@@ -226,3 +231,5 @@ LICENSE.md              本项目自有代码与文档的 MIT 许可证
 - uosc、FFmpeg、libplacebo、SDL2 及其他随项目保留来源说明的开源组件
 
 本仓库自有代码与文档采用 [MIT License](LICENSE.md)。第三方脚本、着色器、字体、二进制组件与资源继续遵循各自的许可证和版权声明。
+
+个人开发不易，部分个人原创功能 如借鉴请标明出处
