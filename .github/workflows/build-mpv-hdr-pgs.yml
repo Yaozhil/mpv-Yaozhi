@@ -1,9 +1,9 @@
-name: Build mpv HDR PGS + AV3A
+name: "Build mpv Blu-ray menu [Luna]"
 
 on:
   push:
     branches:
-      - codex/hdr-pgs-core-fix
+      - codex/luna-bluray-c318236
     paths:
       - ".github/workflows/build-mpv-hdr-pgs.yml"
       - "build/av3a/**"
@@ -28,6 +28,7 @@ on:
       - "patches/0015-demux-scope-disc-subtitle-cache-main.diff"
       - "patches/0016-stream-bluray-support-seekable-remote-images.patch"
       - "build/core-candidate/**"
+      - "build/core-migration/luna-mpv-c318236.patch"
       - "build/audio-layout/**"
   workflow_dispatch:
 
@@ -41,7 +42,7 @@ jobs:
     env:
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
-      MPV_COMMIT: 99b4c12cccb4d8d3f72b41944cb6c640e2156650
+      MPV_COMMIT: c318236b8882af860f16f936225430ad053a2179
       DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
       SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
       LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
@@ -209,63 +210,11 @@ jobs:
           cppwinrt.write_text(text)
           PY
 
-          # Keep Profile 7's MP4 stream-group and authored Blu-ray pairing
-          # patches ahead of the regular numbered mpv regression stack.
-          # packages/mpv.cmake applies this glob with git am in name order.
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-stream-group-backport-version.patch" \
-            packages/mpv-8998-dovi-stream-group-backport-version.patch
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-bluray-dovi-pair.patch" \
-            packages/mpv-8999-bluray-dovi-pair.patch
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-el-seek-recovery.patch" \
-            packages/mpv-8999a-dovi-el-seek-recovery.patch
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-dovi-el-pair-backpressure.patch" \
-            packages/mpv-8999b-dovi-el-pair-backpressure.patch
-          cp "$GITHUB_WORKSPACE/patches/0001-vo_gpu_next-add-image-subtitle-colorspace-control.patch" \
-            packages/mpv-9000-image-subs-colorspace.patch
-          cp "$GITHUB_WORKSPACE/build/av3a/mpv-avchannel-spatial-layout.patch" \
-            packages/mpv-9001-avchannel-spatial-layout.patch
-          cp "$GITHUB_WORKSPACE/patches/0002-ao-wasapi-preserve-height-channel-layouts.patch" \
-            packages/mpv-9002-wasapi-height-channels.patch
-          cp "$GITHUB_WORKSPACE/patches/0004-video-expose-hdr-vivid-metadata.patch" \
-            packages/mpv-9003-hdr-vivid-metadata.patch
-          cp "$GITHUB_WORKSPACE/patches/0005-ao-sdl-preserve-spatial-channel-layouts.patch" \
-            packages/mpv-9004-sdl-spatial-channel-layouts.patch
-          cp "$GITHUB_WORKSPACE/patches/0007-swresample-use-native-canonical-input-layout.patch" \
-            packages/mpv-9005-swresample-native-layout.patch
-          cp "$GITHUB_WORKSPACE/patches/0009-demux-cache-inactive-embedded-subtitles.patch" \
-            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          cp "$GITHUB_WORKSPACE/patches/0012-demux-enable-inactive-subtitle-cache.patch" \
-            packages/mpv-9007-enable-inactive-subtitle-cache.patch
-          # This patch also changes demux_disc.c. Apply it after the two mail
-          # subtitle-cache patches so both changes retain their original
-          # three-way context; the scope-only .diff still follows git am.
-          cp "$GITHUB_WORKSPACE/build/dolby-vision/mpv-disc-dovi-metadata-before-publish.patch" \
-            packages/mpv-9009-disc-dovi-metadata-before-publish.diff
-          cp "$GITHUB_WORKSPACE/patches/0015-demux-scope-disc-subtitle-cache-main.diff" \
-            packages/mpv-9008-scope-disc-subtitle-cache.diff
-          # Keep the candidate on the same published core capability baseline:
-          # the subtitle-cache fix must not drop the independent secondary
-          # subtitle scale, network/read-race fixes, hardware surface sizing,
-          # or the TrueHD MAT padding fix already present in the formal core.
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9900-secondary-sub-scale.patch" \
-            packages/mpv-9010-secondary-sub-scale.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9901-curl-request-start-race.patch" \
-            packages/mpv-9011-curl-request-start-race.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9902-curl-range-validation.patch" \
-            packages/mpv-9012-curl-range-validation.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9903-curl-compression-bounds.patch" \
-            packages/mpv-9013-curl-compression-bounds.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9904-demux-interrupt-discarded-read.patch" \
-            packages/mpv-9014-demux-interrupt-discarded-read.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9905-vo-frame-refs.patch" \
-            packages/mpv-9015-vo-frame-refs.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9905-hwdec-surface-pool.patch" \
-            packages/mpv-9016-hwdec-surface-pool.patch
-          cp "$GITHUB_WORKSPACE/build/core-candidate/main-9906-spdif-reset.patch" \
-            packages/mpv-9017-spdif-reset.patch
-          cp "$GITHUB_WORKSPACE/patches/0016-stream-bluray-support-seekable-remote-images.patch" \
-            packages/mpv-9018-seekable-remote-bluray-image.patch
-          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
+          # [Luna] Apply the single audited c318236 candidate mailbox. It
+          # contains only the two consecutive [Luna] commits from the isolated
+          # source tree; upstreamed fixes are supplied by the pinned base.
+          cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
+            packages/mpv-9000-luna-c318236.patch          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
             packages/sdl2-9001-spatial-channel-counts.patch
@@ -504,75 +453,20 @@ jobs:
           fi
           grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
           grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
-          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' \
-            packages/mpv-9001-avchannel-spatial-layout.patch
-          grep -Fq 'AV_CHANNEL_ORDER_AMBISONIC' \
-            packages/mpv-9001-avchannel-spatial-layout.patch
-          grep -Fq 'mp_chmap_sel_add_any' \
-            packages/mpv-9001-avchannel-spatial-layout.patch
-          grep -Fq 'Representable layouts above 8 channels are probed as-is' \
-            packages/mpv-9002-wasapi-height-channels.patch
-          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' \
-            packages/mpv-9003-hdr-vivid-metadata.patch
-          grep -Fq 'video-params/hdr-vivid' \
-            packages/mpv-9003-hdr-vivid-metadata.patch
-          grep -Fq 'fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr' \
-            packages/mpv-9004-sdl-spatial-channel-layouts.patch
-          grep -Fq 'native_equal_layout' \
-            packages/mpv-9005-swresample-native-layout.patch
-          grep -Fq 'mp_chmap_equals(&map_in, &map_out) && !native_equal_layout' \
-            packages/mpv-9005-swresample-native-layout.patch
-          grep -Fq 'mp_chmap_to_av_layout(&in_layout, &map_in)' \
-            packages/mpv-9005-swresample-native-layout.patch
-          grep -Fq 'mp_chmap_to_av_layout(&out_layout, &map_out)' \
-            packages/mpv-9005-swresample-native-layout.patch
-          grep -Fq 'AV_VERSION_INT(62, 13, 102)' \
-            packages/mpv-8998-dovi-stream-group-backport-version.patch
-          grep -Fq 'list_idx != ST_FOLL && list_idx != LT_FOLL' \
-            packages/ffmpeg-8995-hevc-missing-ref-foll.patch
-          grep -Fq 'dovi_el_only' \
-            packages/mpv-8999a-dovi-el-seek-recovery.patch
-          grep -Fq 'el_sh->codec->dovi_el_only = true' \
-            packages/mpv-8999a-dovi-el-seek-recovery.patch
-          grep -Fq 'el->codec->dovi_el_only = true' \
-            packages/mpv-8999a-dovi-el-seek-recovery.patch
-          grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' \
-            packages/mpv-8999a-dovi-el-seek-recovery.patch
-          grep -Fq 'H2645NAL *rpu_nal = NULL' \
-            packages/ffmpeg-8996-hevc-dovi-rpu-scan.patch
-          grep -Fq 'Blu-ray Dolby Vision Profile 7: BL PID' \
-            packages/mpv-8999-bluray-dovi-pair.patch
-          grep -Fq 'switchable_subs > 1' \
-            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'demuxer_set_stream_cache_inactive' \
-            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
-            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'group_start' \
-            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'using cached packets for stream' \
-            packages/mpv-9006-cache-inactive-embedded-subtitles.patch
-          grep -Fq 'cache_inactive_streams' \
-            packages/mpv-9007-enable-inactive-subtitle-cache.patch
-          grep -Fq 'cache_inactive_subtitles = num_subtitles > 1' \
-            packages/mpv-9008-scope-disc-subtitle-cache.diff
-          grep -Fq 'demux_stream_get_selection_state' \
-            packages/mpv-9008-scope-disc-subtitle-cache.diff
-          grep -Fq 'p->base_dts - p->base_time' \
-            packages/mpv-9008-scope-disc-subtitle-cache.diff
-          grep -Fq 'Stream metadata and group membership become immutable' \
-            packages/mpv-9009-disc-dovi-metadata-before-publish.diff
-          grep -Fq 'secondary-sub-scale' \
-            packages/mpv-9010-secondary-sub-scale.patch
-          grep -Fq 'request_start' \
-            packages/mpv-9011-curl-request-start-race.patch
-          grep -Fq 'hwdec-extra-frames' \
-            packages/mpv-9016-hwdec-surface-pool.patch
-          grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' \
-            packages/mpv-9018-seekable-remote-bluray-image.patch
-          grep -Fq 'Remote Blu-ray image is not seekable' \
-            packages/mpv-9018-seekable-remote-bluray-image.patch
-          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
+          # [Luna] Fail before the expensive build if the candidate mailbox is
+          # incomplete or no longer carries a required private regression fix.
+          luna_mpv_patch=packages/mpv-9000-luna-c318236.patch
+          grep -Fq '[Luna] prepare Blu-ray menu and metadata candidate' "$luna_mpv_patch"
+          grep -Fq '[Luna] preserve subtitle cache and remote Blu-ray ISO' "$luna_mpv_patch"
+          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$luna_mpv_patch"
+          grep -Fq 'image-subs-colorspace' "$luna_mpv_patch"
+          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' "$luna_mpv_patch"
+          grep -Fq 'dst->params.hdr_vivid = src->params.hdr_vivid' "$luna_mpv_patch"
+          grep -Fq 'dovi_el_only' "$luna_mpv_patch"
+          grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' "$luna_mpv_patch"
+          grep -Fq 'demuxer_set_stream_cache_inactive' "$luna_mpv_patch"
+          grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' "$luna_mpv_patch"
+          grep -Fq 'Remote Blu-ray image is not seekable' "$luna_mpv_patch"          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9001-av3a-multiframe-probe.patch' packages/ffmpeg.cmake
@@ -964,7 +858,7 @@ jobs:
       - name: Upload custom mpv
         uses: actions/upload-artifact@v6
         with:
-          name: mpv-hdr-pgs-av3a-x86_64
+          name: mpv-bluray-menu-luna-c318236-x86_64
           path: artifact/*
           if-no-files-found: error
           retention-days: 7
@@ -978,7 +872,7 @@ jobs:
       - name: Download custom mpv
         uses: actions/download-artifact@v6
         with:
-          name: mpv-hdr-pgs-av3a-x86_64
+          name: mpv-bluray-menu-luna-c318236-x86_64
           path: artifact
 
       - name: Verify spatial audio and AV3A playback on Windows
