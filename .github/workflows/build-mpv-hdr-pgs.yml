@@ -144,20 +144,8 @@ jobs:
               "    GIT_CLONE_FLAGS \"\"\n"
               "    PATCH_COMMAND ${EXEC} git am --3way "
               "${CMAKE_CURRENT_SOURCE_DIR}/mpv-*.patch\n"
-              "        COMMAND ${EXEC} git apply --check "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "mpv-9008-scope-disc-subtitle-cache.diff\n"
-              "        COMMAND ${EXEC} git apply "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "mpv-9008-scope-disc-subtitle-cache.diff\n"
-              "        COMMAND ${EXEC} git apply --check "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "mpv-9009-disc-dovi-metadata-before-publish.diff\n"
-              "        COMMAND ${EXEC} git apply "
-              "${CMAKE_CURRENT_SOURCE_DIR}/"
-              "mpv-9009-disc-dovi-metadata-before-publish.diff\n"
           )
-          if "mpv-9009-disc-dovi-metadata-before-publish.diff" not in text:
+          if "mpv-*.patch" not in text:
               anchor = '    GIT_CLONE_FLAGS "--filter=tree:0"\n'
               if anchor not in text:
                   raise SystemExit("Could not locate mpv GIT_CLONE_FLAGS anchor")
@@ -214,7 +202,8 @@ jobs:
           # contains only the two consecutive [Luna] commits from the isolated
           # source tree; upstreamed fixes are supplied by the pinned base.
           cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
-            packages/mpv-9000-luna-c318236.patch          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
+            packages/mpv-9000-luna-c318236.patch
+          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
             packages/sdl2-9001-spatial-channel-counts.patch
@@ -466,7 +455,8 @@ jobs:
           grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' "$luna_mpv_patch"
           grep -Fq 'demuxer_set_stream_cache_inactive' "$luna_mpv_patch"
           grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' "$luna_mpv_patch"
-          grep -Fq 'Remote Blu-ray image is not seekable' "$luna_mpv_patch"          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
+          grep -Fq 'Remote Blu-ray image is not seekable' "$luna_mpv_patch"
+          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9001-av3a-multiframe-probe.patch' packages/ffmpeg.cmake
