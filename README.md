@@ -205,7 +205,7 @@ LICENSE.md              本项目自有代码与文档的 MIT 许可证
 
 ## 支持杳知
 
-![杳知个人赞赏码](github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E8%B5%9E%E8%B5%8F%E7%A0%81.png)
+![杳知个人赞赏码](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E8%B5%9E%E8%B5%8F%E7%A0%81.png)
 
 感谢你赐予我持续维护的力量
 
