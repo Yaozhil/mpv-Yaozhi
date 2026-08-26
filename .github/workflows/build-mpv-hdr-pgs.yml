@@ -125,6 +125,28 @@ jobs:
             "$MPV_WINBUILD_CMAKE_COMMIT"
 
           cd winbuild/mpv-winbuild-cmake
+
+          # [Luna] The pinned GCC snapshot was pruned upstream and now returns
+          # HTTP 404. Keep the verified build-system commit, but use the stable
+          # GCC 14.4.0 source and SHA-512 published by current upstream winbuild.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("toolchain/gcc/gcc.cmake")
+          text = path.read_text()
+          replacements = {
+              "https://mirrorservice.org/sites/sourceware.org/pub/gcc/snapshots/14-20251205/gcc-14-20251205.tar.xz":
+                  "https://ftp.gnu.org/gnu/gcc/gcc-14.4.0/gcc-14.4.0.tar.xz",
+              "SHA512=b05c932de5c478cf9b64a4f2cbdf1de9b37a4845614ff8bc0e0563cd1e716f69ea0fe070ef9bf5ec1fccc0658705ec76cef536ac8dc4ca4c32cf81dad8588c37":
+                  "SHA512=725ed8bdd43ef1726ffe8b5e8615a13e247fac9575b7626ae013a2975d000ea213212dc414b2f2631ac4785c1c8beca85555222faf9904d3b2fa6a3807a83a15",
+          }
+          for source, replacement in replacements.items():
+              if text.count(source) != 1:
+                  raise SystemExit(f"expected exactly one pinned GCC token: {source}")
+              text = text.replace(source, replacement)
+          path.write_text(text)
+          PY
+
           for patch in ../patch/*.patch; do
             if [ "$(basename "$patch")" = \
               "0008-ngtcp2-nghttp3-nghttp2-add-ngtcp2-nghttp3-nghttp2.patch" ]; then
