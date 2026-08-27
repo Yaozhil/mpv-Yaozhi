@@ -1055,3 +1055,53 @@ index bee7b54..9c3f995 100644
 -- 
 2.54.0.windows.1
 
+From 17a33d5ebbfd4d953822c40f672608b9eb326945 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 14:38:07 +0800
+Subject: [PATCH] preserve Profile 7 recovery for authored Blu-ray
+
+---
+ demux/demux_disc.c | 24 +++++++++++++++++-------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 9c3f995..c9fc0b0 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -457,16 +457,26 @@ static void sync_streams(struct demuxer *demuxer)
+         // Mirror descriptive metadata only; do not change the pairing or claim
+         // an in-band enhancement layer on the selectable base stream.
+         if (p->is_bd && outer->type == STREAM_VIDEO &&
+-            !outer->dependent_track && outer->codec && !outer->codec->dovi)
++            !outer->dependent_track && outer->codec)
+         {
+             struct sh_stream *el = sh_stream_dependent_sibling(outer);
+             if (el && el->codec && el->codec->dovi_el_only) {
+-                outer->codec->dovi = true;
+-                outer->codec->dv_profile = 7;
+-                outer->codec->dv_level = el->codec->dv_level;
+-                MP_VERBOSE(demuxer, "Blu-ray Dolby Vision group: exposing "
+-                           "Profile 7 metadata on base stream 0x%x\n",
+-                           outer->demuxer_id);
++                // The authored transport stream may omit the configuration
++                // record on both outer tracks. Keep the explicit EL eligible
++                // for Profile 7 seek recovery as well as exposing the profile
++                // on the selectable base track.
++                if (!el->codec->dovi) {
++                    el->codec->dovi = true;
++                    el->codec->dv_profile = 7;
++                }
++                if (!outer->codec->dovi) {
++                    outer->codec->dovi = true;
++                    outer->codec->dv_profile = 7;
++                    outer->codec->dv_level = el->codec->dv_level;
++                    MP_VERBOSE(demuxer, "Blu-ray Dolby Vision group: exposing "
++                               "Profile 7 metadata on base stream 0x%x\n",
++                               outer->demuxer_id);
++                }
+             }
+         }
+     }
+-- 
+2.54.0.windows.1
+

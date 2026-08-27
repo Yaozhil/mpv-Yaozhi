@@ -1,4 +1,4 @@
-name: "Build mpv Blu-ray menu [Luna]"
+name: "Build mpv Blu-ray menu candidate"
 
 on:
   push:
@@ -126,7 +126,7 @@ jobs:
 
           cd winbuild/mpv-winbuild-cmake
 
-          # [Luna] The pinned GCC snapshot was pruned upstream and now returns
+          # The pinned GCC snapshot was pruned upstream and now returns
           # HTTP 404. Keep the verified build-system commit, but use the stable
           # GCC 14.4.0 source and SHA-512 published by current upstream winbuild.
           python3 - <<'PY'
@@ -220,11 +220,11 @@ jobs:
           cppwinrt.write_text(text)
           PY
 
-          # [Luna] Apply the single audited c318236 candidate mailbox. It
-          # contains only the four consecutive [Luna] commits from the isolated
+          # Apply the single audited c318236 candidate mailbox. It
+          # contains only the six consecutive audited commits from the isolated
           # source tree; upstreamed fixes are supplied by the pinned base.
           cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
-            packages/mpv-9000-luna-c318236.patch
+            packages/mpv-9000-candidate-c318236.patch
           cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
             packages/sdl2-9000-spatial-speaker-mask.patch
           cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
@@ -464,24 +464,26 @@ jobs:
           fi
           grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
           grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
-          # [Luna] Fail before the expensive build if the candidate mailbox is
+          # Fail before the expensive build if the candidate mailbox is
           # incomplete or no longer carries a required private regression fix.
-          luna_mpv_patch=packages/mpv-9000-luna-c318236.patch
-          grep -Fq '[Luna] prepare Blu-ray menu and metadata candidate' "$luna_mpv_patch"
-          grep -Fq '[Luna] preserve subtitle cache and remote Blu-ray ISO' "$luna_mpv_patch"
-          grep -Fq '[Luna] enable backported Dolby Vision stream groups' "$luna_mpv_patch"
-          grep -Fq '[Luna] expose Profile 7 metadata on paired base layer' "$luna_mpv_patch"
-          grep -Fq 'AV_VERSION_INT(62, 13, 102)' "$luna_mpv_patch"
-          grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' "$luna_mpv_patch"
-          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$luna_mpv_patch"
-          grep -Fq 'image-subs-colorspace' "$luna_mpv_patch"
-          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' "$luna_mpv_patch"
-          grep -Fq 'dst->params.hdr_vivid = src->params.hdr_vivid' "$luna_mpv_patch"
-          grep -Fq 'dovi_el_only' "$luna_mpv_patch"
-          grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' "$luna_mpv_patch"
-          grep -Fq 'demuxer_set_stream_cache_inactive' "$luna_mpv_patch"
-          grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' "$luna_mpv_patch"
-          grep -Fq 'Remote Blu-ray image is not seekable' "$luna_mpv_patch"
+          candidate_mpv_patch=packages/mpv-9000-candidate-c318236.patch
+          grep -Fq '[Luna] prepare Blu-ray menu and metadata candidate' "$candidate_mpv_patch"
+          grep -Fq '[Luna] preserve subtitle cache and remote Blu-ray ISO' "$candidate_mpv_patch"
+          grep -Fq '[Luna] enable backported Dolby Vision stream groups' "$candidate_mpv_patch"
+          grep -Fq '[Luna] expose Profile 7 metadata on paired base layer' "$candidate_mpv_patch"
+          grep -Fq 'expose Profile 7 metadata for authored Blu-ray' "$candidate_mpv_patch"
+          grep -Fq 'preserve Profile 7 recovery for authored Blu-ray' "$candidate_mpv_patch"
+          grep -Fq 'AV_VERSION_INT(62, 13, 102)' "$candidate_mpv_patch"
+          grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' "$candidate_mpv_patch"
+          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$candidate_mpv_patch"
+          grep -Fq 'image-subs-colorspace' "$candidate_mpv_patch"
+          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' "$candidate_mpv_patch"
+          grep -Fq 'dst->params.hdr_vivid = src->params.hdr_vivid' "$candidate_mpv_patch"
+          grep -Fq 'dovi_el_only' "$candidate_mpv_patch"
+          grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' "$candidate_mpv_patch"
+          grep -Fq 'demuxer_set_stream_cache_inactive' "$candidate_mpv_patch"
+          grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' "$candidate_mpv_patch"
+          grep -Fq 'Remote Blu-ray image is not seekable' "$candidate_mpv_patch"
           grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
           grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
           grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
@@ -874,7 +876,7 @@ jobs:
       - name: Upload custom mpv
         uses: actions/upload-artifact@v6
         with:
-          name: mpv-bluray-menu-luna-c318236-x86_64
+          name: mpv-bluray-menu-c318236-x86_64
           path: artifact/*
           if-no-files-found: error
           retention-days: 7
@@ -888,7 +890,7 @@ jobs:
       - name: Download custom mpv
         uses: actions/download-artifact@v6
         with:
-          name: mpv-bluray-menu-luna-c318236-x86_64
+          name: mpv-bluray-menu-c318236-x86_64
           path: artifact
 
       - name: Verify spatial audio and AV3A playback on Windows
