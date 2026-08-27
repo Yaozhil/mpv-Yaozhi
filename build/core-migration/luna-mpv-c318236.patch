@@ -1,7 +1,7 @@
 From 12f93e392264791d1a826921ac9292c8e4383798 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Wed, 26 Aug 2026 23:30:00 +0800
-Subject: [PATCH 1/2] [Luna] prepare Blu-ray menu and metadata candidate
+Subject: [PATCH 1/3] [Luna] prepare Blu-ray menu and metadata candidate
 
 ---
  DOCS/interface-changes.rst   |  1 +
@@ -500,7 +500,7 @@ index 5b79c2b..26e3227 100644
 From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 00:53:17 +0800
-Subject: [PATCH 2/2] [Luna] preserve subtitle cache and remote Blu-ray ISO
+Subject: [PATCH 2/3] [Luna] preserve subtitle cache and remote Blu-ray ISO
 
 ---
  demux/demux.c          | 74 +++++++++++++++++++++++++++++++-
@@ -933,6 +933,46 @@ index 04b2520..2fab01f 100644
          ret = STREAM_UNSUPPORTED;
          goto err;
      }
+-- 
+2.54.0.windows.1
+
+
+From b35c64915e37d8f65433e8fddfe24749e70271a0 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Thu, 27 Aug 2026 10:41:44 +0800
+Subject: [PATCH 3/3] [Luna] enable backported Dolby Vision stream groups
+
+---
+ demux/demux_lavf.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 31ce973..74c814e 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1316,7 +1316,8 @@ static void handle_lcevc_group(demuxer_t *demuxer, AVStreamGroup *stg)
+ }
+ #endif
+ 
+-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
++#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100) || \
++    LIBAVFORMAT_VERSION_INT == AV_VERSION_INT(62, 13, 102)
+ // Base layer + Enhancement layer separate track stream group
+ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+ {
+@@ -1387,7 +1388,11 @@ static void handle_stream_groups(demuxer_t *demuxer)
+             handle_lcevc_group(demuxer, stg);
+             break;
+ #endif
+-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
++#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100) || \
++    LIBAVFORMAT_VERSION_INT == AV_VERSION_INT(62, 13, 102)
++        // [Luna] The pinned private FFmpeg patch backports the public Dolby
++        // Vision layered-video stream-group API as lavf 62.13.102. Compile
++        // the normal upstream handler for that exact audited ABI as well.
+         case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
+             handle_layered_video_group(demuxer, stg);
+             break;
 -- 
 2.54.0.windows.1
 
