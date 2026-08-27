@@ -1,7 +1,7 @@
 From 12f93e392264791d1a826921ac9292c8e4383798 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Wed, 26 Aug 2026 23:30:00 +0800
-Subject: [PATCH 1/4] [Luna] prepare Blu-ray menu and metadata candidate
+Subject: [PATCH 1/5] [Luna] prepare Blu-ray menu and metadata candidate
 
 ---
  DOCS/interface-changes.rst   |  1 +
@@ -500,7 +500,7 @@ index 5b79c2b..26e3227 100644
 From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 00:53:17 +0800
-Subject: [PATCH 2/4] [Luna] preserve subtitle cache and remote Blu-ray ISO
+Subject: [PATCH 2/5] [Luna] preserve subtitle cache and remote Blu-ray ISO
 
 ---
  demux/demux.c          | 74 +++++++++++++++++++++++++++++++-
@@ -940,7 +940,7 @@ index 04b2520..2fab01f 100644
 From b35c64915e37d8f65433e8fddfe24749e70271a0 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 10:41:44 +0800
-Subject: [PATCH 3/4] [Luna] enable backported Dolby Vision stream groups
+Subject: [PATCH 3/5] [Luna] enable backported Dolby Vision stream groups
 
 ---
  demux/demux_lavf.c | 9 +++++++--
@@ -980,7 +980,7 @@ index 31ce973..74c814e 100644
 From ecbc368b546df493889e5adbfb9b93b97a4ca815 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 12:02:06 +0800
-Subject: [PATCH 4/4] [Luna] expose Profile 7 metadata on paired base layer
+Subject: [PATCH 4/5] [Luna] expose Profile 7 metadata on paired base layer
 
 ---
  demux/demux_lavf.c | 10 ++++++++++
@@ -1007,6 +1007,51 @@ index 74c814e..c19b92e 100644
      // [Luna] The group is an explicit lavf relation, so retain the EL marker
      // when the disc/container demuxer mirrors this topology.
      el_sh->codec->dovi_el_only = true;
+-- 
+2.54.0.windows.1
+
+
+From 5e45373252a01b3130c2b721ffb639056b60536b Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Thu, 27 Aug 2026 12:59:25 +0800
+Subject: [PATCH 5/5] expose Profile 7 metadata for authored Blu-ray
+
+---
+ demux/demux_disc.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index bee7b54..9c3f995 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -448,6 +448,27 @@ static void sync_streams(struct demuxer *demuxer)
+             MP_TARRAY_APPEND(grp, grp->members, grp->num_members, outer_member);
+             outer_member->group = grp;
+         }
++
++        // Blu-ray authored Dolby Vision stores the Profile 7 relation in the
++        // BL+EL topology even when the MPEG-TS codec parameters do not carry a
++        // configuration record. The lavf group handler has already marked the
++        // dependent member as a Dolby Vision-only enhancement layer, so this
++        // is narrower than guessing from PIDs or from two ordinary HEVC tracks.
++        // Mirror descriptive metadata only; do not change the pairing or claim
++        // an in-band enhancement layer on the selectable base stream.
++        if (p->is_bd && outer->type == STREAM_VIDEO &&
++            !outer->dependent_track && outer->codec && !outer->codec->dovi)
++        {
++            struct sh_stream *el = sh_stream_dependent_sibling(outer);
++            if (el && el->codec && el->codec->dovi_el_only) {
++                outer->codec->dovi = true;
++                outer->codec->dv_profile = 7;
++                outer->codec->dv_level = el->codec->dv_level;
++                MP_VERBOSE(demuxer, "Blu-ray Dolby Vision group: exposing "
++                           "Profile 7 metadata on base stream 0x%x\n",
++                           outer->demuxer_id);
++            }
++        }
+     }
+ }
+ 
 -- 
 2.54.0.windows.1
 
