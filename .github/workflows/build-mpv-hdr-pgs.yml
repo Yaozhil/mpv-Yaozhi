@@ -221,7 +221,7 @@ jobs:
           PY
 
           # [Luna] Apply the single audited c318236 candidate mailbox. It
-          # contains only the three consecutive [Luna] commits from the isolated
+          # contains only the four consecutive [Luna] commits from the isolated
           # source tree; upstreamed fixes are supplied by the pinned base.
           cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
             packages/mpv-9000-luna-c318236.patch
@@ -470,7 +470,9 @@ jobs:
           grep -Fq '[Luna] prepare Blu-ray menu and metadata candidate' "$luna_mpv_patch"
           grep -Fq '[Luna] preserve subtitle cache and remote Blu-ray ISO' "$luna_mpv_patch"
           grep -Fq '[Luna] enable backported Dolby Vision stream groups' "$luna_mpv_patch"
+          grep -Fq '[Luna] expose Profile 7 metadata on paired base layer' "$luna_mpv_patch"
           grep -Fq 'AV_VERSION_INT(62, 13, 102)' "$luna_mpv_patch"
+          grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' "$luna_mpv_patch"
           grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$luna_mpv_patch"
           grep -Fq 'image-subs-colorspace' "$luna_mpv_patch"
           grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' "$luna_mpv_patch"
