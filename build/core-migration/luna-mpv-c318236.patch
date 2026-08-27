@@ -496,6 +496,43 @@ index 5b79c2b..26e3227 100644
 -- 
 2.54.0.windows.1
 
+From f872119b6dfd73afeb6f55b4d1304789ef344ba3 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Fri, 28 Aug 2026 01:58:22 +0800
+Subject: [PATCH] drop corrupt Profile 7 recovery frames before pairing
+
+---
+ video/decode/vd_lavc.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+index e0a06f4..5cd6822 100644
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -1320,6 +1320,22 @@ static int decode_frame(struct mp_filter *vd)
+     // data.
+     mp_assert(ctx->pic->buf[0]);
+ 
++    // The Profile 7 enhancement-layer decoder deliberately receives recovery
++    // pictures after a seek so its reference state can converge before the next
++    // clean random-access point. FFmpeg marks those pictures as corrupt. Keep
++    // them inside the decoder for recovery, but never pair them with a clean
++    // base-layer picture: doing so exposes transient block corruption after
++    // rapid exact seeks.
++    if (ctx->codec->dovi && ctx->codec->dv_profile == 7 &&
++        ctx->codec->dovi_el_only &&
++        (ctx->pic->flags & AV_FRAME_FLAG_CORRUPT))
++    {
++        MP_VERBOSE(vd, "Dropping corrupt Dolby Vision enhancement-layer "
++                       "recovery frame.\n");
++        av_frame_unref(ctx->pic);
++        return ret;
++    }
++
+     struct mp_image *mpi = mp_image_from_av_frame(ctx->pic);
+     if (!mpi) {
+         av_frame_unref(ctx->pic);
+
 
 From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
@@ -1104,4 +1141,3 @@ index 9c3f995..c9fc0b0 100644
      }
 -- 
 2.54.0.windows.1
-
