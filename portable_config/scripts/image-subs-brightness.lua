@@ -183,6 +183,10 @@ mp.register_script_message('set', function(value)
         return
     end
     o.peak = peak
+    -- A numeric reference-white preset only has meaning on the SDR/sRGB
+    -- bitmap path. Make the menu action effective immediately instead of
+    -- silently storing a value while auto/video mode continues to ignore it.
+    o.mode = 'sdr'
     persist_settings()
     apply_settings(true)
 end)

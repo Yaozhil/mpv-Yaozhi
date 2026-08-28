@@ -91,5 +91,10 @@ state.messages['set-mode']('video')
 expect('manual video colorspace', 'image-subs-colorspace', 'video')
 expect('manual video preserves metadata', 'image-subs-hdr-peak', 'video')
 
+state.messages['set']('400')
+expect('numeric preset selects SDR mode', 'user-data/image-subs-brightness/mode', 'sdr')
+expect('numeric preset colorspace', 'image-subs-colorspace', 'sdr')
+expect('numeric preset peak', 'image-subs-hdr-peak', '400')
+
 os.remove('.codex-build/test-image-subs-brightness.conf')
 print('all image subtitle policy tests passed')
