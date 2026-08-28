@@ -211,7 +211,9 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 ## 支持项目
 
-如果 mpv-Yaozhi 有幸改善了你的播放体验，也欢迎在方便的情况下自愿赞赏。你的支持会帮助我更好的持续投入测试、维护与后续开发，非常感谢。
+如果 mpv-Yaozhi 有幸改善了你的播放体验，非常欢迎在能力范围内支持。
+
+你的支持可以让我更好的 持续维护与开发本项目，总之非常感谢。
 
 <p align="center">
   <a href="docs/images/赞赏码.png">
