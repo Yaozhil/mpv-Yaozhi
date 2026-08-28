@@ -221,7 +221,7 @@ jobs:
           PY
 
           # Apply the single audited c318236 candidate mailbox. It
-          # contains only the thirteen consecutive audited commits from the isolated
+          # contains only the fifteen consecutive audited commits from the isolated
           # source tree; upstreamed fixes are supplied by the pinned base.
           cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
             packages/mpv-9000-candidate-c318236.patch
@@ -478,13 +478,15 @@ jobs:
           grep -Fq 'stream_dvdnav: trace authored button activation' "$candidate_mpv_patch"
           grep -Fq 'stream_dvdnav: recover false-success LinkRSM buttons' "$candidate_mpv_patch"
           grep -Fq '[Luna] demux_disc: wait for async Blu-ray destination' "$candidate_mpv_patch"
+          grep -Fq 'demux_disc: avoid nested Blu-ray reopen polling' "$candidate_mpv_patch"
+          grep -Fq 'discnav: handle back-to-back navigation boundaries' "$candidate_mpv_patch"
           grep -Fq 'BLURAY_BDJ_NAV_EOF_POLLS 300' "$candidate_mpv_patch"
           grep -Fq 'b->bdj_nav = info->bdj_detected && info->bdj_handled' "$candidate_mpv_patch"
           grep -Fq 'dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd)' "$candidate_mpv_patch"
           grep -Fq 'select button: vm=%d cached=%d buttons=%d' "$candidate_mpv_patch"
           grep -Fq 'is_link_rsm_command' "$candidate_mpv_patch"
           grep -Fq 'LinkRSM stayed in the menu' "$candidate_mpv_patch"
-          grep -Fq 'DISC_NAV_REOPEN_POLLS 500' "$candidate_mpv_patch"
+          grep -Fq 'last_drain_discontinuity_id' "$candidate_mpv_patch"
           grep -Fq 'AV_VERSION_INT(62, 13, 102)' "$candidate_mpv_patch"
           grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' "$candidate_mpv_patch"
           grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$candidate_mpv_patch"
