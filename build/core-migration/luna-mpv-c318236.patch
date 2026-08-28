@@ -60,7 +60,7 @@ index 249f53a..f82549f 100644
 +    the video itself.
 +
  ``--sub-hdr-peak=<auto|sdr|10-10000>``
-     Controls the text subtitle and OSD diffuse white level in cd/m? (nits)
+     Controls the text subtitle and OSD diffuse white level in cd/m² (nits)
      for HDR output (default: auto). In ``auto`` mode, subtitles and OSD follow
 diff --git a/audio/chmap_avchannel.c b/audio/chmap_avchannel.c
 index ebf33bd..0efe9c9 100644

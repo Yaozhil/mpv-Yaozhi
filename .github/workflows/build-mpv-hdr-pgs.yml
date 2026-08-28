@@ -221,7 +221,7 @@ jobs:
           PY
 
           # Apply the single audited c318236 candidate mailbox. It
-          # contains only the twelve consecutive audited commits from the isolated
+          # contains only the thirteen consecutive audited commits from the isolated
           # source tree; upstreamed fixes are supplied by the pinned base.
           cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
             packages/mpv-9000-candidate-c318236.patch
