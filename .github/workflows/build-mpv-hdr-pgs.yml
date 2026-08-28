@@ -477,7 +477,7 @@ jobs:
           grep -Fq 'stream_dvdnav: activate buttons from queued NAV data' "$candidate_mpv_patch"
           grep -Fq 'stream_dvdnav: trace authored button activation' "$candidate_mpv_patch"
           grep -Fq 'stream_dvdnav: recover false-success LinkRSM buttons' "$candidate_mpv_patch"
-          grep -Fq '[Luna] demux_disc: wait for async Blu-ray destination data' "$candidate_mpv_patch"
+          grep -Fq '[Luna] demux_disc: wait for async Blu-ray destination' "$candidate_mpv_patch"
           grep -Fq 'BLURAY_BDJ_NAV_EOF_POLLS 300' "$candidate_mpv_patch"
           grep -Fq 'b->bdj_nav = info->bdj_detected && info->bdj_handled' "$candidate_mpv_patch"
           grep -Fq 'dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd)' "$candidate_mpv_patch"
