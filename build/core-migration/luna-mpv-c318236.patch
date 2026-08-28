@@ -1,7 +1,7 @@
 From 12f93e392264791d1a826921ac9292c8e4383798 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Wed, 26 Aug 2026 23:30:00 +0800
-Subject: [PATCH 1/8] [Luna] prepare Blu-ray menu and metadata candidate
+Subject: [PATCH 1/9] [Luna] prepare Blu-ray menu and metadata candidate
 
 ---
  DOCS/interface-changes.rst   |  1 +
@@ -500,7 +500,7 @@ index 5b79c2b..26e3227 100644
 From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 00:53:17 +0800
-Subject: [PATCH 2/8] [Luna] preserve subtitle cache and remote Blu-ray ISO
+Subject: [PATCH 2/9] [Luna] preserve subtitle cache and remote Blu-ray ISO
 
 ---
  demux/demux.c          | 74 +++++++++++++++++++++++++++++++-
@@ -940,7 +940,7 @@ index 04b2520..2fab01f 100644
 From b35c64915e37d8f65433e8fddfe24749e70271a0 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 10:41:44 +0800
-Subject: [PATCH 3/8] [Luna] enable backported Dolby Vision stream groups
+Subject: [PATCH 3/9] [Luna] enable backported Dolby Vision stream groups
 
 ---
  demux/demux_lavf.c | 9 +++++++--
@@ -980,7 +980,7 @@ index 31ce973..74c814e 100644
 From ecbc368b546df493889e5adbfb9b93b97a4ca815 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 12:02:06 +0800
-Subject: [PATCH 4/8] [Luna] expose Profile 7 metadata on paired base layer
+Subject: [PATCH 4/9] [Luna] expose Profile 7 metadata on paired base layer
 
 ---
  demux/demux_lavf.c | 10 ++++++++++
@@ -1014,7 +1014,7 @@ index 74c814e..c19b92e 100644
 From 5e45373252a01b3130c2b721ffb639056b60536b Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 12:59:25 +0800
-Subject: [PATCH 5/8] expose Profile 7 metadata for authored Blu-ray
+Subject: [PATCH 5/9] expose Profile 7 metadata for authored Blu-ray
 
 ---
  demux/demux_disc.c | 21 +++++++++++++++++++++
@@ -1059,7 +1059,7 @@ index bee7b54..9c3f995 100644
 From 17a33d5ebbfd4d953822c40f672608b9eb326945 Mon Sep 17 00:00:00 2001
 From: Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 27 Aug 2026 14:38:07 +0800
-Subject: [PATCH 6/8] preserve Profile 7 recovery for authored Blu-ray
+Subject: [PATCH 6/9] preserve Profile 7 recovery for authored Blu-ray
 
 ---
  demux/demux_disc.c | 24 +++++++++++++++++-------
@@ -1110,7 +1110,7 @@ index 9c3f995..c9fc0b0 100644
 From f872119b6dfd73afeb6f55b4d1304789ef344ba3 Mon Sep 17 00:00:00 2001
 From: Yaozhi <yaozhi@users.noreply.github.com>
 Date: Fri, 28 Aug 2026 01:58:22 +0800
-Subject: [PATCH 7/8] drop corrupt Profile 7 recovery frames before pairing
+Subject: [PATCH 7/9] drop corrupt Profile 7 recovery frames before pairing
 
 ---
  video/decode/vd_lavc.c | 16 ++++++++++++++++
@@ -1150,7 +1150,7 @@ index e0a06f4..5cd6822 100644
 From eb04008e177341f6b2f85410b20b9024563bd83b Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Fri, 28 Aug 2026 22:05:22 +0800
-Subject: [PATCH 8/8] stream_bluray: wait for delayed BD-J title transitions
+Subject: [PATCH 8/9] stream_bluray: wait for delayed BD-J title transitions
 
 ---
  stream/stream_bluray.c | 9 ++++++++-
@@ -1204,6 +1204,61 @@ index 2fab01f..b37221f 100644
  
      // BD-J menus require a usable Java VM and libbluray.jar.
      if (b->hdmv_mode && info->bdj_detected && !info->bdj_handled) {
+-- 
+2.54.0.windows.1
+
+
+From 4265344f975c5a6a757c892a5d7425801d18bc92 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Fri, 28 Aug 2026 22:57:36 +0800
+Subject: [PATCH 9/9] stream_dvdnav: activate buttons from queued NAV data
+
+---
+ stream/stream_dvdnav.c | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
+index 0ec54d0..f82c0fa 100644
+--- a/stream/stream_dvdnav.c
++++ b/stream/stream_dvdnav.c
+@@ -439,6 +439,28 @@ static void select_neighbour_button(struct priv *priv, pci_t *pci,
+         dvdnav_button_select(priv->dvdnav, pci, target);
+ }
+ 
++// dvdnav_button_activate() rejects a NAV packet after libdvdnav's read head
++// has already left it. That is normally correct, but a player with demuxer
++// queues can still be displaying and interacting with that menu packet. Keep
++// the guarded API as the primary path, then replay the cached button command
++// through libdvdnav's FIFO-safe API when the packet was rejected.
++static void activate_current_button(struct priv *priv, pci_t *pci)
++{
++    int32_t btn = 0;
++    dvdnav_get_current_highlight(priv->dvdnav, &btn);
++    if (btn <= 0 || btn > pci_num_buttons(pci))
++        return;
++
++    if (dvdnav_button_activate(priv->dvdnav, pci) == DVDNAV_STATUS_OK)
++        return;
++
++    btni_t b;
++    memcpy(&b, &pci->hli.btnit[btn - 1], sizeof(b));
++    MP_VERBOSE(priv, "button %d activation used cached NAV command: %s\n",
++               btn, dvdnav_err_to_string(priv->dvdnav));
++    dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd);
++}
++
+ static void do_nav_cmd(stream_t *stream, struct stream_nav_cmd *cmd)
+ {
+     struct priv *priv = stream->priv;
+@@ -485,7 +507,7 @@ static void do_nav_cmd(stream_t *stream, struct stream_nav_cmd *cmd)
+         dvdnav_mouse_activate(priv->dvdnav, pci, cmd->x, cmd->y);
+         break;
+     case STREAM_NAV_SELECT:
+-        dvdnav_button_activate(priv->dvdnav, pci);
++        activate_current_button(priv, pci);
+         break;
+     default:
+         break;
 -- 
 2.54.0.windows.1
 

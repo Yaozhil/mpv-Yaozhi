@@ -221,7 +221,7 @@ jobs:
           PY
 
           # Apply the single audited c318236 candidate mailbox. It
-          # contains only the eight consecutive audited commits from the isolated
+          # contains only the nine consecutive audited commits from the isolated
           # source tree; upstreamed fixes are supplied by the pinned base.
           cp "$GITHUB_WORKSPACE/build/core-migration/luna-mpv-c318236.patch" \
             packages/mpv-9000-candidate-c318236.patch
@@ -474,8 +474,10 @@ jobs:
           grep -Fq 'expose Profile 7 metadata for authored Blu-ray' "$candidate_mpv_patch"
           grep -Fq 'preserve Profile 7 recovery for authored Blu-ray' "$candidate_mpv_patch"
           grep -Fq 'stream_bluray: wait for delayed BD-J title transitions' "$candidate_mpv_patch"
+          grep -Fq 'stream_dvdnav: activate buttons from queued NAV data' "$candidate_mpv_patch"
           grep -Fq 'BLURAY_BDJ_NAV_EOF_POLLS 300' "$candidate_mpv_patch"
           grep -Fq 'b->bdj_nav = info->bdj_detected && info->bdj_handled' "$candidate_mpv_patch"
+          grep -Fq 'dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd)' "$candidate_mpv_patch"
           grep -Fq 'AV_VERSION_INT(62, 13, 102)' "$candidate_mpv_patch"
           grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' "$candidate_mpv_patch"
           grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$candidate_mpv_patch"
