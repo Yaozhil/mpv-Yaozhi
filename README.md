@@ -87,6 +87,19 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 > 菜单画面、语言、动画、弹出菜单和可选项目由原盘自身决定；没有制作菜单的镜像不会由播放器生成菜单。
 
+## 专业起播格式标签
+
+播放器会在画面信息就绪时识别当前画面标准与选中音轨，并在真实视频画面的安全区短暂显示。多音轨切换后会自动刷新，编码黑边识别在后台完成，不阻塞首个可呈现画面。
+
+- **画面标签：** Dolby Vision、HDR Vivid、HDR10+、HDR10、HLG、SDR
+- **音频标签：** Audio Vivid、Dolby Atmos、DTS:X、TrueHD、DTS-HD、AC-4、MPEG-H、DRA、APE、FLAC、PCM、AAC 等
+- **显示样式：** 彩色徽章或透明白图标
+- **菜单路径：** `杳知 > 起播格式标签`
+
+![HDR Vivid 与 Audio Vivid 起播格式标签](docs/images/startup-format-badges-vivid-dual.png)
+![彩色版起播格式标签](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/startup-format-badges-color-overview.png)
+![透明白色版起播格式标签](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/startup-format-badges-white-overview.png)
+
 ## Dolby Vision、HDR 与图形字幕
 
 - Dolby Vision 支持 P5、P7 MEL/FEL、P8.1 与 P8.4，由播放器内部完成解码、重塑和显示适配。
@@ -134,17 +147,6 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 - **菜单路径：** `杳知 > 音频直通`
 
 根目录的 `mpv-Atmos.exe` 是独立实验入口，用于尝试对象音频软件解码与状态展示；它不替换正式 `mpv.exe`，组件不可用时会回到普通播放路径。
-
-## 专业起播格式标签
-
-播放器会在画面信息就绪时识别当前画面标准与选中音轨，并在真实视频画面的安全区短暂显示。多音轨切换后会自动刷新，编码黑边识别在后台完成，不阻塞首个可呈现画面。
-
-- **画面标签：** Dolby Vision、HDR Vivid、HDR10+、HDR10、HLG、SDR
-- **音频标签：** Audio Vivid、Dolby Atmos、DTS:X、TrueHD、DTS-HD、AC-4、MPEG-H、DRA、APE、FLAC、PCM、AAC 等
-- **显示样式：** 彩色徽章或透明白图标
-- **菜单路径：** `杳知 > 起播格式标签`
-
-![HDR Vivid 与 Audio Vivid 起播格式标签](docs/images/startup-format-badges-vivid-dual.png)
 
 ## 中文播放与网络体验
 
