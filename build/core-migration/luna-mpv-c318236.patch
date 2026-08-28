@@ -496,7 +496,6 @@ index 5b79c2b..26e3227 100644
 -- 
 2.54.0.windows.1
 
-
 From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 00:53:17 +0800
@@ -1318,3 +1317,62 @@ index f82c0fa..157bb0c 100644
 -- 
 2.54.0.windows.1
 
+From faea846f149303570b14974f09d4e4e37c2f2432 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Sat, 29 Aug 2026 00:33:12 +0800
+Subject: [PATCH] stream_dvdnav: recover false-success LinkRSM buttons
+
+---
+ stream/stream_dvdnav.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
+index 157bb0c..2b98446 100644
+--- a/stream/stream_dvdnav.c
++++ b/stream/stream_dvdnav.c
+@@ -444,6 +444,14 @@ static void select_neighbour_button(struct priv *priv, pci_t *pci,
+ // queues can still be displaying and interacting with that menu packet. Keep
+ // the guarded API as the primary path, then replay the cached button command
+ // through libdvdnav's FIFO-safe API when the packet was rejected.
++static bool is_link_rsm_command(const vm_cmd_t *cmd)
++{
++    static const uint8_t link_rsm[8] = {
++        0x20, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d,
++    };
++    return memcmp(cmd->bytes, link_rsm, sizeof(link_rsm)) == 0;
++}
++
+ static void activate_current_button(struct priv *priv, pci_t *pci)
+ {
+     int32_t btn = 0;
+@@ -471,8 +479,28 @@ static void activate_current_button(struct priv *priv, pci_t *pci)
+                b.cmd.bytes[3], b.cmd.bytes[4], b.cmd.bytes[5],
+                b.cmd.bytes[6], b.cmd.bytes[7]);
+ 
++    bool link_rsm = is_link_rsm_command(&b.cmd);
+     if (dvdnav_button_activate(priv->dvdnav, pci) == DVDNAV_STATUS_OK) {
+         MP_VERBOSE(priv, "button %d activation accepted by current NAV\n", btn);
++        if (!link_rsm || !in_menu_domain(priv->dvdnav))
++            return;
++        // Some authored menus carry an unconditional LinkRSM button command
++        // which libdvdnav accepts but leaves in VTSM. Its dedicated Escape
++        // path performs the same resume without going through that decoder.
++        MP_VERBOSE(priv, "button %d LinkRSM stayed in the menu; "
++                   "using the dedicated resume path\n", btn);
++        if (dvdnav_menu_call(priv->dvdnav, DVD_MENU_Escape) == DVDNAV_STATUS_ERR)
++            MP_WARN(priv, "button %d LinkRSM resume failed: %s\n", btn,
++                    dvdnav_err_to_string(priv->dvdnav));
++        return;
++    }
++
++    if (link_rsm) {
++        MP_VERBOSE(priv, "button %d LinkRSM used the dedicated resume path: %s\n",
++                   btn, dvdnav_err_to_string(priv->dvdnav));
++        if (dvdnav_menu_call(priv->dvdnav, DVD_MENU_Escape) == DVDNAV_STATUS_ERR)
++            MP_WARN(priv, "button %d LinkRSM resume failed: %s\n", btn,
++                    dvdnav_err_to_string(priv->dvdnav));
+         return;
+     }
+ 
+-- 
+2.54.0.windows.1
