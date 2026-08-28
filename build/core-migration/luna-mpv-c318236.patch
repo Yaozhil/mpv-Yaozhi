@@ -1,7 +1,7 @@
 From 12f93e392264791d1a826921ac9292c8e4383798 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Wed, 26 Aug 2026 23:30:00 +0800
-Subject: [PATCH 01/12] [Luna] prepare Blu-ray menu and metadata candidate
+Subject: [PATCH 01/13] [Luna] prepare Blu-ray menu and metadata candidate
 
 ---
  DOCS/interface-changes.rst   |  1 +
@@ -60,7 +60,7 @@ index 249f53a..f82549f 100644
 +    the video itself.
 +
  ``--sub-hdr-peak=<auto|sdr|10-10000>``
-     Controls the text subtitle and OSD diffuse white level in cd/m² (nits)
+     Controls the text subtitle and OSD diffuse white level in cd/m? (nits)
      for HDR output (default: auto). In ``auto`` mode, subtitles and OSD follow
 diff --git a/audio/chmap_avchannel.c b/audio/chmap_avchannel.c
 index ebf33bd..0efe9c9 100644
@@ -500,7 +500,7 @@ index 5b79c2b..26e3227 100644
 From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 00:53:17 +0800
-Subject: [PATCH 02/12] [Luna] preserve subtitle cache and remote Blu-ray ISO
+Subject: [PATCH 02/13] [Luna] preserve subtitle cache and remote Blu-ray ISO
 
 ---
  demux/demux.c          | 74 +++++++++++++++++++++++++++++++-
@@ -940,7 +940,7 @@ index 04b2520..2fab01f 100644
 From b35c64915e37d8f65433e8fddfe24749e70271a0 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 10:41:44 +0800
-Subject: [PATCH 03/12] [Luna] enable backported Dolby Vision stream groups
+Subject: [PATCH 03/13] [Luna] enable backported Dolby Vision stream groups
 
 ---
  demux/demux_lavf.c | 9 +++++++--
@@ -980,7 +980,7 @@ index 31ce973..74c814e 100644
 From ecbc368b546df493889e5adbfb9b93b97a4ca815 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 12:02:06 +0800
-Subject: [PATCH 04/12] [Luna] expose Profile 7 metadata on paired base layer
+Subject: [PATCH 04/13] [Luna] expose Profile 7 metadata on paired base layer
 
 ---
  demux/demux_lavf.c | 10 ++++++++++
@@ -1014,7 +1014,7 @@ index 74c814e..c19b92e 100644
 From 5e45373252a01b3130c2b721ffb639056b60536b Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Thu, 27 Aug 2026 12:59:25 +0800
-Subject: [PATCH 05/12] expose Profile 7 metadata for authored Blu-ray
+Subject: [PATCH 05/13] expose Profile 7 metadata for authored Blu-ray
 
 ---
  demux/demux_disc.c | 21 +++++++++++++++++++++
@@ -1059,7 +1059,7 @@ index bee7b54..9c3f995 100644
 From 17a33d5ebbfd4d953822c40f672608b9eb326945 Mon Sep 17 00:00:00 2001
 From: Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 27 Aug 2026 14:38:07 +0800
-Subject: [PATCH 06/12] preserve Profile 7 recovery for authored Blu-ray
+Subject: [PATCH 06/13] preserve Profile 7 recovery for authored Blu-ray
 
 ---
  demux/demux_disc.c | 24 +++++++++++++++++-------
@@ -1110,7 +1110,7 @@ index 9c3f995..c9fc0b0 100644
 From f872119b6dfd73afeb6f55b4d1304789ef344ba3 Mon Sep 17 00:00:00 2001
 From: Yaozhi <yaozhi@users.noreply.github.com>
 Date: Fri, 28 Aug 2026 01:58:22 +0800
-Subject: [PATCH 07/12] drop corrupt Profile 7 recovery frames before pairing
+Subject: [PATCH 07/13] drop corrupt Profile 7 recovery frames before pairing
 
 ---
  video/decode/vd_lavc.c | 16 ++++++++++++++++
@@ -1150,7 +1150,7 @@ index e0a06f4..5cd6822 100644
 From eb04008e177341f6b2f85410b20b9024563bd83b Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Fri, 28 Aug 2026 22:05:22 +0800
-Subject: [PATCH 08/12] stream_bluray: wait for delayed BD-J title transitions
+Subject: [PATCH 08/13] stream_bluray: wait for delayed BD-J title transitions
 
 ---
  stream/stream_bluray.c | 9 ++++++++-
@@ -1211,7 +1211,7 @@ index 2fab01f..b37221f 100644
 From 4265344f975c5a6a757c892a5d7425801d18bc92 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Fri, 28 Aug 2026 22:57:36 +0800
-Subject: [PATCH 09/12] stream_dvdnav: activate buttons from queued NAV data
+Subject: [PATCH 09/13] stream_dvdnav: activate buttons from queued NAV data
 
 ---
  stream/stream_dvdnav.c | 24 +++++++++++++++++++++++-
@@ -1266,7 +1266,7 @@ index 0ec54d0..f82c0fa 100644
 From 3faff7b9f7f4a6e87c2607c06ceedc9eb1c4b9ba Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Sat, 29 Aug 2026 00:02:51 +0800
-Subject: [PATCH 10/12] stream_dvdnav: trace authored button activation
+Subject: [PATCH 10/13] stream_dvdnav: trace authored button activation
 
 ---
  stream/stream_dvdnav.c | 28 ++++++++++++++++++++++++----
@@ -1322,7 +1322,7 @@ index f82c0fa..157bb0c 100644
 From faea846f149303570b14974f09d4e4e37c2f2432 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Sat, 29 Aug 2026 00:33:12 +0800
-Subject: [PATCH 11/12] stream_dvdnav: recover false-success LinkRSM buttons
+Subject: [PATCH 11/13] stream_dvdnav: recover false-success LinkRSM buttons
 
 ---
  stream/stream_dvdnav.c | 28 ++++++++++++++++++++++++++++
@@ -1383,7 +1383,7 @@ index 157bb0c..2b98446 100644
 From b9edfd8e7217e9b4d07ec9f4463df8d087ba5f66 Mon Sep 17 00:00:00 2001
 From: Luna <luna@yaozhi.local>
 Date: Sat, 29 Aug 2026 01:24:55 +0800
-Subject: [PATCH 12/12] [Luna] demux_disc: wait for async Blu-ray destination
+Subject: [PATCH 12/13] [Luna] demux_disc: wait for async Blu-ray destination
  data
 
 ---
@@ -1433,6 +1433,31 @@ index c9fc0b0..5b49b7d 100644
          p->slave = NULL;
          return false;
      }
+-- 
+2.54.0.windows.1
+
+
+From f4da7a0600e43e1fa2cb943a0dd685dba18cdffc Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Sat, 29 Aug 2026 01:49:16 +0800
+Subject: [PATCH 13/13] [Luna] demux_disc: include cancellation API
+
+---
+ demux/demux_disc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 5b49b7d..13f7724 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -21,6 +21,7 @@
+ 
+ #include "common/common.h"
+ #include "common/msg.h"
++#include "misc/thread_tools.h"
+ 
+ #include "stream/stream.h"
+ #include "video/mp_image.h"
 -- 
 2.54.0.windows.1
 
