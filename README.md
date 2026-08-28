@@ -34,6 +34,7 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 ## 界面预览
 
 ![mpv-Yaozhi 主界面](docs/images/ui-annotated.png)
+![mpv-Yaozhi 播放界面](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/startup-format-badges-playback.png)
 
 <details>
 <summary>查看更多界面与配置助手</summary>
