@@ -98,8 +98,17 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 ![HDR Vivid 与 Audio Vivid 起播格式标签](docs/images/startup-format-badges-vivid-dual.png)
 ![双杜比起播格式标签](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/startup-format-badges-opening.png?raw=true)
-![彩色版起播格式标签](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/startup-format-badges-color-overview.png)
-![透明白色版起播格式标签](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/startup-format-badges-white-overview.png)
+
+<details>
+<summary>查看完整起播格式标签</summary>
+
+<br>
+
+![彩色版起播格式标签](docs/images/startup-format-badges-color-overview.png)
+
+![透明白色版起播格式标签](docs/images/startup-format-badges-white-overview.png)
+
+</details>
 
 ## Dolby Vision、HDR 与图形字幕
 
