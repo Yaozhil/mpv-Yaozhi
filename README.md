@@ -40,11 +40,11 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 
 ### 杳知功能菜单
 
-![杳知功能菜单](docs/images/yaozhi-menu-showcase.png)
+![杳知功能菜单](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E5%8A%9F%E8%83%BD%E7%95%8C%E9%9D%A2%E5%B1%95%E7%A4%BA111.png)
 
 ### 杳知配置助手
 
-![杳知配置助手](docs/images/config-assistant.png)
+![杳知配置助手](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/docs/images/%E6%9D%B3%E7%9F%A5%E9%85%8D%E7%BD%AE%E5%8A%A9%E6%89%8B3.0%E6%88%AA%E5%9B%BE.png)
 
 </details>
 
