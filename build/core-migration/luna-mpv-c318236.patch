@@ -1619,3 +1619,168 @@ index 26e3227..2c9f478 100644
 -- 
 2.54.0.windows.1
 
+
+From c49732851b704974f6b5eab7edf8e5dd54834e41 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 29 Aug 2026 08:28:41 +0800
+Subject: [PATCH 17/17] demux: bound read-ahead during disc title playback
+
+---
+ demux/demux.c      | 48 ++++++++++++++++++++++++++++++++++++----------
+ demux/demux.h      |  3 ++-
+ demux/demux_disc.c | 15 +++++++++++++--
+ 3 files changed, 53 insertions(+), 13 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index 2acaf37..4da4769 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -210,6 +210,8 @@ struct demux_internal {
+     size_t hyst_bytes;          // stop reading till there's hyst_bytes remaining
+     bool hyst_active;
+     bool nav_active;            // disc navigation (DVD/BD menus) is active
++    bool nav_menu_active;       // a menu overlay is currently interactive
++    bool nav_still_active;      // the disc VM is holding a still frame
+     bool nav_pump;              // one-shot request to force a single read
+     size_t max_bytes;
+     size_t max_bytes_bw;
+@@ -2329,6 +2331,14 @@ static bool lazy_stream_needs_wait(struct demux_stream *ds)
+ }
+ 
+ // Returns true if there was "progress" (lock was released temporarily).
++// Keep navigation-mode title playback slightly ahead of the decoder without
++// letting the disc VM run far ahead of presentation. Visible menus and stills
++// remain strictly demand-driven. The byte cap also bounds malformed or
++// timestamp-less streams.
++#define NAV_PLAYBACK_READAHEAD_SECS 2.0
++#define NAV_PLAYBACK_READAHEAD_MAX_BYTES (16 * 1024 * 1024)
++#define NAV_PLAYBACK_READAHEAD_FALLBACK_BYTES (4 * 1024 * 1024)
++
+ static bool read_packet(struct demux_internal *in)
+ {
+     bool was_reading = in->reading;
+@@ -2341,6 +2351,7 @@ static bool read_packet(struct demux_internal *in)
+     // the minimum, or if a stream explicitly needs new packets. Also includes
+     // safe-guards against packet queue overflow.
+     bool read_more = false, prefetch_more = false, refresh_more = false;
++    bool nav_timestamps_known = false, nav_prefetch_more = false;
+     uint64_t total_fw_bytes = 0;
+     for (int n = 0; n < in->num_streams; n++) {
+         struct demux_stream *ds = in->streams[n]->ds;
+@@ -2361,10 +2372,13 @@ static bool read_packet(struct demux_internal *in)
+             ds->queue->last_ts >= ds->base_ts &&
+             !in->back_demuxing)
+         {
+-            if (ds->queue->last_ts - ds->base_ts <= in->hyst_secs)
++            double buffered = ds->queue->last_ts - ds->base_ts;
++            if (buffered <= in->hyst_secs)
+                 in->hyst_active = false;
+             if (!in->hyst_active)
+-                prefetch_more |= ds->queue->last_ts - ds->base_ts < in->min_secs;
++                prefetch_more |= buffered < in->min_secs;
++            nav_timestamps_known = true;
++            nav_prefetch_more |= buffered < NAV_PLAYBACK_READAHEAD_SECS;
+         }
+         total_fw_bytes += get_forward_buffered_bytes(ds);
+     }
+@@ -2374,11 +2388,19 @@ static bool read_packet(struct demux_internal *in)
+         prefetch_more |= true;
+     }
+ 
+-    // While interactive disc navigation is active, never read ahead. It would
+-    // advance the disc VM past what the user is watching. Reads still happen
+-    // whenever a selected stream demands data.
+-    if (in->nav_active)
+-        prefetch_more = false;
++    // A visible menu or authored still must never be prefetched: reads advance
++    // the disc VM. During ordinary title playback, however, a zero-length
++    // packet queue makes high-bitrate local images hitch on each demand read.
++    // Keep only a small, doubly bounded queue in that state. The regular
++    // read_more path remains available after either bound is reached.
++    if (in->nav_active) {
++        bool interactive = in->nav_menu_active || in->nav_still_active;
++        bool below_byte_cap = total_fw_bytes < NAV_PLAYBACK_READAHEAD_MAX_BYTES;
++        bool fallback = !nav_timestamps_known &&
++                        total_fw_bytes < NAV_PLAYBACK_READAHEAD_FALLBACK_BYTES;
++        prefetch_more = !interactive && below_byte_cap &&
++                        (nav_prefetch_more || fallback);
++    }
+     prefetch_more |= in->nav_pump;
+ 
+     MP_TRACE(in, "bytes=%zd, read_more=%d prefetch_more=%d, refresh_more=%d\n",
+@@ -3292,15 +3314,21 @@ void demux_set_duration(demuxer_t *demuxer, double duration)
+     mp_mutex_unlock(&in->lock);
+ }
+ 
+-// Tell the cache whether interactive disc navigation is active.
+-void demux_set_nav_active(demuxer_t *demuxer, bool active)
++// Tell the cache which interactive disc-navigation phase is active.
++void demux_set_nav_state(demuxer_t *demuxer, bool active, bool menu_active,
++                         bool still_active)
+ {
+     struct demux_internal *in = demuxer->in;
+     mp_assert(demuxer == in->d_thread);
+ 
+     mp_mutex_lock(&in->lock);
+-    if (in->nav_active != active) {
++    if (in->nav_active != active ||
++        in->nav_menu_active != menu_active ||
++        in->nav_still_active != still_active)
++    {
+         in->nav_active = active;
++        in->nav_menu_active = menu_active;
++        in->nav_still_active = still_active;
+         mp_cond_signal(&in->wakeup);
+     }
+     mp_mutex_unlock(&in->lock);
+diff --git a/demux/demux.h b/demux/demux.h
+index ac4d184..e5eac19 100644
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -365,7 +365,8 @@ void demux_close_stream(struct demuxer *demuxer);
+ 
+ void demux_metadata_changed(demuxer_t *demuxer);
+ void demux_set_duration(demuxer_t *demuxer, double duration);
+-void demux_set_nav_active(demuxer_t *demuxer, bool active);
++void demux_set_nav_state(demuxer_t *demuxer, bool active, bool menu_active,
++                         bool still_active);
+ void demux_lists_changed(demuxer_t *demuxer);
+ void demux_update(demuxer_t *demuxer, double playback_pts);
+ 
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index a767b69..c904b2c 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -105,6 +105,8 @@ struct priv {
+     bool seek_reinit;   // needs reinit after seek
+     uint32_t last_discontinuity_id; // Last source-position-jump id seen from the stream.
+     bool nav_active;    // last interactive-nav state pushed to the cache
++    bool nav_menu_active;
++    bool nav_still_active;
+     uint32_t eof_log_id;    // last logged EOF state, avoids per-read spam
+     bool eof_log_still;
+ 
+@@ -904,9 +906,18 @@ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt
+     struct stream_nav_state nav = {0};
+     if (stream_control(demuxer->stream, STREAM_CTRL_GET_NAV_STATE, &nav) >= 1) {
+         menu_active = nav.menu_active;
+-        if (nav.nav_active != p->nav_active) {
++        if (nav.nav_active != p->nav_active ||
++            nav.menu_active != p->nav_menu_active ||
++            nav.still_active != p->nav_still_active)
++        {
++            MP_VERBOSE(demuxer,
++                       "navigation cache state: active=%d menu=%d still=%d\n",
++                       nav.nav_active, nav.menu_active, nav.still_active);
+             p->nav_active = nav.nav_active;
+-            demux_set_nav_active(demuxer, nav.nav_active);
++            p->nav_menu_active = nav.menu_active;
++            p->nav_still_active = nav.still_active;
++            demux_set_nav_state(demuxer, nav.nav_active, nav.menu_active,
++                                nav.still_active);
+         }
+         // DVD holds an EOF at jump boundaries and the player resyncs
+         // through the seek path. BD has no in-band boundary, handle it here,
+-- 
+2.54.0.windows.1
+
