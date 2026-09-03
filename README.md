@@ -10,7 +10,7 @@
 [![Core](https://img.shields.io/badge/Core-Yaozhi%20Custom-7C3AED)](https://github.com/Yaozhil/mpv-Yaozhi/tree/codex/hdr-pgs-core-fix)
 [![License](https://img.shields.io/badge/License-See%20details-2EA44F)](#来源与许可)
 
-[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest) · [近期更新](#近期更新) · [界面预览](#界面预览) · [主要功能](#主要功能) · [快速开始](#快速开始) · [问题反馈](#问题反馈)
+[下载最新版本](https://github.com/Yaozhil/mpv-Yaozhi/releases/latest)  ·  [近期更新](#近期更新)  ·  [界面预览](#界面预览)  ·  [主要功能](#主要功能)  ·  [快速开始](#快速开始)  ·  [问题反馈](#问题反馈)
 
 </div>
 
