@@ -249,6 +249,12 @@ jobs:
               raise SystemExit("Could not locate cppwinrt install command")
           text = re.sub(pattern, '    INSTALL_COMMAND ""\n', text,
                         count=1, flags=re.MULTILINE)
+          cleanup = "cleanup(cppwinrt install)\n"
+          if cleanup not in text:
+              raise SystemExit("Could not locate cppwinrt cleanup hook")
+          # The native generator is consumed by the next workflow step. Keep
+          # its build directory until the generated headers have been staged.
+          text = text.replace(cleanup, "# cppwinrt cleanup is deferred\n", 1)
           cppwinrt.write_text(text)
           PY
 
@@ -466,6 +472,10 @@ jobs:
           grep -Fq -- '-Dwin32-smtc=enabled' packages/mpv.cmake
           grep -Fq '        cppwinrt' packages/mpv.cmake
           grep -Fq "GIT_TAG $CPPWINRT_COMMIT" toolchain/cppwinrt.cmake
+          if grep -Fq 'cleanup(cppwinrt install)' toolchain/cppwinrt.cmake; then
+            echo "::error::cppwinrt generator would be deleted before header staging"
+            exit 1
+          fi
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
           grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
           grep -Fq "GIT_TAG $CURL_COMMIT" packages/curl.cmake
@@ -759,6 +769,9 @@ jobs:
           export PATH=/usr/bin:$PATH
           cd winbuild/mpv-winbuild-cmake
 
+          # A restored cache can contain the old completed cleanup stamp but no
+          # generator binary. Recreate this one bounded intermediate exactly.
+          rm -rf build64/toolchain/cppwinrt-prefix
           timeout --foreground --kill-after=2m 30m ninja -C build64 cppwinrt
           cppwinrt_bin="$(find build64/toolchain/cppwinrt-prefix/src/cppwinrt-build \
             -maxdepth 2 -type f -name cppwinrt -perm -u+x -print -quit)"
