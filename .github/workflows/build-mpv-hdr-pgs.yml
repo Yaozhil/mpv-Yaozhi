@@ -1,4 +1,4 @@
-name: "Build mpv Blu-ray menu candidate"
+name: "Build mpv Blu-ray + SMTC candidate"
 
 on:
   push:
@@ -43,6 +43,9 @@ jobs:
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
       MPV_COMMIT: c318236b8882af860f16f936225430ad053a2179
+      CPPWINRT_COMMIT: 856eaff70a48d6b053c2ad3dffec15b81ca34b10
+      WINDOWS_RS_COMMIT: cad85f9e122b8236f3619ab67b88a1e7242dcb7d
+      WINDOWS_WINMD_SHA256: 9ddfc6f5e5c3d29522f35e1cac566617e9d28ccbc6ccb072c79fa9949cdbe336
       DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
       SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
       LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
@@ -130,6 +133,7 @@ jobs:
           # HTTP 404. Keep the verified build-system commit, but use the stable
           # GCC 14.4.0 source and SHA-512 published by current upstream winbuild.
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
           path = Path("toolchain/gcc/gcc.cmake")
@@ -158,6 +162,7 @@ jobs:
           done
 
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
           path = Path("packages/mpv.cmake")
@@ -179,6 +184,20 @@ jobs:
               if anchor not in text:
                   raise SystemExit("Could not locate SDL2 gamepad option")
               text = text.replace(anchor, anchor + option, 1)
+
+          smtc_option = "        -Dwin32-smtc=enabled\n"
+          if smtc_option not in text:
+              anchor = "        -Dlibmpv=true\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate libmpv option")
+              text = text.replace(anchor, anchor + smtc_option, 1)
+
+          cppwinrt_dependency = "        cppwinrt\n"
+          if cppwinrt_dependency not in text:
+              anchor = "        angle-headers\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate mpv dependency anchor")
+              text = text.replace(anchor, anchor + cppwinrt_dependency, 1)
 
           path.write_text(text)
 
@@ -205,13 +224,19 @@ jobs:
               text = text.replace(anchor, anchor + patch, 1)
           sdl2.write_text(text)
 
-          # cppwinrt is not consumed by mpv or its dependency graph.  The
-          # pinned winbuild's custom install command is misparsed by current
-          # CMake as the default make-based install, which blocks cold caches.
+          # Build the pinned native generator here, then stage its generated
+          # headers in an explicit bounded step below. This avoids the pinned
+          # winbuild install-command regression without disabling C++/WinRT.
           import re
 
           cppwinrt = Path("toolchain/cppwinrt.cmake")
           text = cppwinrt.read_text()
+          tag = f"    GIT_TAG {os.environ['CPPWINRT_COMMIT']}\n"
+          if tag not in text:
+              anchor = "    GIT_REPOSITORY https://github.com/microsoft/cppwinrt.git\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate cppwinrt repository anchor")
+              text = text.replace(anchor, anchor + tag, 1)
           pattern = r"^    INSTALL_COMMAND[\s\S]*?(?=^    LOG_DOWNLOAD)"
           if not re.search(pattern, text, flags=re.MULTILINE):
               raise SystemExit("Could not locate cppwinrt install command")
@@ -422,6 +447,9 @@ jobs:
           grep -Fq -- '-Dlibcurl=enabled' packages/mpv.cmake
           grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
           grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dwin32-smtc=enabled' packages/mpv.cmake
+          grep -Fq '        cppwinrt' packages/mpv.cmake
+          grep -Fq "GIT_TAG $CPPWINRT_COMMIT" toolchain/cppwinrt.cmake
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
           grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
           if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
@@ -558,6 +586,7 @@ jobs:
           grep -Fq 'h->decoding_error == 0 && h->rps.refered_by_others' \
             packages/davs2-9001-error-recovery.patch
           grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -n -A4 -B4 -- '-Dwin32-smtc=enabled' packages/mpv.cmake
           grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
           grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
           grep -Fq "GIT_TAG $MPV_COMMIT" packages/mpv.cmake
@@ -691,6 +720,31 @@ jobs:
           fi
           grep -F -- 'Features:' "$curl_config_log"
           grep -F -- 'Enabled SSL backends:' "$curl_config_log"
+
+      - name: Build and stage pinned C++ WinRT headers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          timeout --foreground --kill-after=2m 30m ninja -C build64 cppwinrt
+          cppwinrt_bin="$(find build64/toolchain/cppwinrt-prefix/src/cppwinrt-build \
+            -maxdepth 2 -type f -name cppwinrt -perm -u+x -print -quit)"
+          test -n "$cppwinrt_bin"
+
+          winmd=build64/toolchain/cppwinrt-prefix/src/cppwinrt-build/Windows.winmd
+          curl --fail --location --retry 3 --connect-timeout 30 \
+            --max-time 300 \
+            "https://raw.githubusercontent.com/microsoft/windows-rs/$WINDOWS_RS_COMMIT/crates/libs/default/Windows.winmd" \
+            --output "$winmd"
+          echo "$WINDOWS_WINMD_SHA256  $winmd" | sha256sum --check --strict
+
+          include_root=build64/install/x86_64-w64-mingw32/include
+          "$cppwinrt_bin" -input "$winmd" -output "$include_root"
+          test -f "$include_root/winrt/base.h"
+          test -f "$include_root/winrt/Windows.Foundation.h"
+          test -f "$include_root/winrt/Windows.Media.h"
 
       - name: Build and verify AV3A decoder dependency
         shell: bash
@@ -836,6 +890,7 @@ jobs:
           grep -Fq 'SDL Audio' artifact-check/mpv.strings
           grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
           grep -Fq 'hdr-vivid' artifact-check/mpv.strings
+          grep -Fq 'SystemMediaTransportControls' artifact-check/mpv.strings
           # The authored Blu-ray pairing path is runtime-only and its MP_VERBOSE
           # text may be removed by the Windows release linker. Source
           # application is checked above; the Windows validation job checks the
@@ -896,7 +951,7 @@ jobs:
       - name: Upload custom mpv
         uses: actions/upload-artifact@v6
         with:
-          name: mpv-bluray-menu-c318236-x86_64
+          name: mpv-bluray-menu-smtc-c318236-x86_64
           path: artifact/*
           if-no-files-found: error
           retention-days: 7
@@ -910,7 +965,7 @@ jobs:
       - name: Download custom mpv
         uses: actions/download-artifact@v6
         with:
-          name: mpv-bluray-menu-c318236-x86_64
+          name: mpv-bluray-menu-smtc-c318236-x86_64
           path: artifact
 
       - name: Verify spatial audio and AV3A playback on Windows
@@ -972,6 +1027,50 @@ jobs:
             ForEach-Object { "$_" }) -join "`n"
           if ($LASTEXITCODE -ne 0 -or $optionText -notmatch 'secondary-sub-scale') {
             throw "mpv is missing the formal core secondary-sub-scale option"
+          }
+
+          $featureOutput = & $mpv `
+            --no-config `
+            --idle=no `
+            --vo=null `
+            --ao=null `
+            --media-controls=yes `
+            --frames=1 `
+            --msg-level=all=v `
+            'av://lavfi:testsrc2=size=64x64:rate=1:duration=1' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "SMTC feature probe failed"
+          }
+          $featureText = ($featureOutput | ForEach-Object { "$_" }) -join "`n"
+          $featureLine = ($featureOutput | Where-Object {
+              "$_" -match 'List of enabled features:'
+            } | Select-Object -First 1)
+          if (-not $featureLine) {
+            throw "mpv did not publish its enabled feature list"
+          }
+          $requiredFeatures = @(
+            'amf', 'build-date', 'cplugins', 'cuda-hwaccel', 'cuda-interop',
+            'd3d-hwaccel', 'd3d11', 'd3d9-hwaccel', 'debug', 'direct3d',
+            'dos-paths', 'dvda', 'dvdnav', 'dxgi-debug-d3d11', 'egl-angle',
+            'egl-angle-win32', 'ffmpeg', 'ffnvcodec', 'gl', 'gl-dxinterop',
+            'gl-dxinterop-d3d9', 'gl-win32', 'glob', 'glob-win32', 'gpl',
+            'iconv', 'javascript', 'jpeg', 'lcms2', 'libarchive', 'libass',
+            'libavdevice', 'libbluray', 'libcurl', 'libplacebo', 'luajit',
+            'openal', 'rubberband', 'rubberband-3', 'sdl2-audio',
+            'sdl2-gamepad', 'shaderc', 'sixel', 'spirv-cross', 'subrandr',
+            'uchardet', 'vaapi', 'vaapi-win32', 'vapoursynth', 'vector',
+            'vk-khr-display', 'vulkan', 'wasapi', 'win32', 'win32-desktop',
+            'win32-executable', 'win32-smtc', 'win32-threads', 'zimg',
+            'zimg-st428', 'zlib'
+          )
+          $enabledFeatures = @(
+            (("$featureLine" -split 'List of enabled features:', 2)[1] -split '\s+') |
+              Where-Object { $_ }
+          )
+          foreach ($feature in $requiredFeatures) {
+            if ($feature -notin $enabledFeatures) {
+              throw "Required feature was lost: $feature`n$featureText"
+            }
           }
 
           & (Join-Path $artifact "verify-fel.ps1") `
