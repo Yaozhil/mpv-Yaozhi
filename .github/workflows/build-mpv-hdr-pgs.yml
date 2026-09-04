@@ -51,6 +51,7 @@ jobs:
       LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
       CURL_COMMIT: c2a04c080d79e1eb5d99bc0a73fd71710aa6d345
       LIBSSH_COMMIT: 26c594227c74bf9fa75fed5d8be61afd1abebc43
+      OPENSSL_COMMIT: 052c9eac52d7eb02a61cfe7c70289c13f06a50e1
 
     steps:
       - name: Install build dependencies
@@ -449,6 +450,14 @@ jobs:
             "/GIT_REPOSITORY https:\\/\\/gitlab.com\\/libssh\\/libssh-mirror.git/a\\    GIT_TAG $LIBSSH_COMMIT" \
             packages/libssh.cmake
 
+          # OpenSSL incorporated winbuild's MinGW SIO_UDP_NETRESET workaround
+          # upstream. Pin the last known-good source used by the 8/29 formal
+          # build and stop reapplying the now-duplicate mailbox patch.
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/openssl\\/openssl.git/a\\    GIT_TAG $OPENSSL_COMMIT" \
+            packages/openssl.cmake
+          sed -i '/PATCH_COMMAND.*openssl-.*\.patch/d' packages/openssl.cmake
+
           # The Windows release must use Schannel so certificate verification
           # follows the Windows trust store, matching the proven 7/17 build.
           sed -i \
@@ -480,6 +489,11 @@ jobs:
           grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
           grep -Fq "GIT_TAG $CURL_COMMIT" packages/curl.cmake
           grep -Fq "GIT_TAG $LIBSSH_COMMIT" packages/libssh.cmake
+          grep -Fq "GIT_TAG $OPENSSL_COMMIT" packages/openssl.cmake
+          if grep -Fq 'PATCH_COMMAND' packages/openssl.cmake; then
+            echo "::error::obsolete OpenSSL MinGW patch is still enabled"
+            exit 1
+          fi
           if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
             echo "::error::pinned SDL2 still uses branch-only force-update"
             exit 1
@@ -650,6 +664,10 @@ jobs:
                 "build64/packages/${package}-prefix"
             fi
           done
+          # OpenSSL no longer has a PATCH_COMMAND because the required MinGW
+          # workaround is upstream. Recreate it explicitly so a restored cache
+          # cannot reuse a different unpinned source revision.
+          rm -rf src_packages/openssl build64/packages/openssl-prefix
           rm -rf build64/packages/mpv-release-prefix \
             build64/packages/mpv-packaging-prefix \
             build64/mpv-x86_64-* \
@@ -721,6 +739,11 @@ jobs:
             sleep $((attempt * 15))
           done
           test "$download_complete" = yes
+          test "$(git -C src_packages/openssl rev-parse HEAD)" = "$OPENSSL_COMMIT"
+          grep -Fq '#if defined(__MINGW32__) && !defined(SIO_UDP_NETRESET)' \
+            src_packages/openssl/ssl/quic/quic_reactor.c
+          grep -Fq '#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)' \
+            src_packages/openssl/ssl/quic/quic_reactor.c
           if [ ! -f build64/install/bin/cross-gcc ]; then
             timeout --foreground 30m ninja -C build64 gcc
             rm -rf build64/toolchain
