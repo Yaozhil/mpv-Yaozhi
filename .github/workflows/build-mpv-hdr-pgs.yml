@@ -50,6 +50,7 @@ jobs:
       SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
       LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
       CURL_COMMIT: c2a04c080d79e1eb5d99bc0a73fd71710aa6d345
+      LIBSSH_COMMIT: 26c594227c74bf9fa75fed5d8be61afd1abebc43
 
     steps:
       - name: Install build dependencies
@@ -435,6 +436,12 @@ jobs:
           sed -i \
             "/GIT_REPOSITORY https:\\/\\/github.com\\/curl\\/curl.git/a\\    GIT_TAG $CURL_COMMIT" \
             packages/curl.cmake
+          # libssh master removed the legacy ssh_scp typedef on 9/3 while the
+          # pinned curl release still consumes it. Keep the exact libssh
+          # revision used by the last successful formal build.
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/gitlab.com\\/libssh\\/libssh-mirror.git/a\\    GIT_TAG $LIBSSH_COMMIT" \
+            packages/libssh.cmake
 
           # The Windows release must use Schannel so certificate verification
           # follows the Windows trust store, matching the proven 7/17 build.
@@ -462,6 +469,7 @@ jobs:
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
           grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
           grep -Fq "GIT_TAG $CURL_COMMIT" packages/curl.cmake
+          grep -Fq "GIT_TAG $LIBSSH_COMMIT" packages/libssh.cmake
           if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
             echo "::error::pinned SDL2 still uses branch-only force-update"
             exit 1
