@@ -49,6 +49,7 @@ jobs:
       DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
       SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
       LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
+      CURL_COMMIT: c2a04c080d79e1eb5d99bc0a73fd71710aa6d345
 
     steps:
       - name: Install build dependencies
@@ -431,6 +432,9 @@ jobs:
           sed -i \
             "/GIT_REPOSITORY https:\\/\\/github.com\\/rockdaboot\\/libpsl.git/a\\    GIT_TAG $LIBPSL_COMMIT" \
             packages/libpsl.cmake
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/curl\\/curl.git/a\\    GIT_TAG $CURL_COMMIT" \
+            packages/curl.cmake
 
           # The Windows release must use Schannel so certificate verification
           # follows the Windows trust store, matching the proven 7/17 build.
@@ -457,6 +461,7 @@ jobs:
           grep -Fq "GIT_TAG $CPPWINRT_COMMIT" toolchain/cppwinrt.cmake
           grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
           grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
+          grep -Fq "GIT_TAG $CURL_COMMIT" packages/curl.cmake
           if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
             echo "::error::pinned SDL2 still uses branch-only force-update"
             exit 1
@@ -713,7 +718,20 @@ jobs:
             echo "Reusing cached libcurl Schannel build"
           else
             timeout --foreground 25m ninja -j2 -C build64 update
-            timeout --foreground 25m ninja -C build64 curl
+            if ! timeout --foreground 25m ninja -C build64 curl; then
+              for log in \
+                build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log \
+                build64/packages/curl-prefix/src/curl-stamp/curl-configure-err.log \
+                build64/packages/curl-prefix/src/curl-stamp/curl-build-out.log \
+                build64/packages/curl-prefix/src/curl-stamp/curl-build-err.log; do
+                if [ -f "$log" ]; then
+                  echo "::group::$log"
+                  tail -n 200 "$log"
+                  echo "::endgroup::"
+                fi
+              done
+              exit 1
+            fi
           fi
 
           curl_config_log=build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log
