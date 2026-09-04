@@ -53,9 +53,8 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          # GitHub's hosted image already carries a current package index.
-          # Refreshing every run has occasionally blocked on a mirror before
-          # any source is checked out, so install directly from that index.
+          # Prefer the hosted image's package index. If it has gone stale,
+          # refresh once with bounded retries before the second install attempt.
           apt_install() {
             local attempt
             for attempt in 1 2; do
@@ -68,6 +67,12 @@ jobs:
                 return 0
               fi
               if [ "$attempt" -eq 1 ]; then
+                timeout --foreground --kill-after=1m 10m \
+                  sudo apt-get \
+                  -o Acquire::Retries=3 \
+                  -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30 \
+                  update
                 timeout --foreground --kill-after=1m 10m \
                   sudo dpkg --configure -a || true
               fi
