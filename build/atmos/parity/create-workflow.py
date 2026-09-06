@@ -58,6 +58,23 @@ prepare='''      - name: Check out pinned ASIO headers
 
 '''
 text=text.replace(anchor,prepare+anchor,1)
+text=text.replace(anchor,anchor+'        id: build-cache\n',1)
+# Keep the expensive toolchain after a compiler failure. The existing reset
+# step discards all patched source/stamp trees before reusing this cache.
+anchor='      - name: Collect failed build logs\n'
+assert text.count(anchor)==1
+text=text.replace(anchor,'''      - name: Preserve dependency cache after a failed build
+        if: steps.build.outcome == 'failure'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+
+'''+anchor,1)
 text=text.replace('  validate-windows:\n    needs: build\n', '''  validate-windows:
     needs: [build, build-orender]
     strategy:
@@ -96,12 +113,16 @@ text+='''
         with:
           repository: mgth/Omniphony
           ref: f9a79721af64ad9c39042d4deded158b568fc598
+      - name: Check out verified dependency lock
+        uses: actions/checkout@v6
+        with:
+          path: ci-config
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build renderer
         working-directory: omniphony-renderer
         run: |
-          cargo generate-lockfile
+          Copy-Item -LiteralPath ../ci-config/build/atmos/parity/orender-Cargo.lock -Destination Cargo.lock
           cargo build --locked --profile release-deploy -p orender_ffi
       - name: Package renderer
         shell: pwsh

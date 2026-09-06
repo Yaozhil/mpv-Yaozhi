@@ -10,7 +10,9 @@
 
 共同补丁 `0005-hdmv-overlay-video-ready.patch` 针对实测新按钮叠在旧片头/黑底的时序：动态 HDMV 菜单在跳转刷新与首帧未就绪时暂缓图形显示；不增加固定等待，不延迟导航输入，静帧和 BD-J 保留既有行为。源码应用检查通过，仍须新核心实盘验证后部署。
 
-首轮 orender 构建因上游不含 Cargo.lock、直接 `--locked` 无法创建锁而失败。候选先生成锁，再锁定构建，并将锁文件随构建产物留存。
+首轮 orender 构建因上游不含 Cargo.lock、直接 `--locked` 无法创建锁而失败。第二轮成功生成并构建；其 Cargo.lock 已固定为 orender-Cargo.lock，后续直接复制并锁定构建。已验证引擎 ABI0.7、现有桥v0.7.4、普通AC-3以及Dolby官方E-AC-3 JOC对象音频输出与重置；播放器整体验收仍待完成。
+
+0005 已转换为实际构建器需要的 mailbox 格式，并在全新源码上按 CI 的 `git am --3way` 顺序验证（17主补丁、0005、Atmos delta）。普通 unified diff 的 `git apply` 成功不等于 mailbox 构建器可接收。
 
 构建完成后的最低安装条件：
 

@@ -637,6 +637,7 @@ jobs:
             --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
 
       - name: Restore reusable build cache
+        id: build-cache
         uses: actions/cache@v5
         with:
           path: |
@@ -911,6 +912,17 @@ jobs:
           fi
           cp -a "$built_dir" release/
           7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
+
+      - name: Preserve dependency cache after a failed build
+        if: steps.build.outcome == 'failure'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
 
       - name: Collect failed build logs
         if: steps.build.outcome == 'failure'
@@ -1321,12 +1333,16 @@ jobs:
         with:
           repository: mgth/Omniphony
           ref: f9a79721af64ad9c39042d4deded158b568fc598
+      - name: Check out verified dependency lock
+        uses: actions/checkout@v6
+        with:
+          path: ci-config
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build renderer
         working-directory: omniphony-renderer
         run: |
-          cargo generate-lockfile
+          Copy-Item -LiteralPath ../ci-config/build/atmos/parity/orender-Cargo.lock -Destination Cargo.lock
           cargo build --locked --profile release-deploy -p orender_ffi
       - name: Package renderer
         shell: pwsh

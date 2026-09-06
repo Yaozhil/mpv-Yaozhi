@@ -1,3 +1,11 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Mon, 7 Sep 2026 02:00:00 +0800
+Subject: [PATCH] discnav: wait for HDMV background frame at transitions
+
+Defer moving-video HDMV graphics during queued resync and initial video
+fill. Preserve input, still menus and BD-J applications without video.
+---
 --- a/stream/stream.h
 +++ b/stream/stream.h
 @@ -170,6 +170,7 @@

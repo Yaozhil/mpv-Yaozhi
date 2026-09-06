@@ -45,6 +45,9 @@ lock = {
     'libbluray_commit': '065247e5ef40ccf39857db81e2c1368354a23ef8',
     'patches': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(out.glob('*.patch'))},
+    'common_patches': {name: hashlib.sha256((root/name).read_bytes()).hexdigest()
+        for name in ['build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch',
+                     'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch']},
     'integration_notes': [
         '0012/0015 preserve main VDCTRL_SET_EXTRA_HW_FRAMES while adding/removing the temporary fallback enum.',
         '9001 is superseded: main keeps both unknown input and output layouts unspecified and preserves native_equal_layout.',

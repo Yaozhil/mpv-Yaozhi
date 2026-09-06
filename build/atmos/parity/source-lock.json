@@ -19,6 +19,7 @@
   ],
   "common_patches": {
     "build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch": "fd04667a1cfb6f6f893655426a6c94c9bb8bac1a6b4c7b92a1d4f3161e5369b1",
-    "build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch": "7a0b500fc8161651ee5b00d85c4c4bb08ef7a220d23110c10f0ed604e7087f7f"
-  }
+    "build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch": "4273cc9b4cccf44fc286d67f04dcc4b0e8c7abd2e226fd73ae44690745a4aed8"
+  },
+  "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e"
 }
