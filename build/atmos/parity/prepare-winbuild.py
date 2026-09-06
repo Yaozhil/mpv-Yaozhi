@@ -52,4 +52,20 @@ text=text.replace(anchor,anchor+
 bluray.write_text(text)
 shutil.copyfile(root/'build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch',
                 packages/'libbluray-9004-hdmv-extended-ig-pid.patch')
+# MinGW already supplies the secure CRT functions. An undefined _MSC_VER
+# must not enable libvpl's pre-2005 MSVC macros inside Windows headers.
+vpl=packages/'libvpl.cmake'
+text=vpl.read_text()
+assert 'PATCH_COMMAND' not in text, 'Review existing libvpl patches before composing'
+assert '    GIT_TAG main\n' in text
+text=text.replace('    GIT_TAG main\n',f"    GIT_TAG {lock['libvpl_commit']}\n",1)
+text=text.replace('    GIT_REMOTE_NAME origin\n','',1)
+assert text.count(anchor)==1
+patch='${CMAKE_CURRENT_SOURCE_DIR}/libvpl-9000-mingw-secure-crt.patch'
+text=text.replace(anchor,anchor+
+    '    PATCH_COMMAND ${EXEC} git apply --check '+patch+'\n'
+    '        COMMAND ${EXEC} git apply '+patch+'\n',1)
+vpl.write_text(text)
+shutil.copyfile(here/'libvpl-9000-mingw-secure-crt.patch',
+                packages/'libvpl-9000-mingw-secure-crt.patch')
 print('PARITY_WINBUILD_PREPARED variant='+args.variant)

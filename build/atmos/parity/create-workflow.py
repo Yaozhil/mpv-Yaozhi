@@ -1,5 +1,6 @@
 """Derive a two-variant candidate workflow without dropping main build checks."""
 import argparse
+import re
 from pathlib import Path
 
 parser=argparse.ArgumentParser()
@@ -59,6 +60,9 @@ prepare='''      - name: Check out pinned ASIO headers
 '''
 text=text.replace(anchor,prepare+anchor,1)
 text=text.replace(anchor,anchor+'        id: build-cache\n',1)
+# actions/cache exposes only cache-hit, not cache-primary-key. Reuse the
+# exact declared key so the separate failure save cannot silently skip.
+cache_key = re.search(r'^          key: (mpv-v100-.+)$', text, re.M).group(1)
 # Keep the expensive toolchain after a compiler failure. The existing reset
 # step discards all patched source/stamp trees before reusing this cache.
 anchor='      - name: Collect failed build logs\n'
@@ -72,9 +76,10 @@ text=text.replace(anchor,'''      - name: Preserve dependency cache after a fail
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+          key: __FAILED_BUILD_CACHE_KEY__
 
 '''+anchor,1)
+text=text.replace('__FAILED_BUILD_CACHE_KEY__', cache_key, 1)
 text=text.replace('  validate-windows:\n    needs: build\n', '''  validate-windows:
     needs: [build, build-orender]
     strategy:

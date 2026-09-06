@@ -9,7 +9,8 @@
   "libbluray_commit": "065247e5ef40ccf39857db81e2c1368354a23ef8",
   "patches": {
     "main-core.patch": "75169a4a84a030bca9efb1cca627d8f643b447f81e11eee85e6fbce65c3431aa",
-    "mpv-9100-omniphony-parity.patch": "bf80b91ecf8deaec64a1640ae2f84be7b44d23f54ce99db278bba1dbadb4d273"
+    "mpv-9100-omniphony-parity.patch": "bf80b91ecf8deaec64a1640ae2f84be7b44d23f54ce99db278bba1dbadb4d273",
+    "libvpl-9000-mingw-secure-crt.patch": "02faa37c742529843763c5c7a572e43ab8fcbd0141e49423bc0b200e86c95b16"
   },
   "integration_notes": [
     "0012/0015 preserve main VDCTRL_SET_EXTRA_HW_FRAMES while adding/removing the temporary fallback enum.",
@@ -21,5 +22,6 @@
     "build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch": "fd04667a1cfb6f6f893655426a6c94c9bb8bac1a6b4c7b92a1d4f3161e5369b1",
     "build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch": "4273cc9b4cccf44fc286d67f04dcc4b0e8c7abd2e226fd73ae44690745a4aed8"
   },
-  "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e"
+  "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
+  "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
 }

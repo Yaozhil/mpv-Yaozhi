@@ -14,6 +14,8 @@
 
 0005 已转换为实际构建器需要的 mailbox 格式，并在全新源码上按 CI 的 `git am --3way` 顺序验证（17主补丁、0005、Atmos delta）。普通 unified diff 的 `git apply` 成功不等于 mailbox 构建器可接收。
 
+第三轮两个播放器构建都停在 libvpl：未定义 `_MSC_VER` 被误判为旧 MSVC，兼容宏破坏 MinGW 的 `stralign.h` 表达式。共同依赖固定为 `674d015bcb294bc39fa276e99a652ea045423e82`，仅将旧编译器宏限定到实际 MSVC；保留 Intel 硬解依赖。源码补丁应用与两个变体的依赖配置检查通过，待 CI 编译验证。失败后的缓存保存也已修正：`actions/cache` 不提供 `cache-primary-key` 输出，现与恢复步骤使用完全相同的显式键；之前两次保存实际未写入缓存。
+
 构建完成后的最低安装条件：
 
 - 两种变体均通过主核心原有完整功能门、AV3A/空间声道/FEL 验证。

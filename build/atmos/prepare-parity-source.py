@@ -43,6 +43,7 @@ lock = {
     'engine_commit': 'f9a79721af64ad9c39042d4deded158b568fc598',
     'asio_sdk_commit': '496a0765b8bb9c26f764f22f9a9712a937177db2',
     'libbluray_commit': '065247e5ef40ccf39857db81e2c1368354a23ef8',
+    'libvpl_commit': '674d015bcb294bc39fa276e99a652ea045423e82',
     'patches': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(out.glob('*.patch'))},
     'common_patches': {name: hashlib.sha256((root/name).read_bytes()).hexdigest()

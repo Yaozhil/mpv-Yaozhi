@@ -922,7 +922,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+          key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
 
       - name: Collect failed build logs
         if: steps.build.outcome == 'failure'
