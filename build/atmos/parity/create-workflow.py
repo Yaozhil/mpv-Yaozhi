@@ -8,7 +8,22 @@ args=parser.parse_args()
 root=Path(__file__).resolve().parents[3]
 text=args.main_workflow.read_text(encoding='utf-8')
 start=text.index('permissions:')
-text='name: "Build V1.0.0 main and Atmos parity candidates"\n\non:\n  workflow_dispatch:\n\n'+text[start:]
+text='''name: "Build V1.0.0 main and Atmos parity candidates"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/v100-core-parity-20260907]
+    paths:
+      - .github/workflows/build-mpv-v100-parity.yml
+      - build/atmos/**
+      - build/bluray-menu/patches/**
+
+concurrency:
+  group: v100-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+'''+text[start:]
 text=text.replace('  build:\n    runs-on:', '''  build:
     strategy:
       fail-fast: false
@@ -103,7 +118,7 @@ text+='''
 '''
 path=root/'.github/workflows/build-mpv-v100-parity.yml'
 path.write_text(text,encoding='utf-8',newline='\n')
-assert "workflow_dispatch:" in text and '\n  push:' not in text
+assert "workflow_dispatch:" in text and 'branches: [codex/v100-core-parity-20260907]' in text
 assert "'vapoursynth'" in text and "'win32-smtc'" in text and 'verify-fel.ps1' in text
 assert text.count('variant: [main, atmos]')==2
-print('PARITY_WORKFLOW_PREPARED manual_dispatch_only=true')
+print('PARITY_WORKFLOW_PREPARED push_scoped_to_candidate_branch=true')

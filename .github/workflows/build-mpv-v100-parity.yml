@@ -2,6 +2,16 @@ name: "Build V1.0.0 main and Atmos parity candidates"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/v100-core-parity-20260907]
+    paths:
+      - .github/workflows/build-mpv-v100-parity.yml
+      - build/atmos/**
+      - build/bluray-menu/patches/**
+
+concurrency:
+  group: v100-parity-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
