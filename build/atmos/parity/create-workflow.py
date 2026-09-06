@@ -35,6 +35,8 @@ text=text.replace('name: mpv-bluray-menu-smtc-c318236-x86_64','name: mpv-v100-${
 text=text.replace('name: mpv-hdr-pgs-build-logs','name: mpv-v100-${{ matrix.variant }}-build-logs')
 text=text.replace("hashFiles('.github/workflows/build-mpv-hdr-pgs.yml',", "hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**',")
 text=text.replace('key: mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-', 'key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-',1)
+text=text.replace('          restore-keys: |\n',
+                  '          restore-keys: |\n            mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-\n',1)
 anchor='      - name: Restore reusable build cache\n'
 assert text.count(anchor)==1
 prepare='''      - name: Check out pinned ASIO headers
@@ -98,13 +100,16 @@ text+='''
         uses: dtolnay/rust-toolchain@stable
       - name: Build renderer
         working-directory: omniphony-renderer
-        run: cargo build --locked --profile release-deploy -p orender_ffi
+        run: |
+          cargo generate-lockfile
+          cargo build --locked --profile release-deploy -p orender_ffi
       - name: Package renderer
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item -LiteralPath omniphony-renderer/target/release-deploy/orender.dll -Destination out/
           Copy-Item -LiteralPath omniphony-renderer/orender_ffi/include/orender.h -Destination out/
+          Copy-Item -LiteralPath omniphony-renderer/Cargo.lock -Destination out/Cargo.lock
           Get-ChildItem -File -Filter 'LICENSE*' | Copy-Item -Destination out/
           Get-ChildItem -LiteralPath out -File | Get-FileHash -Algorithm SHA256 |
             Select-Object Hash,Path | ConvertTo-Json | Set-Content out/SHA256.json

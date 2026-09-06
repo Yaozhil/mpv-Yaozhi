@@ -17,6 +17,8 @@ lock=json.loads((here/'source-lock.json').read_text(encoding='utf-8'))
 packages=args.winbuild.resolve()/'packages'
 for name,digest in lock['patches'].items():
     assert hashlib.sha256((here/name).read_bytes()).hexdigest()==digest, name
+for name,digest in lock['common_patches'].items():
+    assert hashlib.sha256((root/name).read_bytes()).hexdigest()==digest, name
 mpv=packages/'mpv.cmake'
 text=mpv.read_text()
 for required in ['-Dwin32-smtc=enabled','-Dlibcurl=enabled','-Dsdl2-audio=enabled','mpv-*.patch']:
@@ -30,6 +32,10 @@ if args.variant=='atmos':
     shutil.copyfile(here/'mpv-9100-omniphony-parity.patch',packages/'mpv-9100-omniphony-parity.patch')
     text=text.replace(anchor,anchor+options,1)
 mpv.write_text(text)
+# Common player-side HDMV transition fix, after the shared main patch and
+# before the independent Atmos decoder patch. Both variants must carry it.
+shutil.copyfile(root/'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch',
+                packages/'mpv-9001-hdmv-overlay-video-ready.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'

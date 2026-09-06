@@ -646,6 +646,7 @@ jobs:
             .ccache
           key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
           restore-keys: |
+            mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
       - name: Reset cached patched sources before building
@@ -1324,13 +1325,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build renderer
         working-directory: omniphony-renderer
-        run: cargo build --locked --profile release-deploy -p orender_ffi
+        run: |
+          cargo generate-lockfile
+          cargo build --locked --profile release-deploy -p orender_ffi
       - name: Package renderer
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item -LiteralPath omniphony-renderer/target/release-deploy/orender.dll -Destination out/
           Copy-Item -LiteralPath omniphony-renderer/orender_ffi/include/orender.h -Destination out/
+          Copy-Item -LiteralPath omniphony-renderer/Cargo.lock -Destination out/Cargo.lock
           Get-ChildItem -File -Filter 'LICENSE*' | Copy-Item -Destination out/
           Get-ChildItem -LiteralPath out -File | Get-FileHash -Algorithm SHA256 |
             Select-Object Hash,Path | ConvertTo-Json | Set-Content out/SHA256.json

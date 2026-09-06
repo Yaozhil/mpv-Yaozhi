@@ -1,5 +1,5 @@
 {
-  "status": "source-prepared-not-built",
+  "status": "ci-candidate-under-validation",
   "mpv_base": "c318236b8882af860f16f936225430ad053a2179",
   "main_patch_count": 17,
   "omniphony_integration": "6b474e387d30fabec8927880a25075f288d675d3",
@@ -16,5 +16,9 @@
     "9001 is superseded: main keeps both unknown input and output layouts unspecified and preserves native_equal_layout.",
     "LF normalization affects patch transport only; upstream workflow files are excluded.",
     "No Atmos executable, launcher, engine, bridge or user configuration has been replaced."
-  ]
+  ],
+  "common_patches": {
+    "build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch": "fd04667a1cfb6f6f893655426a6c94c9bb8bac1a6b4c7b92a1d4f3161e5369b1",
+    "build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch": "7a0b500fc8161651ee5b00d85c4c4bb08ef7a220d23110c10f0ed604e7087f7f"
+  }
 }
