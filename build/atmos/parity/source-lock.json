@@ -1,0 +1,20 @@
+{
+  "status": "source-prepared-not-built",
+  "mpv_base": "c318236b8882af860f16f936225430ad053a2179",
+  "main_patch_count": 17,
+  "omniphony_integration": "6b474e387d30fabec8927880a25075f288d675d3",
+  "engine_version": "v0.5.2",
+  "engine_commit": "f9a79721af64ad9c39042d4deded158b568fc598",
+  "asio_sdk_commit": "496a0765b8bb9c26f764f22f9a9712a937177db2",
+  "libbluray_commit": "065247e5ef40ccf39857db81e2c1368354a23ef8",
+  "patches": {
+    "main-core.patch": "75169a4a84a030bca9efb1cca627d8f643b447f81e11eee85e6fbce65c3431aa",
+    "mpv-9100-omniphony-parity.patch": "bf80b91ecf8deaec64a1640ae2f84be7b44d23f54ce99db278bba1dbadb4d273"
+  },
+  "integration_notes": [
+    "0012/0015 preserve main VDCTRL_SET_EXTRA_HW_FRAMES while adding/removing the temporary fallback enum.",
+    "9001 is superseded: main keeps both unknown input and output layouts unspecified and preserves native_equal_layout.",
+    "LF normalization affects patch transport only; upstream workflow files are excluded.",
+    "No Atmos executable, launcher, engine, bridge or user configuration has been replaced."
+  ]
+}

@@ -1,0 +1,1786 @@
+From 12f93e392264791d1a826921ac9292c8e4383798 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Wed, 26 Aug 2026 23:30:00 +0800
+Subject: [PATCH 01/16] [Luna] prepare Blu-ray menu and metadata candidate
+
+---
+ DOCS/interface-changes.rst   |  1 +
+ DOCS/man/options.rst         | 13 ++++++++++++
+ audio/chmap_avchannel.c      | 23 ++++++++++++++++++++-
+ audio/out/ao_pcm.c           |  8 +++++++-
+ audio/out/ao_sdl.c           | 16 +++++++++++++++
+ audio/out/ao_wasapi_utils.c  |  7 +++----
+ demux/demux_lavf.c           |  3 +++
+ demux/dovi_split.c           |  3 +++
+ demux/stheader.h             |  3 +++
+ filters/f_enhancement_pair.c |  6 ++++--
+ filters/f_swresample.c       | 19 +++++++++++++++---
+ player/command.c             |  1 +
+ test/chmap.c                 | 25 +++++++++++++++++++++++
+ video/decode/vd_lavc.c       |  9 ++++++++-
+ video/mp_image.c             |  7 +++++++
+ video/mp_image.h             |  2 ++
+ video/out/vo_gpu_next.c      | 39 +++++++++++++++++++++++++++++++-----
+ 17 files changed, 168 insertions(+), 17 deletions(-)
+
+diff --git a/DOCS/interface-changes.rst b/DOCS/interface-changes.rst
+index 230a5b5..8cc7b59 100644
+--- a/DOCS/interface-changes.rst
++++ b/DOCS/interface-changes.rst
+@@ -81,6 +81,7 @@ Interface changes
+     - add `--sub-bitmap-max-size`
+     - add `--osd-shaper`
+     - add `--input-tablet-emulate-mouse` option
++    - [Luna] add `--image-subs-colorspace` option
+     - add `--image-subs-hdr-peak` option
+     - add `--hwdec-threads`
+     - add `--hdr-reference-white`
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+index 249f53a..f82549f 100644
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -2855,9 +2855,22 @@ Subtitles
+     ``video-dynamic`` uses only per-scene video metadata,
+     ``video-static`` uses only static video metadata, (``--vo=gpu-next`` only)
+ 
++    [Luna] Numeric values and ``sdr`` also control the diffuse white level
++    when ``--image-subs-colorspace`` selects SDR sRGB. The video metadata
++    modes fall back to standard SDR white in that path.
++
+     This also affects image subtitle brightness in HDR tone mapping with
+     ``--blend-subtitles=<yes|video>``.
+ 
++``--image-subs-colorspace=<video|sdr|auto>``
++    [Luna] Controls the color space assigned to image subtitles such as PGS,
++    VobSub, and DVB subtitles (``--vo=gpu-next`` only). ``video`` preserves
++    the historical behavior and inherits the video color space. ``sdr``
++    treats image subtitles as independent SDR/sRGB graphics. ``auto`` uses
++    SDR/sRGB for HDR video and the historical behavior for SDR video. The
++    default is ``video``. This option does not affect text subtitles, OSD, or
++    the video itself.
++
+ ``--sub-hdr-peak=<auto|sdr|10-10000>``
+     Controls the text subtitle and OSD diffuse white level in cd/m² (nits)
+     for HDR output (default: auto). In ``auto`` mode, subtitles and OSD follow
+diff --git a/audio/chmap_avchannel.c b/audio/chmap_avchannel.c
+index ebf33bd..0efe9c9 100644
+--- a/audio/chmap_avchannel.c
++++ b/audio/chmap_avchannel.c
+@@ -33,8 +33,29 @@ bool mp_chmap_from_av_layout(struct mp_chmap *dst, const AVChannelLayout *src)
+     case AV_CHANNEL_ORDER_NATIVE:
+         mp_chmap_from_lavc(dst, src->u.mask);
+         return dst->num == src->nb_channels;
++    case AV_CHANNEL_ORDER_CUSTOM:
++        if (src->nb_channels <= 0 || src->nb_channels > MP_NUM_CHANNELS)
++            return false;
++
++        dst->num = src->nb_channels;
++        for (int n = 0; n < src->nb_channels; n++) {
++            enum AVChannel channel = src->u.map[n].id;
++
++            if (channel >= 0 && channel < 64) {
++                dst->speaker[n] = channel;
++            } else {
++                // Preserve unsupported object/HOA transport channels by
++                // position instead of rejecting, reordering, or downmixing.
++                dst->speaker[n] = MP_SPEAKER_ID_NA;
++            }
++        }
++        return mp_chmap_is_valid(dst);
++    case AV_CHANNEL_ORDER_AMBISONIC:
++        // mp_chmap cannot express ACN/SN3D semantics. Keep the transport
++        // channel count and order without pretending these are speakers.
++        mp_chmap_set_unknown(dst, src->nb_channels);
++        return dst->num == src->nb_channels;
+     default:
+-        // TODO: handle custom layouts
+         return false;
+     }
+ }
+diff --git a/audio/out/ao_pcm.c b/audio/out/ao_pcm.c
+index 585b1ef..323fd89 100644
+--- a/audio/out/ao_pcm.c
++++ b/audio/out/ao_pcm.c
+@@ -143,7 +143,13 @@ static int init(struct ao *ao)
+     }
+ 
+     struct mp_chmap_sel sel = {0};
+-    mp_chmap_sel_add_waveext(&sel);
++    if (priv->waveheader) {
++        mp_chmap_sel_add_waveext(&sel);
++    } else {
++        // Raw PCM has no channel mask. Preserve unknown/object/HOA transport
++        // channel order instead of forcing a speaker layout and resampling.
++        mp_chmap_sel_add_any(&sel);
++    }
+     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
+         return -1;
+ 
+diff --git a/audio/out/ao_sdl.c b/audio/out/ao_sdl.c
+index 5fa8ebb..3c81843 100644
+--- a/audio/out/ao_sdl.c
++++ b/audio/out/ao_sdl.c
+@@ -104,6 +104,22 @@ static int init(struct ao *ao)
+     }
+ 
+     struct mp_chmap_sel sel = {0};
++#ifdef _WIN32
++    // SDL exposes only a channel count.  Keep these layouts explicit so mpv
++    // does not downmix them to 7.1 before the patched WASAPI backend applies
++    // its matching WAVEFORMATEXTENSIBLE speaker mask.
++    struct mp_chmap spatial_layout;
++    if (mp_chmap_from_str(&spatial_layout,
++                          bstr0("fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr")))
++    {
++        mp_chmap_sel_add_map(&sel, &spatial_layout);
++    }
++    if (mp_chmap_from_str(&spatial_layout,
++                          bstr0("fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr")))
++    {
++        mp_chmap_sel_add_map(&sel, &spatial_layout);
++    }
++#endif
+     mp_chmap_sel_add_waveext_def(&sel);
+     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels)) {
+         uninit(ao);
+diff --git a/audio/out/ao_wasapi_utils.c b/audio/out/ao_wasapi_utils.c
+index a1e116b..b8a7f40 100644
+--- a/audio/out/ao_wasapi_utils.c
++++ b/audio/out/ao_wasapi_utils.c
+@@ -203,11 +203,10 @@ static void set_waveformat(WAVEFORMATEXTENSIBLE *wformat,
+     uint64_t chans = mp_chmap_to_waveext(channels);
+     wformat->dwChannelMask = chans;
+ 
+-    if (wformat->Format.nChannels > 8 || wformat->dwChannelMask != chans) {
+-        // IAudioClient::IsFormatSupported tend to fallback to stereo for closest
+-        // format match when there are more channels. Remix to standard layout.
+-        // Also if input channel mask has channels outside 32-bits override it
++    if (wformat->dwChannelMask != chans) {
++        // If the input channel mask has channels outside 32 bits, override it
+         // and hope for the best...
++        // Representable layouts above 8 channels are probed as-is.
+         wformat->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
+         wformat->Format.nChannels = 8;
+     }
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 1be7731..1beebee 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1326,6 +1326,9 @@ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+     bl_sh->group = group;
+     el_sh->group = group;
+     el_sh->dependent_track = true;
++    // [Luna] The group is an explicit lavf relation, so retain the EL marker
++    // when the disc/container demuxer mirrors this topology.
++    el_sh->codec->dovi_el_only = true;
+ }
+ #endif
+ 
+diff --git a/demux/dovi_split.c b/demux/dovi_split.c
+index cfe2718..70b744e 100644
+--- a/demux/dovi_split.c
++++ b/demux/dovi_split.c
+@@ -114,6 +114,9 @@ struct mp_dovi_split *mp_dovi_split_create(struct demuxer *demuxer,
+         el->codec->dv_el_present = cfg->el_present_flag;
+         break;
+     }
++    // [Luna] Keep the split EL eligible for seek recovery without changing
++    // ordinary HEVC or selectable base-layer decoder policy.
++    el->codec->dovi_el_only = true;
+     el->title = talloc_strdup(el, "Dolby Vision enhancement layer");
+     el->dependent_track = true;
+ 
+diff --git a/demux/stheader.h b/demux/stheader.h
+index 18f274a..85806f4 100644
+--- a/demux/stheader.h
++++ b/demux/stheader.h
+@@ -177,6 +177,9 @@ struct mp_codec_params {
+     uint8_t dv_profile;
+     uint8_t dv_level;
+     bool dv_el_present;     // BL and EL interleaved in this stream (Profile 7)
++    // [Luna] Standalone/virtual Profile 7 enhancement layer.  This is only
++    // set when the stream relation is explicitly declared by the demuxer.
++    bool dovi_el_only;
+ 
+     // STREAM_VIDEO + STREAM_AUDIO
+     int bits_per_coded_sample;
+diff --git a/filters/f_enhancement_pair.c b/filters/f_enhancement_pair.c
+index 7b74d10..a00a9ae 100644
+--- a/filters/f_enhancement_pair.c
++++ b/filters/f_enhancement_pair.c
+@@ -163,9 +163,11 @@ static void pair_process(struct mp_filter *f)
+ 
+         // No EL match for the oldest BL. Hold BL unless we have affirmative
+         // evidence no EL is coming.
++        // [Luna] A full BL queue is not proof that a delayed EL will never
++        // arrive (notably after a seek).  Keep waiting until EOF or an
++        // affirmative newer-EL ordering signal is observed.
+         bool give_up = p->el_eof ||
+-                       (p->num_el_pending > 0 && cmp > 0) ||
+-                       (p->num_bl_pending >= QUEUE_MAX && p->el_seen);
++                       (p->num_el_pending > 0 && cmp > 0);
+         if (!give_up)
+             return;
+ 
+diff --git a/filters/f_swresample.c b/filters/f_swresample.c
+index 56ff62d..2388934 100644
+--- a/filters/f_swresample.c
++++ b/filters/f_swresample.c
+@@ -155,11 +155,16 @@ static bool configure_lavrr(struct priv *p, bool verbose)
+     struct mp_chmap map_in = p->in_channels;
+     struct mp_chmap map_out = p->out_channels;
+ 
++    bool native_equal_layout =
++        !mp_chmap_is_unknown(&map_in) &&
++        mp_chmap_equals(&map_in, &map_out) &&
++        mp_chmap_is_lavc(&map_in);
++
+     // Try not to do any remixing if at least one is "unknown". Some corner
+     // cases also benefit from disabling all channel handling logic if the
+     // src/dst layouts are the same (like fl-fr-na -> fl-fr-na).
+     if (mp_chmap_is_unknown(&map_in) || mp_chmap_is_unknown(&map_out) ||
+-        mp_chmap_equals(&map_in, &map_out))
++        (mp_chmap_equals(&map_in, &map_out) && !native_equal_layout))
+     {
+         mp_chmap_set_unknown(&map_in, map_in.num);
+         mp_chmap_set_unknown(&map_out, map_out.num);
+@@ -217,8 +222,16 @@ static bool configure_lavrr(struct priv *p, bool verbose)
+         mp_aframe_set_chmap(p->pool_fmt, &map_out);
+ 
+     AVChannelLayout in_layout, out_layout;
+-    mp_chmap_to_av_layout_custom(&in_layout, &map_in);
+-    mp_chmap_to_av_layout(&out_layout, &out_lavc);
++    if (native_equal_layout) {
++        mp_chmap_to_av_layout(&in_layout, &map_in);
++    } else {
++        mp_chmap_to_av_layout_custom(&in_layout, &map_in);
++    }
++    if (mp_chmap_is_unknown(&map_out)) {
++        mp_chmap_to_av_layout(&out_layout, &map_out);
++    } else {
++        mp_chmap_to_av_layout(&out_layout, &out_lavc);
++    }
+     av_opt_set_chlayout(p->avrctx, "in_chlayout",  &in_layout, 0);
+     av_opt_set_chlayout(p->avrctx, "out_chlayout", &out_layout, 0);
+     av_channel_layout_uninit(&in_layout);
+diff --git a/player/command.c b/player/command.c
+index 18220ad..70f4190 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -2605,6 +2605,7 @@ static int property_imgparams(const struct mp_image_params *p, int action, void
+         {"scene-max-g", SUB_PROP_FLOAT(hdr->scene_max[1]), .unavailable = !has_hdr10plus},
+         {"scene-max-b", SUB_PROP_FLOAT(hdr->scene_max[2]), .unavailable = !has_hdr10plus},
+         {"scene-avg",   SUB_PROP_FLOAT(hdr->scene_avg),    .unavailable = !has_hdr10plus},
++        {"hdr-vivid",   SUB_PROP_BOOL(p->hdr_vivid)},
+         {"max-pq-y",    SUB_PROP_FLOAT(hdr->max_pq_y),     .unavailable = !has_cie_y},
+         {"avg-pq-y",    SUB_PROP_FLOAT(hdr->avg_pq_y),     .unavailable = !has_cie_y},
+         {"prim-red-x",   SUB_PROP_FLOAT(hdr->prim.red.x),  .unavailable = !custom_prim },
+diff --git a/test/chmap.c b/test/chmap.c
+index d6b69d2..f89575f 100644
+--- a/test/chmap.c
++++ b/test/chmap.c
+@@ -149,6 +149,30 @@ static void test_av_channel_layout_to_mp_chmap(void)
+     assert_false(anything_failed);
+ }
+ 
++static void test_non_native_av_channel_layouts(void)
++{
++    struct mp_chmap mp_layout = {0};
++    AVChannelLayout custom_layout = {0};
++
++    assert_int_equal(av_channel_layout_custom_init(&custom_layout, 4), 0);
++    custom_layout.u.map[0].id = AV_CHAN_FRONT_LEFT;
++    custom_layout.u.map[1].id = AV_CHAN_FRONT_RIGHT;
++    custom_layout.u.map[2].id = AV_CHAN_UNKNOWN;
++    custom_layout.u.map[3].id = AV_CHAN_UNKNOWN;
++
++    assert_true(mp_chmap_from_av_layout(&mp_layout, &custom_layout));
++    assert_string_equal(mp_chmap_to_str(&mp_layout), "fl-fr-na-na");
++    av_channel_layout_uninit(&custom_layout);
++
++    AVChannelLayout ambisonic_layout = {
++        .order = AV_CHANNEL_ORDER_AMBISONIC,
++        .nb_channels = 4,
++    };
++
++    assert_true(mp_chmap_from_av_layout(&mp_layout, &ambisonic_layout));
++    assert_string_equal(mp_chmap_to_str(&mp_layout), "unknown4");
++}
++
+ int main(void)
+ {
+     struct mp_chmap a;
+@@ -207,6 +231,7 @@ int main(void)
+ 
+     test_av_channel_layout_to_mp_chmap();
+     test_mp_chmap_to_av_channel_layout();
++    test_non_native_av_channel_layouts();
+ 
+     return 0;
+ }
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+index 6ecb233..e0a06f4 100644
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -823,8 +823,15 @@ static void init_avctx(struct mp_filter *vd)
+     avctx->flags |= lavc_param->bitexact ? AV_CODEC_FLAG_BITEXACT : 0;
+     avctx->flags2 |= lavc_param->fast ? AV_CODEC_FLAG2_FAST : 0;
+ 
+-    if (lavc_param->show_all)
++    // [Luna] Profile 7 EL pictures can reference pre-seek frames.  Recover
++    // only explicitly paired EL streams; ordinary video keeps the default
++    // corruption policy.
++    bool recover_dovi_el = c->dovi && c->dv_profile == 7 && c->dovi_el_only;
++    if (lavc_param->show_all || recover_dovi_el)
+         avctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
++    if (recover_dovi_el)
++        MP_VERBOSE(vd, "Dolby Vision Profile 7 enhancement layer: enabled "
++                       "complete seek recovery.\n");
+ 
+     avctx->skip_loop_filter = lavc_param->skip_loop_filter;
+     avctx->skip_idct = lavc_param->skip_idct;
+diff --git a/video/mp_image.c b/video/mp_image.c
+index 1ce0555..48f4886 100644
+--- a/video/mp_image.c
++++ b/video/mp_image.c
+@@ -561,6 +561,7 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
+     dst->params.primaries_orig = src->params.primaries_orig;
+     dst->params.transfer_orig = src->params.transfer_orig;
+     dst->params.sys_orig = src->params.sys_orig;
++    dst->params.hdr_vivid = src->params.hdr_vivid;
+     dst->params.no_dovi = src->params.no_dovi;
+     dst->params.no_enhancement_layer = src->params.no_enhancement_layer;
+ 
+@@ -881,6 +882,7 @@ bool mp_image_params_equal(const struct mp_image_params *p1,
+            p1->vflip == p2->vflip &&
+            p1->rotate == p2->rotate &&
+            p1->stereo3d == p2->stereo3d &&
++           p1->hdr_vivid == p2->hdr_vivid &&
+            mp_rect_equals(&p1->crop, &p2->crop);
+ }
+ 
+@@ -892,6 +894,7 @@ bool mp_image_params_static_equal(const struct mp_image_params *p1,
+     struct mp_image_params b = *p2;
+     a.repr.dovi = b.repr.dovi = NULL;
+     a.color.hdr = b.color.hdr = (struct pl_hdr_metadata){0};
++    a.hdr_vivid = b.hdr_vivid = false;
+     return mp_image_params_equal(&a, &b);
+ }
+ 
+@@ -900,6 +903,7 @@ void mp_image_params_update_dynamic(struct mp_image_params *dst,
+                                     bool has_peak_detect_values)
+ {
+     dst->repr.dovi = src->repr.dovi;
++    dst->hdr_vivid = src->hdr_vivid;
+     // Don't overwrite peak-detected HDR metadata if available.
+     float max_pq_y = dst->color.hdr.max_pq_y;
+     float avg_pq_y = dst->color.hdr.avg_pq_y;
+@@ -1136,6 +1140,7 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
+         dst->params.light = p->light;
+         dst->params.no_dovi = p->no_dovi;
+         dst->params.no_enhancement_layer = p->no_enhancement_layer;
++        dst->params.hdr_vivid = p->hdr_vivid;
+ #if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 11, 100)
+         dst->params.repr.alpha = p->repr.alpha;
+ #endif
+@@ -1167,6 +1172,8 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
+     AVFrameSideData *mdm = av_frame_get_side_data(src, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+     AVFrameSideData *clm = av_frame_get_side_data(src, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+     AVFrameSideData *dhp = av_frame_get_side_data(src, AV_FRAME_DATA_DYNAMIC_HDR_PLUS);
++    dst->params.hdr_vivid = dst->params.hdr_vivid ||
++        av_frame_get_side_data(src, AV_FRAME_DATA_DYNAMIC_HDR_VIVID);
+     pl_map_hdr_metadata(&dst->params.color.hdr, &(struct pl_av_hdr_metadata) {
+         .mdm = (void *)(mdm ? mdm->data : NULL),
+         .clm = (void *)(clm ? clm->data : NULL),
+diff --git a/video/mp_image.h b/video/mp_image.h
+index f5c1562..879bc0d 100644
+--- a/video/mp_image.h
++++ b/video/mp_image.h
+@@ -63,6 +63,8 @@ struct mp_image_params {
+     int rotate;
+     enum mp_stereo3d_mode stereo3d; // image is encoded with this mode
+     struct mp_rect crop;        // crop applied on image
++    // Decoded frame carries HDR Vivid dynamic metadata.
++    bool hdr_vivid;
+     // Flags for f_enhancement_pair.c to not inherit flags from EL.
+     bool no_dovi;
+     bool no_enhancement_layer;
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 5b79c2b..26e3227 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -175,10 +175,19 @@ struct priv {
+ static void update_render_options(struct vo *vo);
+ static void update_lut(struct priv *p, struct user_lut *lut);
+ 
++// [Luna] Keep image-subtitle color handling available to the shared package
++// when migrating the core past the upstream Blu-ray menu merge.
++enum image_subs_colorspace_mode {
++    IMAGE_SUBS_COLORSPACE_VIDEO,
++    IMAGE_SUBS_COLORSPACE_SDR,
++    IMAGE_SUBS_COLORSPACE_AUTO,
++};
++
+ struct gl_next_opts {
+     bool delayed_peak;
+     int sub_hdr_peak;
+     int image_subs_hdr_peak;
++    int image_subs_colorspace;
+     int border_background;
+     float background_blur_radius;
+     float corner_rounding;
+@@ -207,6 +216,10 @@ const struct m_sub_options gl_next_conf = {
+             M_RANGE(10, 10000)},
+         {"image-subs-hdr-peak", OPT_CHOICE(image_subs_hdr_peak, {"sdr", PL_COLOR_SDR_WHITE},
+             {"video", -1}, {"video-static", -2}, {"video-dynamic", -3}),  M_RANGE(10, 10000)},
++        {"image-subs-colorspace", OPT_CHOICE(image_subs_colorspace,
++            {"video", IMAGE_SUBS_COLORSPACE_VIDEO},
++            {"sdr", IMAGE_SUBS_COLORSPACE_SDR},
++            {"auto", IMAGE_SUBS_COLORSPACE_AUTO})},
+         {"allow-delayed-peak-detect", OPT_BOOL(delayed_peak)},
+         {"border-background", OPT_CHOICE(border_background,
+             {"none",  BACKGROUND_NONE},
+@@ -233,6 +246,7 @@ const struct m_sub_options gl_next_conf = {
+         .background_blur_radius = 16.0f,
+         .inter_preserve = true,
+         .image_subs_hdr_peak = 1000,
++        .image_subs_colorspace = IMAGE_SUBS_COLORSPACE_VIDEO,
+         .target_hint = -1,
+         .target_hint_strict = true,
+     },
+@@ -381,9 +395,18 @@ static struct pl_color_space bgra_overlay_color(struct priv *p,
+ {
+     struct pl_color_space color = pl_color_space_srgb;
+ 
+-    if (src && (item->video_color_space || b->bgra.video_color_space)) {
+-        // Muxed image subtitles and overlays tagged with video_colorspace
+-        // are in the video's colorspace
++    bool tagged_video = src && (item->video_color_space || b->bgra.video_color_space);
++    bool hdr_video = src && pl_color_transfer_is_hdr(src->params.color.transfer);
++    bool use_video_colorspace = tagged_video || (src &&
++        (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_VIDEO ||
++         (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_AUTO &&
++          !hdr_video)));
++    bool force_sdr = p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_SDR ||
++        (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_AUTO &&
++         src && hdr_video);
++
++    if (src && use_video_colorspace) {
++        // [Luna] Preserve explicit video tags and the historical video mode.
+         color = src->params.color;
+         if (pl_color_transfer_is_hdr(color.transfer)) {
+             // Don't apply `image_subs_hdr_peak` for overlays.
+@@ -409,14 +432,20 @@ static struct pl_color_space bgra_overlay_color(struct priv *p,
+         } else if (ref_luma) {
+             color.hdr.max_luma = ref_luma;
+         }
+-    } else {
+-        // sRGB, unless tagged explicitly
++    } else if (!force_sdr) {
++        // sRGB, unless tagged explicitly or the selected mode follows video.
+         if (b->bgra.primaries)
+             color.primaries = b->bgra.primaries;
+         if (b->bgra.transfer)
+             color.transfer = b->bgra.transfer;
+         if (!pl_color_transfer_is_hdr(color.transfer) && ref_luma)
+             color.hdr.max_luma = ref_luma;
++    } else {
++        // [Luna] Explicit SDR mode (and auto mode on HDR video) treats image
++        // subtitles as independent sRGB graphics.
++        color = pl_color_space_srgb;
++        int peak = p->next_opts->image_subs_hdr_peak;
++        color.hdr.max_luma = peak >= 10 ? peak : PL_COLOR_SDR_WHITE;
+     }
+ 
+     // Explicit luminance peak overrides every other metadata
+-- 
+2.54.0.windows.1
+
+
+From 7b5765263ed800576ff61bea27dc31344143c7f9 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Thu, 27 Aug 2026 00:53:17 +0800
+Subject: [PATCH 02/16] [Luna] preserve subtitle cache and remote Blu-ray ISO
+
+---
+ demux/demux.c          | 74 +++++++++++++++++++++++++++++++-
+ demux/demux.h          |  2 +
+ demux/demux_disc.c     | 14 +++++-
+ demux/demux_lavf.c     | 23 ++++++++++
+ demux/demux_mkv.c      | 34 ++++++++++++++-
+ stream/stream_bluray.c | 96 +++++++++++++++++++++++++++++++++++++++---
+ 6 files changed, 231 insertions(+), 12 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index 78c6b7e..2acaf37 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -401,6 +401,7 @@ struct demux_stream {
+ 
+     // demuxer state
+     bool selected;          // user wants packets from this stream
++    bool cache_inactive;    // [Luna] demuxer retains packets while unselected
+     bool eager;             // try to keep at least 1 packet queued
+                             // if false, this stream is disabled, or passively
+                             // read (like subtitles)
+@@ -967,7 +968,7 @@ static void update_stream_selection_state(struct demux_internal *in,
+     for (int n = 0; n < in->num_ranges; n++) {
+         struct demux_cached_range *range = in->ranges[n];
+ 
+-        if (!ds->selected)
++        if (!ds->selected && !ds->cache_inactive)
+             clear_queue(range->streams[ds->index]);
+ 
+         update_seek_ranges(range);
+@@ -2182,7 +2183,8 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+ 
+     struct demux_queue *queue = ds->queue;
+ 
+-    bool drop = !ds->selected || in->seeking || ds->sh->attached_picture;
++    bool drop = (!ds->selected && !ds->cache_inactive) || in->seeking ||
++                ds->sh->attached_picture;
+ 
+     if (!drop) {
+         // If libavformat splits packets, some packets will have pos unset, so
+@@ -4245,6 +4247,52 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+ {
+     struct demux_stream *ds = stream->ds;
+     ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
++    // [Luna] Subtitle selection asks for packets 10 seconds before playback.
++    // Keep that preroll for packet lookup, but test coverage at display time.
++    double cache_ref_pts = ref_pts;
++    if (ds->type == STREAM_SUB)
++        cache_ref_pts = MP_ADD_PTS(cache_ref_pts, 10.0);
++    struct demux_cached_range *range = in->current_range;
++    bool cache_covers_ref = range && ds->queue == range->streams[ds->index];
++    if (cache_covers_ref) {
++        double cache_start = range->seek_start != MP_NOPTS_VALUE
++            ? range->seek_start : ds->queue->seek_start;
++        bool starts_before_ref = range->is_bof ||
++            (cache_start != MP_NOPTS_VALUE && cache_ref_pts >= cache_start);
++        bool ends_after_ref = range->is_eof ||
++            (range->seek_end != MP_NOPTS_VALUE && cache_ref_pts <= range->seek_end);
++        ends_after_ref |= in->demux_ts != MP_NOPTS_VALUE &&
++                          in->demux_ts >= cache_ref_pts;
++        cache_covers_ref = starts_before_ref && ends_after_ref;
++    }
++    if (ds->cache_inactive && cache_covers_ref) {
++        double display_pts = ds->type == STREAM_SUB
++            ? MP_ADD_PTS(ref_pts, 10.0) : ref_pts;
++        struct demux_packet *target = NULL;
++        struct demux_packet *group_start = NULL;
++        double group_pts = MP_NOPTS_VALUE;
++        for (struct demux_packet *dp = ds->queue->head; dp; dp = dp->next) {
++            double pts = MP_PTS_OR_DEF(dp->pts, dp->dts);
++            if (pts == MP_NOPTS_VALUE)
++                continue;
++            if (!group_start || fabs(pts - group_pts) > 0.000001) {
++                group_start = dp;
++                group_pts = pts;
++            }
++            if (pts <= display_pts)
++                target = group_start;
++            else if (!target)
++                target = group_start;
++            if (pts > display_pts && target)
++                break;
++        }
++        ds->reader_head = target;
++        ds->eof = false;
++        ds->skip_to_keyframe = false;
++        MP_VERBOSE(in, "[Luna] using cached packets for stream %d at %f%s\n",
++                   stream->index, ref_pts, target ? "" : " (subtitle gap)");
++        return;
++    }
+ 
+     if (in->back_demuxing)
+         ds->back_seek_pos = ref_pts;
+@@ -4346,6 +4394,28 @@ bool demux_stream_is_selected(struct sh_stream *stream)
+     return r;
+ }
+ 
++void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled)
++{
++    if (!stream)
++        return;
++
++    struct demux_internal *in = stream->ds->in;
++    struct demux_stream *ds = stream->ds;
++    mp_mutex_lock(&in->lock);
++    if (ds->cache_inactive != enabled) {
++        ds->cache_inactive = enabled;
++        if (!enabled && !ds->selected) {
++            for (int n = 0; n < in->num_ranges; n++) {
++                struct demux_cached_range *range = in->ranges[n];
++                clear_queue(range->streams[ds->index]);
++                update_seek_ranges(range);
++            }
++            free_empty_cached_ranges(in);
++        }
++    }
++    mp_mutex_unlock(&in->lock);
++}
++
+ void demux_set_stream_wakeup_cb(struct sh_stream *sh,
+                                 void (*cb)(void *ctx), void *ctx)
+ {
+diff --git a/demux/demux.h b/demux/demux.h
+index 9ee332a..ac4d184 100644
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -307,6 +307,8 @@ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
+ int demux_read_packet_async_until(struct sh_stream *sh, double min_pts,
+                                   struct demux_packet **out_pkt);
+ bool demux_stream_is_selected(struct sh_stream *stream);
++// [Luna] Retain packets for an inactive, switchable embedded subtitle stream.
++void demuxer_set_stream_cache_inactive(struct sh_stream *stream, bool enabled);
+ void demux_set_stream_wakeup_cb(struct sh_stream *sh,
+                                 void (*cb)(void *ctx), void *ctx);
+ struct demux_packet *demux_read_any_packet(struct demuxer *demuxer);
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 5004fc1..bee7b54 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -165,8 +165,13 @@ static void reselect_streams(demuxer_t *demuxer)
+     int num_slave = demux_get_num_stream(p->slave);
+     for (int n = 0; n < num_slave && n < p->slave_to_outer_count; n++) {
+         struct sh_stream *outer = p->slave_to_outer[n];
+-        demuxer_select_track(p->slave, demux_get_stream(p->slave, n),
++        struct sh_stream *src = demux_get_stream(p->slave, n);
++        demuxer_select_track(p->slave, src,
+             MP_NOPTS_VALUE, outer && slave_stream_enabled(p, outer));
++        if (src && src->type == STREAM_SUB)
++            demuxer_set_stream_cache_inactive(src, true);
++        if (outer && outer->type == STREAM_SUB)
++            demuxer_set_stream_cache_inactive(outer, true);
+         if (!outer)
+             continue;
+         // A re-selected stream must not re-enter the timeline through its
+@@ -242,6 +247,7 @@ static void add_dvd_streams(demuxer_t *demuxer)
+             sh->codec->extradata_size = strlen(s);
+ 
+             demux_add_sh_stream(demuxer, sh);
++            demuxer_set_stream_cache_inactive(sh, true);
+         }
+     }
+ }
+@@ -387,6 +393,10 @@ static void sync_streams(struct demuxer *demuxer)
+         }
+ 
+         p->slave_to_outer[n] = outer;
++        if (src->type == STREAM_SUB) {
++            demuxer_set_stream_cache_inactive(src, true);
++            demuxer_set_stream_cache_inactive(outer, true);
++        }
+     }
+ 
+     // Outer demuxer may have seen PMT with track that is not longer present in
+@@ -971,7 +981,7 @@ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt
+     struct sh_stream *sh = slave_index < p->slave_to_outer_count
+                               ? p->slave_to_outer[slave_index] : NULL;
+     bool dvd_sub = sh && p->is_dvd && sh->type == STREAM_SUB;
+-    if (!sh || (!demux_stream_is_selected(sh) && !dvd_sub)) {
++    if (!sh || (!demux_stream_is_selected(sh) && sh->type != STREAM_SUB)) {
+         talloc_free(pkt);
+         return true;
+     }
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 1beebee..31ce973 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -606,11 +606,34 @@ static void guess_and_set_vobsub_name(struct demuxer *demuxer, AVDictionary **d)
+ static void select_tracks(struct demuxer *demuxer, int start)
+ {
+     lavf_priv_t *priv = demuxer->priv;
++    int switchable_subs = 0;
++
++    for (int n = 0; n < priv->num_streams; n++) {
++        struct sh_stream *stream = priv->streams[n]->sh;
++        if (stream && stream->type == STREAM_SUB && !stream->attached_picture)
++            switchable_subs++;
++    }
++
++    for (int n = 0; n < priv->num_streams; n++) {
++        struct sh_stream *stream = priv->streams[n]->sh;
++        if (stream && stream->type == STREAM_SUB) {
++            demuxer_set_stream_cache_inactive(
++                stream, switchable_subs > 1 && !stream->attached_picture);
++        }
++    }
++
+     for (int n = start; n < priv->num_streams; n++) {
+         struct sh_stream *stream = priv->streams[n]->sh;
+         AVStream *st = priv->avfc->streams[n];
+         bool selected = stream && demux_stream_is_selected(stream) &&
+                         !stream->attached_picture;
++        // [Luna] Read all embedded subtitle choices into the generic cache so
++        // switching at the current playback position does not refresh-seek.
++        if (switchable_subs > 1 && stream && stream->type == STREAM_SUB &&
++            !stream->attached_picture)
++        {
++            selected = true;
++        }
+         if (!selected && priv->streams[n]->dovi_split) {
+             struct sh_stream *el =
+                 mp_dovi_split_el_stream(priv->streams[n]->dovi_split);
+diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
+index e9159d7..daac048 100644
+--- a/demux/demux_mkv.c
++++ b/demux/demux_mkv.c
+@@ -223,6 +223,7 @@ typedef struct mkv_demuxer {
+     int v_skip_to_keyframe, a_skip_to_keyframe;
+     int a_skip_preroll;
+     int subtitle_preroll;
++    bool cache_inactive_subtitles;
+ 
+     bool index_has_durations;
+ 
+@@ -1570,6 +1571,7 @@ static void init_track(demuxer_t *demuxer, mkv_track_t *track,
+ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx);
+ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track, int idx);
+ static int demux_mkv_open_sub(demuxer_t *demuxer, mkv_track_t *track, int idx);
++static void update_inactive_subtitle_cache(demuxer_t *demuxer);
+ 
+ static void display_create_tracks(demuxer_t *demuxer)
+ {
+@@ -1588,6 +1590,32 @@ static void display_create_tracks(demuxer_t *demuxer)
+             break;
+         }
+     }
++
++    // [Luna] Enable before the first seek so preroll captures inactive tracks.
++    update_inactive_subtitle_cache(demuxer);
++}
++
++static void update_inactive_subtitle_cache(demuxer_t *demuxer)
++{
++    mkv_demuxer_t *mkv_d = demuxer->priv;
++    int num_subtitles = 0;
++
++    for (int n = 0; n < mkv_d->num_tracks; n++) {
++        mkv_track_t *track = mkv_d->tracks[n];
++        if (track->type == MATROSKA_TRACK_SUBTITLE && track->stream &&
++            !track->stream->attached_picture)
++            num_subtitles++;
++    }
++
++    mkv_d->cache_inactive_subtitles = num_subtitles > 1;
++    for (int n = 0; n < mkv_d->num_tracks; n++) {
++        mkv_track_t *track = mkv_d->tracks[n];
++        if (track->type == MATROSKA_TRACK_SUBTITLE && track->stream) {
++            demuxer_set_stream_cache_inactive(
++                track->stream, mkv_d->cache_inactive_subtitles &&
++                !track->stream->attached_picture);
++        }
++    }
+ }
+ 
+ static const char *const mkv_video_tags[][2] = {
+@@ -3123,7 +3151,11 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
+                                     ? mp_dovi_split_el_stream(track->dovi_split)
+                                     : NULL;
+     bool need_for_split = split_el && demux_stream_is_selected(split_el);
+-    if (!demux_stream_is_selected(stream) && !need_for_split)
++    bool cache_inactive_subtitle = track->type == MATROSKA_TRACK_SUBTITLE &&
++                                  !stream->attached_picture &&
++                                  mkv_d->cache_inactive_subtitles;
++    if (!demux_stream_is_selected(stream) && !need_for_split &&
++        !cache_inactive_subtitle)
+         return 0;
+ 
+     current_pts = tc / 1e9 - track->codec_delay;
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 04b2520..2fab01f 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -26,8 +26,9 @@
+  *
+  */
+ 
+-#include <string.h>
+ #include <assert.h>
++#include <limits.h>
++#include <string.h>
+ 
+ #include <libbluray/bluray.h>
+ #include <libbluray/meta_data.h>
+@@ -54,6 +55,7 @@
+ #include "video/mp_image.h"
+ 
+ #define BLURAY_SECTOR_SIZE     6144
++#define BLURAY_UDF_BLOCK_SIZE  2048
+ 
+ #define BLURAY_DEFAULT_ANGLE      0
+ #define BLURAY_DEFAULT_CHAPTER    0
+@@ -118,6 +120,9 @@ struct bd_overlay_plane {
+ 
+ struct bluray_priv_s {
+     BLURAY *bd;
++    stream_t *remote_stream;
++    mp_mutex remote_stream_lock;
++    bool remote_stream_lock_initialized;
+     struct mp_log *bluray_log;
+     bool probing;               // open is an .iso auto-detection probe
+     BLURAY_TITLE_INFO *title_info;
+@@ -163,6 +168,38 @@ struct bluray_priv_s {
+     bool sub_visible;
+ };
+ 
++static bool is_http_url(const char *device)
++{
++    return strncasecmp(device, "http://", 7) == 0 ||
++           strncasecmp(device, "https://", 8) == 0;
++}
++
++// [Luna] Present a seekable HTTP(S) ISO as libbluray's 2048-byte block device.
++// The seek/read pair is atomic because libbluray can call from multiple contexts.
++static int remote_read_blocks(void *handle, void *buf, int lba, int num_blocks)
++{
++    struct bluray_priv_s *priv = handle;
++    if (!priv->remote_stream || lba < 0 || num_blocks <= 0 ||
++        num_blocks > INT_MAX / BLURAY_UDF_BLOCK_SIZE)
++    {
++        return -1;
++    }
++
++    int64_t pos = (int64_t)lba * BLURAY_UDF_BLOCK_SIZE;
++    int bytes = num_blocks * BLURAY_UDF_BLOCK_SIZE;
++    int got = -1;
++
++    mp_mutex_lock(&priv->remote_stream_lock);
++    if (stream_seek(priv->remote_stream, pos)) {
++        int read = stream_read(priv->remote_stream, buf, bytes);
++        if (read > 0)
++            got = read / BLURAY_UDF_BLOCK_SIZE;
++    }
++    mp_mutex_unlock(&priv->remote_stream_lock);
++
++    return got;
++}
++
+ // Lazy (re-)allocation for an overlay plane's working+publish buffer pair.
+ static bool bd_overlay_ensure(struct bluray_priv_s *priv,
+                               struct bd_overlay_plane *p, int w, int h)
+@@ -471,6 +508,15 @@ static void bluray_stream_close(stream_t *s)
+             bd_register_argb_overlay_proc(priv->bd, NULL, NULL, NULL);
+         }
+         bd_close(priv->bd);
++        priv->bd = NULL;
++    }
++    if (priv->remote_stream) {
++        free_stream(priv->remote_stream);
++        priv->remote_stream = NULL;
++    }
++    if (priv->remote_stream_lock_initialized) {
++        mp_mutex_destroy(&priv->remote_stream_lock);
++        priv->remote_stream_lock_initialized = false;
+     }
+     mp_mutex_lock(&bluray_log_lock);
+     // If we created the global log, unset it.
+@@ -1213,13 +1259,49 @@ static int bluray_stream_open_internal(stream_t *s)
+     bd_set_debug_handler(bluray_logger);
+     mp_mutex_unlock(&bluray_log_lock);
+ 
+-    /* open device */
+-    char *device_tmp = mp_get_user_path(NULL, s->global, device);
+-    BLURAY *bd = bd_open(device_tmp, NULL);
+-    talloc_free(device_tmp);
++    // [Luna] Keep local devices on libbluray's native path. Only stable,
++    // seekable and block-aligned HTTP(S) images use the callback path.
++    BLURAY *bd = NULL;
++    if (is_http_url(device)) {
++        b->remote_stream = stream_create(device, STREAM_READ | s->stream_origin,
++                                         s->cancel, s->global);
++        if (!b->remote_stream || !b->remote_stream->seekable) {
++            MP_ERR(s, "Remote Blu-ray image is not seekable; the server must "
++                      "support HTTP byte ranges.\n");
++            ret = STREAM_UNSUPPORTED;
++            goto err;
++        }
++
++        int64_t size = stream_get_size(b->remote_stream);
++        if (size < BLURAY_UDF_BLOCK_SIZE || size % BLURAY_UDF_BLOCK_SIZE) {
++            MP_ERR(s, "Remote Blu-ray image has no stable block-aligned size.\n");
++            ret = STREAM_UNSUPPORTED;
++            goto err;
++        }
++
++        mp_mutex_init(&b->remote_stream_lock);
++        b->remote_stream_lock_initialized = true;
++        bd = bd_init();
++        if (bd && !bd_open_stream(bd, b, remote_read_blocks)) {
++            bd_close(bd);
++            bd = NULL;
++        }
++        if (bd) {
++            MP_INFO(s, "Opened seekable remote Blu-ray image (%" PRId64
++                       " bytes).\n", size);
++        }
++    } else {
++        char *device_tmp = mp_get_user_path(NULL, s->global, device);
++        bd = bd_open(device_tmp, NULL);
++        talloc_free(device_tmp);
++    }
+     if (!bd) {
+-        if (!b->probing)
+-            MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
++        if (!b->probing) {
++            if (is_http_url(device))
++                MP_ERR(s, "Couldn't open seekable remote Blu-ray image.\n");
++            else
++                MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
++        }
+         ret = STREAM_UNSUPPORTED;
+         goto err;
+     }
+-- 
+2.54.0.windows.1
+
+
+From b35c64915e37d8f65433e8fddfe24749e70271a0 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Thu, 27 Aug 2026 10:41:44 +0800
+Subject: [PATCH 03/16] [Luna] enable backported Dolby Vision stream groups
+
+---
+ demux/demux_lavf.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 31ce973..74c814e 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1316,7 +1316,8 @@ static void handle_lcevc_group(demuxer_t *demuxer, AVStreamGroup *stg)
+ }
+ #endif
+ 
+-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
++#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100) || \
++    LIBAVFORMAT_VERSION_INT == AV_VERSION_INT(62, 13, 102)
+ // Base layer + Enhancement layer separate track stream group
+ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+ {
+@@ -1387,7 +1388,11 @@ static void handle_stream_groups(demuxer_t *demuxer)
+             handle_lcevc_group(demuxer, stg);
+             break;
+ #endif
+-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
++#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100) || \
++    LIBAVFORMAT_VERSION_INT == AV_VERSION_INT(62, 13, 102)
++        // [Luna] The pinned private FFmpeg patch backports the public Dolby
++        // Vision layered-video stream-group API as lavf 62.13.102. Compile
++        // the normal upstream handler for that exact audited ABI as well.
+         case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
+             handle_layered_video_group(demuxer, stg);
+             break;
+-- 
+2.54.0.windows.1
+
+
+From ecbc368b546df493889e5adbfb9b93b97a4ca815 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Thu, 27 Aug 2026 12:02:06 +0800
+Subject: [PATCH 04/16] [Luna] expose Profile 7 metadata on paired base layer
+
+---
+ demux/demux_lavf.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 74c814e..c19b92e 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1350,6 +1350,16 @@ static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+     bl_sh->group = group;
+     el_sh->group = group;
+     el_sh->dependent_track = true;
++    // [Luna] Some dual-track containers store the Dolby Vision config record
++    // only on the dependent EL.  Mirror the descriptive profile/level onto
++    // the selectable BL so track-list/current-tracks and policy scripts can
++    // still identify Profile 7.  Do not copy dv_el_present: this group is an
++    // explicit two-stream relation, not an in-band BL+EL stream.
++    if (!bl_sh->codec->dovi && el_sh->codec->dovi) {
++        bl_sh->codec->dovi = true;
++        bl_sh->codec->dv_profile = el_sh->codec->dv_profile;
++        bl_sh->codec->dv_level = el_sh->codec->dv_level;
++    }
+     // [Luna] The group is an explicit lavf relation, so retain the EL marker
+     // when the disc/container demuxer mirrors this topology.
+     el_sh->codec->dovi_el_only = true;
+-- 
+2.54.0.windows.1
+
+
+From 5e45373252a01b3130c2b721ffb639056b60536b Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Thu, 27 Aug 2026 12:59:25 +0800
+Subject: [PATCH 05/16] expose Profile 7 metadata for authored Blu-ray
+
+---
+ demux/demux_disc.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index bee7b54..9c3f995 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -448,6 +448,27 @@ static void sync_streams(struct demuxer *demuxer)
+             MP_TARRAY_APPEND(grp, grp->members, grp->num_members, outer_member);
+             outer_member->group = grp;
+         }
++
++        // Blu-ray authored Dolby Vision stores the Profile 7 relation in the
++        // BL+EL topology even when the MPEG-TS codec parameters do not carry a
++        // configuration record. The lavf group handler has already marked the
++        // dependent member as a Dolby Vision-only enhancement layer, so this
++        // is narrower than guessing from PIDs or from two ordinary HEVC tracks.
++        // Mirror descriptive metadata only; do not change the pairing or claim
++        // an in-band enhancement layer on the selectable base stream.
++        if (p->is_bd && outer->type == STREAM_VIDEO &&
++            !outer->dependent_track && outer->codec && !outer->codec->dovi)
++        {
++            struct sh_stream *el = sh_stream_dependent_sibling(outer);
++            if (el && el->codec && el->codec->dovi_el_only) {
++                outer->codec->dovi = true;
++                outer->codec->dv_profile = 7;
++                outer->codec->dv_level = el->codec->dv_level;
++                MP_VERBOSE(demuxer, "Blu-ray Dolby Vision group: exposing "
++                           "Profile 7 metadata on base stream 0x%x\n",
++                           outer->demuxer_id);
++            }
++        }
+     }
+ }
+ 
+-- 
+2.54.0.windows.1
+
+
+From 17a33d5ebbfd4d953822c40f672608b9eb326945 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 14:38:07 +0800
+Subject: [PATCH 06/16] preserve Profile 7 recovery for authored Blu-ray
+
+---
+ demux/demux_disc.c | 24 +++++++++++++++++-------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 9c3f995..c9fc0b0 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -457,16 +457,26 @@ static void sync_streams(struct demuxer *demuxer)
+         // Mirror descriptive metadata only; do not change the pairing or claim
+         // an in-band enhancement layer on the selectable base stream.
+         if (p->is_bd && outer->type == STREAM_VIDEO &&
+-            !outer->dependent_track && outer->codec && !outer->codec->dovi)
++            !outer->dependent_track && outer->codec)
+         {
+             struct sh_stream *el = sh_stream_dependent_sibling(outer);
+             if (el && el->codec && el->codec->dovi_el_only) {
+-                outer->codec->dovi = true;
+-                outer->codec->dv_profile = 7;
+-                outer->codec->dv_level = el->codec->dv_level;
+-                MP_VERBOSE(demuxer, "Blu-ray Dolby Vision group: exposing "
+-                           "Profile 7 metadata on base stream 0x%x\n",
+-                           outer->demuxer_id);
++                // The authored transport stream may omit the configuration
++                // record on both outer tracks. Keep the explicit EL eligible
++                // for Profile 7 seek recovery as well as exposing the profile
++                // on the selectable base track.
++                if (!el->codec->dovi) {
++                    el->codec->dovi = true;
++                    el->codec->dv_profile = 7;
++                }
++                if (!outer->codec->dovi) {
++                    outer->codec->dovi = true;
++                    outer->codec->dv_profile = 7;
++                    outer->codec->dv_level = el->codec->dv_level;
++                    MP_VERBOSE(demuxer, "Blu-ray Dolby Vision group: exposing "
++                               "Profile 7 metadata on base stream 0x%x\n",
++                               outer->demuxer_id);
++                }
+             }
+         }
+     }
+-- 
+2.54.0.windows.1
+
+
+From f872119b6dfd73afeb6f55b4d1304789ef344ba3 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Fri, 28 Aug 2026 01:58:22 +0800
+Subject: [PATCH 07/16] drop corrupt Profile 7 recovery frames before pairing
+
+---
+ video/decode/vd_lavc.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+index e0a06f4..5cd6822 100644
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -1320,6 +1320,22 @@ static int decode_frame(struct mp_filter *vd)
+     // data.
+     mp_assert(ctx->pic->buf[0]);
+ 
++    // The Profile 7 enhancement-layer decoder deliberately receives recovery
++    // pictures after a seek so its reference state can converge before the next
++    // clean random-access point. FFmpeg marks those pictures as corrupt. Keep
++    // them inside the decoder for recovery, but never pair them with a clean
++    // base-layer picture: doing so exposes transient block corruption after
++    // rapid exact seeks.
++    if (ctx->codec->dovi && ctx->codec->dv_profile == 7 &&
++        ctx->codec->dovi_el_only &&
++        (ctx->pic->flags & AV_FRAME_FLAG_CORRUPT))
++    {
++        MP_VERBOSE(vd, "Dropping corrupt Dolby Vision enhancement-layer "
++                       "recovery frame.\n");
++        av_frame_unref(ctx->pic);
++        return ret;
++    }
++
+     struct mp_image *mpi = mp_image_from_av_frame(ctx->pic);
+     if (!mpi) {
+         av_frame_unref(ctx->pic);
+-- 
+2.54.0.windows.1
+
+
+From eb04008e177341f6b2f85410b20b9024563bd83b Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Fri, 28 Aug 2026 22:05:22 +0800
+Subject: [PATCH 08/16] stream_bluray: wait for delayed BD-J title transitions
+
+---
+ stream/stream_bluray.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 2fab01f..b37221f 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -72,6 +72,9 @@
+ #define BLURAY_POLL_TIME_S   0.010
+ // In menu mode, tolerate this many consecutive idle reads at the end of playlist
+ #define BLURAY_NAV_EOF_POLLS 100
++// BD-J applets can select the next playlist asynchronously after END_OF_TITLE.
++// Give a handled Java disc more time without delaying ordinary HDMV menus.
++#define BLURAY_BDJ_NAV_EOF_POLLS 300
+ 
+ // copied from aacs.h in libaacs
+ #define AACS_ERROR_CORRUPTED_DISC -1 /* opening or reading of AACS files failed */
+@@ -148,6 +151,7 @@ struct bluray_priv_s {
+     // bd_register_argb_overlay_proc. Discs that mix HDMV first-play with
+     // BD-J menus (or vice versa) need both callbacks registered.
+     bool hdmv_mode;
++    bool bdj_nav;                    // handled BD-J disc; Java transitions are asynchronous
+     struct bd_overlay_plane ig;
+     struct bd_overlay_plane pg;
+     mp_mutex overlay_lock;
+@@ -550,6 +554,8 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+         return 0;
+ 
+     int idle_reads = 0;
++    int eof_polls = b->bdj_nav ? BLURAY_BDJ_NAV_EOF_POLLS
++                               : BLURAY_NAV_EOF_POLLS;
+     bool hopped = false;
+     while (!mp_cancel_test(s->cancel)) {
+         BD_EVENT ev;
+@@ -780,7 +786,7 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+                 return 0;
+             // Retry for a while before concluding that playback ended. The
+             // first retry is immediate: a just-resumed VM progresses at once.
+-            if (++idle_reads > BLURAY_NAV_EOF_POLLS) {
++            if (++idle_reads > eof_polls) {
+                 MP_VERBOSE(s, "Navigation stopped, EOF.\n");
+                 return 0;
+             }
+@@ -1357,6 +1363,7 @@ static int bluray_stream_open_internal(stream_t *s)
+                info->num_unsupported_titles);
+ 
+     b->hdmv_mode = b->cfg_title == BLURAY_MENU_TITLE;
++    b->bdj_nav = info->bdj_detected && info->bdj_handled;
+ 
+     // BD-J menus require a usable Java VM and libbluray.jar.
+     if (b->hdmv_mode && info->bdj_detected && !info->bdj_handled) {
+-- 
+2.54.0.windows.1
+
+
+From 4265344f975c5a6a757c892a5d7425801d18bc92 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Fri, 28 Aug 2026 22:57:36 +0800
+Subject: [PATCH 09/16] stream_dvdnav: activate buttons from queued NAV data
+
+---
+ stream/stream_dvdnav.c | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
+index 0ec54d0..f82c0fa 100644
+--- a/stream/stream_dvdnav.c
++++ b/stream/stream_dvdnav.c
+@@ -439,6 +439,28 @@ static void select_neighbour_button(struct priv *priv, pci_t *pci,
+         dvdnav_button_select(priv->dvdnav, pci, target);
+ }
+ 
++// dvdnav_button_activate() rejects a NAV packet after libdvdnav's read head
++// has already left it. That is normally correct, but a player with demuxer
++// queues can still be displaying and interacting with that menu packet. Keep
++// the guarded API as the primary path, then replay the cached button command
++// through libdvdnav's FIFO-safe API when the packet was rejected.
++static void activate_current_button(struct priv *priv, pci_t *pci)
++{
++    int32_t btn = 0;
++    dvdnav_get_current_highlight(priv->dvdnav, &btn);
++    if (btn <= 0 || btn > pci_num_buttons(pci))
++        return;
++
++    if (dvdnav_button_activate(priv->dvdnav, pci) == DVDNAV_STATUS_OK)
++        return;
++
++    btni_t b;
++    memcpy(&b, &pci->hli.btnit[btn - 1], sizeof(b));
++    MP_VERBOSE(priv, "button %d activation used cached NAV command: %s\n",
++               btn, dvdnav_err_to_string(priv->dvdnav));
++    dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd);
++}
++
+ static void do_nav_cmd(stream_t *stream, struct stream_nav_cmd *cmd)
+ {
+     struct priv *priv = stream->priv;
+@@ -485,7 +507,7 @@ static void do_nav_cmd(stream_t *stream, struct stream_nav_cmd *cmd)
+         dvdnav_mouse_activate(priv->dvdnav, pci, cmd->x, cmd->y);
+         break;
+     case STREAM_NAV_SELECT:
+-        dvdnav_button_activate(priv->dvdnav, pci);
++        activate_current_button(priv, pci);
+         break;
+     default:
+         break;
+-- 
+2.54.0.windows.1
+
+
+From 3faff7b9f7f4a6e87c2607c06ceedc9eb1c4b9ba Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Sat, 29 Aug 2026 00:02:51 +0800
+Subject: [PATCH 10/16] stream_dvdnav: trace authored button activation
+
+---
+ stream/stream_dvdnav.c | 28 ++++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
+index f82c0fa..157bb0c 100644
+--- a/stream/stream_dvdnav.c
++++ b/stream/stream_dvdnav.c
+@@ -448,14 +448,34 @@ static void activate_current_button(struct priv *priv, pci_t *pci)
+ {
+     int32_t btn = 0;
+     dvdnav_get_current_highlight(priv->dvdnav, &btn);
+-    if (btn <= 0 || btn > pci_num_buttons(pci))
+-        return;
+-
+-    if (dvdnav_button_activate(priv->dvdnav, pci) == DVDNAV_STATUS_OK)
++    int num_buttons = pci_num_buttons(pci);
++    MP_VERBOSE(priv,
++               "select button: vm=%d cached=%d buttons=%d hli=%d "
++               "default=%d force-select=%d force-activate=%d "
++               "nav-lbn=%u vobu-pts=%u highlight=%u..%u\n",
++               btn, priv->current_button, num_buttons,
++               pci->hli.hl_gi.hli_ss, pci->hli.hl_gi.btn_ofn,
++               pci->hli.hl_gi.fosl_btnn, pci->hli.hl_gi.foac_btnn,
++               pci->pci_gi.nv_pck_lbn, pci->pci_gi.vobu_s_ptm,
++               pci->hli.hl_gi.hli_s_ptm, pci->hli.hl_gi.hli_e_ptm);
++    if (btn <= 0 || btn > num_buttons) {
++        MP_VERBOSE(priv, "select ignored: current DVD button is invalid\n");
+         return;
++    }
+ 
+     btni_t b;
+     memcpy(&b, &pci->hli.btnit[btn - 1], sizeof(b));
++    MP_VERBOSE(priv,
++               "button %d command: %02x %02x %02x %02x %02x %02x %02x %02x\n",
++               btn, b.cmd.bytes[0], b.cmd.bytes[1], b.cmd.bytes[2],
++               b.cmd.bytes[3], b.cmd.bytes[4], b.cmd.bytes[5],
++               b.cmd.bytes[6], b.cmd.bytes[7]);
++
++    if (dvdnav_button_activate(priv->dvdnav, pci) == DVDNAV_STATUS_OK) {
++        MP_VERBOSE(priv, "button %d activation accepted by current NAV\n", btn);
++        return;
++    }
++
+     MP_VERBOSE(priv, "button %d activation used cached NAV command: %s\n",
+                btn, dvdnav_err_to_string(priv->dvdnav));
+     dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd);
+-- 
+2.54.0.windows.1
+
+
+From faea846f149303570b14974f09d4e4e37c2f2432 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Sat, 29 Aug 2026 00:33:12 +0800
+Subject: [PATCH 11/16] stream_dvdnav: recover false-success LinkRSM buttons
+
+---
+ stream/stream_dvdnav.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
+index 157bb0c..2b98446 100644
+--- a/stream/stream_dvdnav.c
++++ b/stream/stream_dvdnav.c
+@@ -444,6 +444,14 @@ static void select_neighbour_button(struct priv *priv, pci_t *pci,
+ // queues can still be displaying and interacting with that menu packet. Keep
+ // the guarded API as the primary path, then replay the cached button command
+ // through libdvdnav's FIFO-safe API when the packet was rejected.
++static bool is_link_rsm_command(const vm_cmd_t *cmd)
++{
++    static const uint8_t link_rsm[8] = {
++        0x20, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d,
++    };
++    return memcmp(cmd->bytes, link_rsm, sizeof(link_rsm)) == 0;
++}
++
+ static void activate_current_button(struct priv *priv, pci_t *pci)
+ {
+     int32_t btn = 0;
+@@ -471,8 +479,28 @@ static void activate_current_button(struct priv *priv, pci_t *pci)
+                b.cmd.bytes[3], b.cmd.bytes[4], b.cmd.bytes[5],
+                b.cmd.bytes[6], b.cmd.bytes[7]);
+ 
++    bool link_rsm = is_link_rsm_command(&b.cmd);
+     if (dvdnav_button_activate(priv->dvdnav, pci) == DVDNAV_STATUS_OK) {
+         MP_VERBOSE(priv, "button %d activation accepted by current NAV\n", btn);
++        if (!link_rsm || !in_menu_domain(priv->dvdnav))
++            return;
++        // Some authored menus carry an unconditional LinkRSM button command
++        // which libdvdnav accepts but leaves in VTSM. Its dedicated Escape
++        // path performs the same resume without going through that decoder.
++        MP_VERBOSE(priv, "button %d LinkRSM stayed in the menu; "
++                   "using the dedicated resume path\n", btn);
++        if (dvdnav_menu_call(priv->dvdnav, DVD_MENU_Escape) == DVDNAV_STATUS_ERR)
++            MP_WARN(priv, "button %d LinkRSM resume failed: %s\n", btn,
++                    dvdnav_err_to_string(priv->dvdnav));
++        return;
++    }
++
++    if (link_rsm) {
++        MP_VERBOSE(priv, "button %d LinkRSM used the dedicated resume path: %s\n",
++                   btn, dvdnav_err_to_string(priv->dvdnav));
++        if (dvdnav_menu_call(priv->dvdnav, DVD_MENU_Escape) == DVDNAV_STATUS_ERR)
++            MP_WARN(priv, "button %d LinkRSM resume failed: %s\n", btn,
++                    dvdnav_err_to_string(priv->dvdnav));
+         return;
+     }
+ 
+-- 
+2.54.0.windows.1
+
+
+From b9edfd8e7217e9b4d07ec9f4463df8d087ba5f66 Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Sat, 29 Aug 2026 01:24:55 +0800
+Subject: [PATCH 12/16] [Luna] demux_disc: wait for async Blu-ray destination
+ data
+
+---
+ demux/demux_disc.c | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index c9fc0b0..5b49b7d 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -33,6 +33,12 @@
+ // DVD-Video has 32 subpicture (SPU) streams, mapped to PES substream IDs 0x20..0x3F.
+ #define MAX_DVD_SPU_STREAMS 32
+ 
++// libbluray can finish a First Play/BD-J title jump before the destination
++// playlist has produced probe bytes. Keep the BD slave reopen cancellable and
++// bounded so the player does not mistake that short gap for a terminal EOF.
++#define DISC_NAV_REOPEN_POLL_TIME_S 0.010
++#define DISC_NAV_REOPEN_POLLS 500
++
+ // Discs restart the in-stream timestamps at cell/segment boundaries. Each
+ // such segment is mapped to continuous playback time as a timeline
+ // "generation" with its own raw->playback offset. Streams cross a boundary
+@@ -777,10 +783,22 @@ static bool reopen_slave(struct demuxer *demuxer)
+     p->last_read_pos = 0;
+     for (int n = 0; n < p->num_tl_streams; n++)
+         p->tl_streams[n].select_pos = -1;
+-    // Between positions an open would only probe an EOF. The peek pumps
+-    // the stream's event loop, the bytes stay buffered for the probe.
++    // Between positions an open would only probe an EOF. Keep pumping the
++    // stream's event loop until the destination playlist has bytes; BD-J can
++    // select it asynchronously after the previous title reports its end.
+     uint8_t hdr[192];
+-    if (stream_read_peek(demuxer->stream, hdr, sizeof(hdr)) <= 0) {
++    int peeked = 0;
++    for (int poll = 0; poll < DISC_NAV_REOPEN_POLLS &&
++         !mp_cancel_test(demuxer->cancel); poll++) {
++        peeked = stream_read_peek(demuxer->stream, hdr, sizeof(hdr));
++        if (peeked > 0)
++            break;
++        if (poll + 1 < DISC_NAV_REOPEN_POLLS)
++            mp_cancel_wait(demuxer->cancel, DISC_NAV_REOPEN_POLL_TIME_S);
++    }
++    if (peeked <= 0) {
++        MP_WARN(demuxer, "Disc navigation destination produced no data "
++                         "within the bounded reopen grace.\n");
+         p->slave = NULL;
+         return false;
+     }
+-- 
+2.54.0.windows.1
+
+
+From f4da7a0600e43e1fa2cb943a0dd685dba18cdffc Mon Sep 17 00:00:00 2001
+From: Luna <luna@yaozhi.local>
+Date: Sat, 29 Aug 2026 01:49:16 +0800
+Subject: [PATCH 13/16] [Luna] demux_disc: include cancellation API
+
+---
+ demux/demux_disc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 5b49b7d..13f7724 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -21,6 +21,7 @@
+ 
+ #include "common/common.h"
+ #include "common/msg.h"
++#include "misc/thread_tools.h"
+ 
+ #include "stream/stream.h"
+ #include "video/mp_image.h"
+-- 
+2.54.0.windows.1
+
+
+From 70169f6af9dfd1e605d4dc336fc4db1c8eacb342 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 29 Aug 2026 02:56:24 +0800
+Subject: [PATCH 14/16] demux_disc: avoid nested Blu-ray reopen polling
+
+---
+ demux/demux_disc.c | 27 +++++----------------------
+ 1 file changed, 5 insertions(+), 22 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 13f7724..a767b69 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -21,7 +21,6 @@
+ 
+ #include "common/common.h"
+ #include "common/msg.h"
+-#include "misc/thread_tools.h"
+ 
+ #include "stream/stream.h"
+ #include "video/mp_image.h"
+@@ -34,12 +33,6 @@
+ // DVD-Video has 32 subpicture (SPU) streams, mapped to PES substream IDs 0x20..0x3F.
+ #define MAX_DVD_SPU_STREAMS 32
+ 
+-// libbluray can finish a First Play/BD-J title jump before the destination
+-// playlist has produced probe bytes. Keep the BD slave reopen cancellable and
+-// bounded so the player does not mistake that short gap for a terminal EOF.
+-#define DISC_NAV_REOPEN_POLL_TIME_S 0.010
+-#define DISC_NAV_REOPEN_POLLS 500
+-
+ // Discs restart the in-stream timestamps at cell/segment boundaries. Each
+ // such segment is mapped to continuous playback time as a timeline
+ // "generation" with its own raw->playback offset. Streams cross a boundary
+@@ -784,22 +777,12 @@ static bool reopen_slave(struct demuxer *demuxer)
+     p->last_read_pos = 0;
+     for (int n = 0; n < p->num_tl_streams; n++)
+         p->tl_streams[n].select_pos = -1;
+-    // Between positions an open would only probe an EOF. Keep pumping the
+-    // stream's event loop until the destination playlist has bytes; BD-J can
+-    // select it asynchronously after the previous title reports its end.
++    // Between positions an open would only probe an EOF. A single peek pumps
++    // the stream event loop and already applies stream_bluray's bounded BD-J
++    // grace. Do not wrap it in another retry budget: one peek may itself wait
++    // for that full grace, so nested polling multiplies the EOF delay.
+     uint8_t hdr[192];
+-    int peeked = 0;
+-    for (int poll = 0; poll < DISC_NAV_REOPEN_POLLS &&
+-         !mp_cancel_test(demuxer->cancel); poll++) {
+-        peeked = stream_read_peek(demuxer->stream, hdr, sizeof(hdr));
+-        if (peeked > 0)
+-            break;
+-        if (poll + 1 < DISC_NAV_REOPEN_POLLS)
+-            mp_cancel_wait(demuxer->cancel, DISC_NAV_REOPEN_POLL_TIME_S);
+-    }
+-    if (peeked <= 0) {
+-        MP_WARN(demuxer, "Disc navigation destination produced no data "
+-                         "within the bounded reopen grace.\n");
++    if (stream_read_peek(demuxer->stream, hdr, sizeof(hdr)) <= 0) {
+         p->slave = NULL;
+         return false;
+     }
+-- 
+2.54.0.windows.1
+
+
+From 66dbba6d9acf770bd85809b3ef625d526f17d3a9 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 29 Aug 2026 02:56:24 +0800
+Subject: [PATCH 15/16] discnav: handle back-to-back navigation boundaries
+
+---
+ player/discnav.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/player/discnav.c b/player/discnav.c
+index b354e54..39bff07 100644
+--- a/player/discnav.c
++++ b/player/discnav.c
+@@ -50,7 +50,12 @@ struct disc_nav_state {
+     uint32_t last_overlay_change_id;
+     bool overlay_change_seen;
+ 
+-    bool drain_was_pending; // last poll saw a boundary awaiting resync
++    // Last disc boundary for which we queued a resync. The discontinuity id,
++    // rather than a false->true edge, identifies a new boundary: a fast BD-J
++    // title can raise the next boundary before the player observes a cleared
++    // drain_pending state.
++    bool drain_seen;
++    uint32_t last_drain_discontinuity_id;
+ 
+     // DVD-only: dvd_subtitle track we force-selected for the menu, and the
+     // selection it displaced (restored on menu close).
+@@ -271,10 +276,13 @@ static void check_async_discontinuity(struct MPContext *mpctx, struct stream *s,
+     if (!mpctx->demuxer)
+         return;
+ 
+-    bool new_drain = nav->drain_pending && !st->drain_was_pending;
+-    st->drain_was_pending = nav->drain_pending;
++    bool new_drain = nav->drain_pending &&
++        (!st->drain_seen ||
++         nav->discontinuity_id != st->last_drain_discontinuity_id);
+     if (!new_drain)
+         return;
++    st->drain_seen = true;
++    st->last_drain_discontinuity_id = nav->discontinuity_id;
+ 
+     // The disc jumped on its own, resync through the regular seek path.
+     // demux_disc releases the held boundary instead of repositioning the VM.
+-- 
+2.54.0.windows.1
+
+
+From 4200e90d3a3b2f44635cf1aa745120f0153a604f Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 29 Aug 2026 03:01:18 +0800
+Subject: [PATCH 16/16] vo_gpu_next: honor SDR mode for bitmap subtitles
+
+---
+ video/out/vo_gpu_next.c | 18 ++++++++++++------
+ 1 file changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 26e3227..2c9f478 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -395,15 +395,21 @@ static struct pl_color_space bgra_overlay_color(struct priv *p,
+ {
+     struct pl_color_space color = pl_color_space_srgb;
+ 
+-    bool tagged_video = src && (item->video_color_space || b->bgra.video_color_space);
++    // Explicit overlay tags are authoritative, but the item-wide tag used by
++    // muxed bitmap subtitles must remain overridable by the user's image
++    // subtitle policy.
++    bool tagged_overlay = src && b->bgra.video_color_space;
++    bool tagged_image_sub = src && item->video_color_space;
+     bool hdr_video = src && pl_color_transfer_is_hdr(src->params.color.transfer);
+-    bool use_video_colorspace = tagged_video || (src &&
+-        (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_VIDEO ||
++    bool force_sdr = !tagged_overlay && src &&
++        (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_SDR ||
++         (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_AUTO &&
++          hdr_video));
++    bool use_video_colorspace = tagged_overlay || (src && !force_sdr &&
++        (tagged_image_sub ||
++         p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_VIDEO ||
+          (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_AUTO &&
+           !hdr_video)));
+-    bool force_sdr = p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_SDR ||
+-        (p->next_opts->image_subs_colorspace == IMAGE_SUBS_COLORSPACE_AUTO &&
+-         src && hdr_video);
+ 
+     if (src && use_video_colorspace) {
+         // [Luna] Preserve explicit video tags and the historical video mode.
+-- 
+2.54.0.windows.1
+
+
+From c49732851b704974f6b5eab7edf8e5dd54834e41 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 29 Aug 2026 08:28:41 +0800
+Subject: [PATCH 17/17] demux: bound read-ahead during disc title playback
+
+---
+ demux/demux.c      | 48 ++++++++++++++++++++++++++++++++++++----------
+ demux/demux.h      |  3 ++-
+ demux/demux_disc.c | 15 +++++++++++++--
+ 3 files changed, 53 insertions(+), 13 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index 2acaf37..4da4769 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -210,6 +210,8 @@ struct demux_internal {
+     size_t hyst_bytes;          // stop reading till there's hyst_bytes remaining
+     bool hyst_active;
+     bool nav_active;            // disc navigation (DVD/BD menus) is active
++    bool nav_menu_active;       // a menu overlay is currently interactive
++    bool nav_still_active;      // the disc VM is holding a still frame
+     bool nav_pump;              // one-shot request to force a single read
+     size_t max_bytes;
+     size_t max_bytes_bw;
+@@ -2329,6 +2331,14 @@ static bool lazy_stream_needs_wait(struct demux_stream *ds)
+ }
+ 
+ // Returns true if there was "progress" (lock was released temporarily).
++// Keep navigation-mode title playback slightly ahead of the decoder without
++// letting the disc VM run far ahead of presentation. Visible menus and stills
++// remain strictly demand-driven. The byte cap also bounds malformed or
++// timestamp-less streams.
++#define NAV_PLAYBACK_READAHEAD_SECS 2.0
++#define NAV_PLAYBACK_READAHEAD_MAX_BYTES (16 * 1024 * 1024)
++#define NAV_PLAYBACK_READAHEAD_FALLBACK_BYTES (4 * 1024 * 1024)
++
+ static bool read_packet(struct demux_internal *in)
+ {
+     bool was_reading = in->reading;
+@@ -2341,6 +2351,7 @@ static bool read_packet(struct demux_internal *in)
+     // the minimum, or if a stream explicitly needs new packets. Also includes
+     // safe-guards against packet queue overflow.
+     bool read_more = false, prefetch_more = false, refresh_more = false;
++    bool nav_timestamps_known = false, nav_prefetch_more = false;
+     uint64_t total_fw_bytes = 0;
+     for (int n = 0; n < in->num_streams; n++) {
+         struct demux_stream *ds = in->streams[n]->ds;
+@@ -2361,10 +2372,13 @@ static bool read_packet(struct demux_internal *in)
+             ds->queue->last_ts >= ds->base_ts &&
+             !in->back_demuxing)
+         {
+-            if (ds->queue->last_ts - ds->base_ts <= in->hyst_secs)
++            double buffered = ds->queue->last_ts - ds->base_ts;
++            if (buffered <= in->hyst_secs)
+                 in->hyst_active = false;
+             if (!in->hyst_active)
+-                prefetch_more |= ds->queue->last_ts - ds->base_ts < in->min_secs;
++                prefetch_more |= buffered < in->min_secs;
++            nav_timestamps_known = true;
++            nav_prefetch_more |= buffered < NAV_PLAYBACK_READAHEAD_SECS;
+         }
+         total_fw_bytes += get_forward_buffered_bytes(ds);
+     }
+@@ -2374,11 +2388,19 @@ static bool read_packet(struct demux_internal *in)
+         prefetch_more |= true;
+     }
+ 
+-    // While interactive disc navigation is active, never read ahead. It would
+-    // advance the disc VM past what the user is watching. Reads still happen
+-    // whenever a selected stream demands data.
+-    if (in->nav_active)
+-        prefetch_more = false;
++    // A visible menu or authored still must never be prefetched: reads advance
++    // the disc VM. During ordinary title playback, however, a zero-length
++    // packet queue makes high-bitrate local images hitch on each demand read.
++    // Keep only a small, doubly bounded queue in that state. The regular
++    // read_more path remains available after either bound is reached.
++    if (in->nav_active) {
++        bool interactive = in->nav_menu_active || in->nav_still_active;
++        bool below_byte_cap = total_fw_bytes < NAV_PLAYBACK_READAHEAD_MAX_BYTES;
++        bool fallback = !nav_timestamps_known &&
++                        total_fw_bytes < NAV_PLAYBACK_READAHEAD_FALLBACK_BYTES;
++        prefetch_more = !interactive && below_byte_cap &&
++                        (nav_prefetch_more || fallback);
++    }
+     prefetch_more |= in->nav_pump;
+ 
+     MP_TRACE(in, "bytes=%zd, read_more=%d prefetch_more=%d, refresh_more=%d\n",
+@@ -3292,15 +3314,21 @@ void demux_set_duration(demuxer_t *demuxer, double duration)
+     mp_mutex_unlock(&in->lock);
+ }
+ 
+-// Tell the cache whether interactive disc navigation is active.
+-void demux_set_nav_active(demuxer_t *demuxer, bool active)
++// Tell the cache which interactive disc-navigation phase is active.
++void demux_set_nav_state(demuxer_t *demuxer, bool active, bool menu_active,
++                         bool still_active)
+ {
+     struct demux_internal *in = demuxer->in;
+     mp_assert(demuxer == in->d_thread);
+ 
+     mp_mutex_lock(&in->lock);
+-    if (in->nav_active != active) {
++    if (in->nav_active != active ||
++        in->nav_menu_active != menu_active ||
++        in->nav_still_active != still_active)
++    {
+         in->nav_active = active;
++        in->nav_menu_active = menu_active;
++        in->nav_still_active = still_active;
+         mp_cond_signal(&in->wakeup);
+     }
+     mp_mutex_unlock(&in->lock);
+diff --git a/demux/demux.h b/demux/demux.h
+index ac4d184..e5eac19 100644
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -365,7 +365,8 @@ void demux_close_stream(struct demuxer *demuxer);
+ 
+ void demux_metadata_changed(demuxer_t *demuxer);
+ void demux_set_duration(demuxer_t *demuxer, double duration);
+-void demux_set_nav_active(demuxer_t *demuxer, bool active);
++void demux_set_nav_state(demuxer_t *demuxer, bool active, bool menu_active,
++                         bool still_active);
+ void demux_lists_changed(demuxer_t *demuxer);
+ void demux_update(demuxer_t *demuxer, double playback_pts);
+ 
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index a767b69..c904b2c 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -105,6 +105,8 @@ struct priv {
+     bool seek_reinit;   // needs reinit after seek
+     uint32_t last_discontinuity_id; // Last source-position-jump id seen from the stream.
+     bool nav_active;    // last interactive-nav state pushed to the cache
++    bool nav_menu_active;
++    bool nav_still_active;
+     uint32_t eof_log_id;    // last logged EOF state, avoids per-read spam
+     bool eof_log_still;
+ 
+@@ -904,9 +906,18 @@ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt
+     struct stream_nav_state nav = {0};
+     if (stream_control(demuxer->stream, STREAM_CTRL_GET_NAV_STATE, &nav) >= 1) {
+         menu_active = nav.menu_active;
+-        if (nav.nav_active != p->nav_active) {
++        if (nav.nav_active != p->nav_active ||
++            nav.menu_active != p->nav_menu_active ||
++            nav.still_active != p->nav_still_active)
++        {
++            MP_VERBOSE(demuxer,
++                       "navigation cache state: active=%d menu=%d still=%d\n",
++                       nav.nav_active, nav.menu_active, nav.still_active);
+             p->nav_active = nav.nav_active;
+-            demux_set_nav_active(demuxer, nav.nav_active);
++            p->nav_menu_active = nav.menu_active;
++            p->nav_still_active = nav.still_active;
++            demux_set_nav_state(demuxer, nav.nav_active, nav.menu_active,
++                                nav.still_active);
+         }
+         // DVD holds an EOF at jump boundaries and the player resyncs
+         // through the seek path. BD has no in-band boundary, handle it here,
+-- 
+2.54.0.windows.1
+

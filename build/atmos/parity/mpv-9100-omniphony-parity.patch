@@ -1,0 +1,3622 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Mon, 7 Sep 2026 12:00:00 +0800
+Subject: [PATCH] Add current Omniphony renderer and ASIO over the complete main core
+
+Integrate mgth/mpv-omniphony 6b474e387d30fabec8927880a25075f288d675d3
+patches-master 0001-0028. Preserve the main core's native/unknown channel
+mapping fix instead of overwriting it with the overlapping 9001 patch.
+Original source authors and copyright notices are retained in the files.
+Build-only upstream CI additions are excluded.
+---
+diff --git a/Copyright b/Copyright
+index 61d3a03..e4ba143 100644
+--- a/Copyright
++++ b/Copyright
+@@ -52,6 +52,8 @@ at all.
+ 
+ The following files are still GPL only (-Dgpl=false disables them):
+ 
++    audio/out/ao_asio.c             GPLv3+ (see below)
++    audio/out/ao_asio.h             GPLv3+ (see below)
+     audio/out/ao_jack.c             will stay GPL
+     audio/out/ao_oss.c              will stay GPL
+     stream/dvb*                     must stay GPL
+@@ -76,3 +78,12 @@ The following files are still GPL only (-Dgpl=false disables them):
+ None of the cases listed above affect the final binary if it's built as
+ LGPL. Linked libraries still can affect the final license (for example if
+ FFmpeg was built as GPL).
++
++ao_asio is the one GPL-only file that is GPLv3+ rather than GPLv2+: it builds
++against Steinberg's ASIO SDK headers, which Steinberg dual-licensed on
++2025-10-15 under either its proprietary ASIO license or GPLv3. mpv can only
++use the GPLv3 half, so enabling -Dasio makes the resulting binary GPLv3+
++rather than GPLv2+. This is legal because everything else in mpv is "version
++2 or later", but it does narrow what the binary can be combined with, and it
++is why -Dasio requires -Dgpl=true and a -Dasio-sdk path. None of the SDK's own
++sources are compiled: only its headers are used.
+diff --git a/audio/decode/ad_orender.c b/audio/decode/ad_orender.c
+new file mode 100644
+index 0000000..212caa7
+--- /dev/null
++++ b/audio/decode/ad_orender.c
+@@ -0,0 +1,882 @@
++/*
++ * ad_orender.c — mpv audio decoder that renders spatial audio through liborender.
++ *
++ * Companion to ad_lavc/ad_spdif: when the user opts in with `--ad=orender` on a
++ * supported stream, decode + VBAP-render the spatial objects to N-channel float
++ * PCM via liborender (orender_*), instead of letting FFmpeg downmix.
++ *
++ * Unlike the earlier design, ad_orender does NOT hand the track back to the
++ * decoder wrapper in host mode. It stays selected for the whole track and owns
++ * the orender engine the whole time, so the engine's OSC listener — and thus the
++ * Studio connection — stays alive and keeps receiving the live
++ * `channel_render_mode` switch. Object content stays on the spatial path;
++ * channel-based content is routed on the live mode:
++ *
++ *   - spatial : decode + VBAP-render through the engine (objects, or the virtual
++ *               bed for plain channel content);
++ *   - host    : delegate to a native child decoder (ad_lavc → PCM, or ad_spdif →
++ *               bitstream passthrough; chosen by --ad-orender-host-decoder) and
++ *               forward its frames untouched.
++ *
++ * Toggling "Spatialize 2D sources" in Studio flips the engine's mode over OSC,
++ * so the switch is applied live, in both directions, with no mpv restart and no
++ * polling — the engine never leaves, never yields the OSC port to the standby
++ * renderer. The bridge and speaker layout come from the shared omniphony config
++ * YAML (render.bridge_path), resolved by liborender when the config path is NULL.
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++#include <libavcodec/avcodec.h>
++
++#include "mpv_talloc.h"
++#include "audio/aframe.h"
++#include "audio/chmap.h"
++#include "audio/format.h"
++#include "common/codecs.h"
++#include "common/common.h"
++#include "common/msg.h"
++#include "demux/packet.h"
++#include "demux/stheader.h"
++#include "filters/f_decoder_wrapper.h"
++#include "filters/filter_internal.h"
++#include "options/m_config.h"
++
++#include "audio/decode/ad_orender.h"
++#include "common/orender_abi.h"
++#include "common/orender_dl.h"
++
++/* The option struct lives in ad_orender.h (shared with the liborender runtime
++ * loader, which needs the library path before any decoder exists). */
++#define OPT_BASE_STRUCT struct ad_orender_params
++
++const struct m_sub_options ad_orender_conf = {
++    .opts = (const m_option_t[]) {
++        /* Explicit liborender path, overriding the loader's search order
++         * (studio install → next to mpv → system). If set and unusable, the
++         * loader fails hard instead of falling back — see common/orender_dl.c. */
++        {"library", OPT_STRING(library_path), .flags = M_OPT_FILE},
++        {"config", OPT_STRING(config_path), .flags = M_OPT_FILE},
++        {"bridge-path", OPT_STRING(bridge_path), .flags = M_OPT_FILE},
++        {"osc", OPT_BOOL(osc)},
++        {"osc-port", OPT_INT(osc_port), M_RANGE(0, 65535)},
++        {"osc-rx-port", OPT_INT(osc_rx_port), M_RANGE(0, 65535)},
++        {"osc-bind", OPT_STRING(osc_bind)},
++        {"osc-monitor-target", OPT_STRING(osc_monitor_target)},
++        /* Initial render mode for channel-based (non-object) content. "auto" =
++         * follow the shared config's render.channel_render_mode. "host" decodes
++         * natively (see host-decoder); "spatial" renders through orender's
++         * virtual bed. "direct"/"virtual" are legacy aliases of "spatial". The
++         * live mode is then driven by Studio over OSC. */
++        {"channel-mode", OPT_CHOICE(channel_mode_idx,
++            {"auto", 0}, {"host", 1}, {"spatial", 2}, {"direct", 2}, {"virtual", 2})},
++        /* Which native decoder to use in host mode: "lavc" decodes to PCM (mpv's
++         * audio chain applies — the default), "spdif" passes the compressed
++         * bitstream through to an AV receiver. */
++        {"host-decoder", OPT_CHOICE(host_decoder_idx, {"lavc", 0}, {"spdif", 1})},
++        {0}
++    },
++    .size = sizeof(struct ad_orender_params),
++    .defaults = &(const struct ad_orender_params){
++        .osc = false,
++        .osc_port = 0,
++        .osc_rx_port = 0,
++    },
++};
++
++/* An empty option string means "unset" → pass NULL to the FFI. */
++static const char *nz(const char *s) { return (s && s[0]) ? s : NULL; }
++
++enum { HOST_DEC_LAVC = 0, HOST_DEC_SPDIF = 1 };
++enum { PATH_NONE = -1, PATH_HOST = 0, PATH_SPATIAL = 1 };
++
++struct priv {
++    struct mp_log *log;
++    struct mp_codec_params *codec;
++    /* liborender function table (never NULL: all-stubs when the runtime load
++     * failed, so every call site below stays unconditional). */
++    const struct orender_dl *dl;
++    OrenderRenderer *renderer;
++    int sample_rate;
++    int channels;
++    struct mp_chmap chmap;
++    bool checked_spatial;       // built the output chmap for the spatial path
++    int last_mapping;           // last orender_channel_mapping() the chmap was built for (live switch)
++    bool source_spatial;        // container/bridge identified object content
++    bool source_classified;     // first decoded presentation has been inspected
++    bool force_host;            // engine unusable (no layout / create failed): always native
++    int host_decoder_idx;       // HOST_DEC_LAVC (PCM) or HOST_DEC_SPDIF (passthrough)
++    struct mp_decoder *native;  // lazily-created native child decoder for host mode
++    int active_path;            // PATH_* of the last packet, for clean transitions
++    struct mp_frame *probe_packets; // packets retained while classifying the source
++    int num_probe_packets;
++    int probe_packet_pos;
++    /* Track-info codec profile (shift+I) for the spatial path. Two concerns:
++     *
++     *  - Lifetime: the core thread reads codec_profile from the track list
++     *    (player/misc.c) and the codec-profile property, and p->codec (the
++     *    demuxer-owned sh_stream codec params) outlives this decoder filter. So
++     *    the storage must NOT live in our priv, which is freed when the track's
++     *    decoder is torn down on a switch — a pointer into it would dangle into
++     *    freed talloc that the next decode reuses as float PCM scratch (garbage
++     *    in shift+I, and a c0000005 in ucrtbase's %s walk when the reused bytes
++     *    carry no NUL before a page edge). profile_buf is therefore a talloc
++     *    child of p->codec (allocated lazily in refresh_codec_profile), giving
++     *    the published pointer demuxer lifetime: it can never dangle, even if a
++     *    reader races the decoder teardown. mpv's own decoders rely on the same
++     *    contract — they point codec_profile at static libavcodec literals
++     *    (av_common.c) that outlive every decoder.
++     *  - Concurrency: double-buffered so the reader never sees a half-written
++     *    string — we fill the inactive slot, then atomically publish its pointer.
++     *
++     * Rebuilt only when the composed value changes (its inputs are stable per
++     * presentation segment), so the hot path does no work. The cache (last_*)
++     * starts at impossible sentinels so the first frame always publishes; it is
++     * reset on a host->spatial switch because host-mode's child ad_lavc
++     * overwrites codec_profile with its own string. */
++    const char *orender_desc;   // official-cased codec name (codec_desc literal)
++    char (*profile_buf)[128];   // [2][128] double-buffer; talloc child of p->codec
++    int profile_slot;
++    int last_objs;
++    int last_dnorm;
++    unsigned last_bed_sig;      // fingerprint of the bed labels (change detection)
++    uint64_t last_latency;      // last engine DSP latency, for change logging
++    struct mp_decoder public;
++};
++
++/* Map a liborender label (OrenderChannelLabel from the vendored ABI header) to
++ * an mpv speaker id. The 7.1.4 default maps exactly. mpv's chmap has no
++ * top-side L/R, so those degrade to NA (Phase 5: custom order). */
++static int label_to_mp_speaker(uint8_t lbl)
++{
++    switch (lbl) {
++    case OrenderChannelLabel_L:    return MP_SPEAKER_ID_FL;
++    case OrenderChannelLabel_R:    return MP_SPEAKER_ID_FR;
++    case OrenderChannelLabel_C:    return MP_SPEAKER_ID_FC;
++    case OrenderChannelLabel_Lfe:  return MP_SPEAKER_ID_LFE;
++    case OrenderChannelLabel_Ls:   return MP_SPEAKER_ID_SL;
++    case OrenderChannelLabel_Rs:   return MP_SPEAKER_ID_SR;
++    case OrenderChannelLabel_Lb:   return MP_SPEAKER_ID_BL;
++    case OrenderChannelLabel_Rb:   return MP_SPEAKER_ID_BR;
++    case OrenderChannelLabel_Cb:   return MP_SPEAKER_ID_BC;
++    case OrenderChannelLabel_Lsc:  return MP_SPEAKER_ID_FLC;
++    case OrenderChannelLabel_Rsc:  return MP_SPEAKER_ID_FRC;
++    case OrenderChannelLabel_Lw:   return MP_SPEAKER_ID_WL;
++    case OrenderChannelLabel_Rw:   return MP_SPEAKER_ID_WR;
++    case OrenderChannelLabel_Lfe2: return MP_SPEAKER_ID_LFE2;
++    case OrenderChannelLabel_Tfl:  return MP_SPEAKER_ID_TFL;
++    case OrenderChannelLabel_Tfr:  return MP_SPEAKER_ID_TFR;
++    case OrenderChannelLabel_Tfc:  return MP_SPEAKER_ID_TFC;
++    case OrenderChannelLabel_Tbl:  return MP_SPEAKER_ID_TBL;
++    case OrenderChannelLabel_Tbr:  return MP_SPEAKER_ID_TBR;
++    case OrenderChannelLabel_Tc:   return MP_SPEAKER_ID_TC;
++    default:      return MP_SPEAKER_ID_NA;  /* incl. Tsl/Tsr/Lsd/Rsd */
++    }
++}
++
++/* Short display name for a liborender channel label, for the bed composition in
++ * the track-info profile (e.g. "LFE+11 objects"). */
++static const char *label_to_short_name(uint8_t lbl)
++{
++    switch (lbl) {
++    case OrenderChannelLabel_L:    return "L";
++    case OrenderChannelLabel_R:    return "R";
++    case OrenderChannelLabel_C:    return "C";
++    case OrenderChannelLabel_Lfe:  return "LFE";
++    case OrenderChannelLabel_Ls:   return "Ls";
++    case OrenderChannelLabel_Rs:   return "Rs";
++    case OrenderChannelLabel_Tfl:  return "Tfl";
++    case OrenderChannelLabel_Tfr:  return "Tfr";
++    case OrenderChannelLabel_Tsl:  return "Tsl";
++    case OrenderChannelLabel_Tsr:  return "Tsr";
++    case OrenderChannelLabel_Tbl:  return "Tbl";
++    case OrenderChannelLabel_Tbr:  return "Tbr";
++    case OrenderChannelLabel_Lsc:  return "Lsc";
++    case OrenderChannelLabel_Rsc:  return "Rsc";
++    case OrenderChannelLabel_Lb:   return "Lb";
++    case OrenderChannelLabel_Rb:   return "Rb";
++    case OrenderChannelLabel_Cb:   return "Cb";
++    case OrenderChannelLabel_Tc:   return "Tc";
++    case OrenderChannelLabel_Lsd:  return "Lsd";
++    case OrenderChannelLabel_Rsd:  return "Rsd";
++    case OrenderChannelLabel_Lw:   return "Lw";
++    case OrenderChannelLabel_Rw:   return "Rw";
++    case OrenderChannelLabel_Tfc:  return "Tfc";
++    case OrenderChannelLabel_Lfe2: return "LFE2";
++    default:      return "?";
++    }
++}
++
++/* Human profile string for a codec, with/without object (Atmos/DTS:X) content —
++ * mirrors what ffmpeg reports on the native path so shift+I reads the same.
++ * `has_objects` reflects the actually-decoded object presence (object_count > 0),
++ * not the bridge's pre-decode "may be spatial" flag — a plain multichannel
++ * TrueHD/E-AC3 stream carries no objects and must not be labelled Atmos. */
++static const char *profile_base(const char *codec, bool has_objects)
++{
++    if (strcmp(codec, "truehd") == 0)
++        return has_objects ? "Dolby TrueHD + Dolby Atmos" : "Dolby TrueHD";
++    if (strcmp(codec, "eac3") == 0)
++        return has_objects ? "Dolby Digital Plus + Dolby Atmos" : "Dolby Digital Plus";
++    if (strcmp(codec, "ac3") == 0)
++        return "Dolby Digital";
++    if (strcmp(codec, "dts") == 0)
++        return has_objects ? "DTS:X" : "DTS";
++    return codec;
++}
++
++/* FFmpeg can expose DTS:X directly in AVCodecParameters.profile, letting the
++ * demuxer identify it before either decoder consumes a packet. Use that early
++ * hint when available; otherwise the retained-packet probe below lets the
++ * bridge classify the presentation without losing the native fallback audio. */
++static bool codec_is_spatial_hint(const struct mp_codec_params *codec)
++{
++    const char *profile = codec->codec_profile;
++    if (profile && (strstr(profile, "DTS:X") || strstr(profile, "Atmos")))
++        return true;
++
++    int av_profile = codec->lav_codecpar ? codec->lav_codecpar->profile
++                                         : AV_PROFILE_UNKNOWN;
++    if (strcmp(codec->codec, "dts") == 0)
++        return av_profile == AV_PROFILE_DTS_HD_MA_X ||
++               av_profile == AV_PROFILE_DTS_HD_MA_X_IMAX;
++    if (strcmp(codec->codec, "eac3") == 0)
++        return av_profile == AV_PROFILE_EAC3_DDP_ATMOS;
++    if (strcmp(codec->codec, "truehd") == 0)
++        return av_profile == AV_PROFILE_TRUEHD_ATMOS;
++    return false;
++}
++
++/* Recompose codec_profile from the engine's live presentation info (Atmos flag,
++ * bed composition, object count, DialNorm) and publish it for the track-info
++ * display. Cheap and idempotent: returns immediately unless the value changed. */
++static void refresh_codec_profile(struct priv *p)
++{
++    if (!p->renderer)
++        return;
++
++    int objs    = p->dl->object_count(p->renderer);  // >=0 / -1
++    int dnorm   = p->dl->dialnorm_db(p->renderer);   // <=0 / INT32_MIN (unknown)
++
++    uint8_t bed[MP_NUM_CHANNELS];
++    uint32_t bedn = p->dl->bed_layout(p->renderer, bed, MP_NUM_CHANNELS);
++    /* FNV-1a fingerprint of the bed labels, so a bed change (same object count)
++     * still triggers a rebuild. */
++    unsigned bed_sig = 2166136261u;
++    for (uint32_t i = 0; i < bedn; i++)
++        bed_sig = (bed_sig ^ bed[i]) * 16777619u;
++
++    if (objs == p->last_objs && dnorm == p->last_dnorm &&
++        bed_sig == p->last_bed_sig)
++        return;
++
++    /* Anchor the double-buffer to p->codec (demuxer lifetime), not our priv: the
++     * core thread reads codec_profile long after a track switch has freed this
++     * decoder (see the profile_buf note in struct priv). Allocated once, lazily,
++     * on the first publish. talloc_zero_size aborts on OOM, so it is never NULL. */
++    if (!p->profile_buf)
++        p->profile_buf = talloc_zero_size(p->codec, 2 * sizeof(*p->profile_buf));
++
++    int slot = p->profile_slot ^ 1;
++    char *buf = p->profile_buf[slot];
++    size_t cap = sizeof(p->profile_buf[slot]);
++
++    int n = snprintf(buf, cap, "%s", profile_base(p->codec->codec, objs > 0));
++    /* "· <bed labels>+<N> objects", e.g. "· LFE+11 objects" (no bed → "· N
++     * objects"). Only when there are objects (plain multichannel reports 0). */
++    if (objs > 0 && n > 0 && (size_t)n < cap) {
++        n += snprintf(buf + n, cap - n, " · ");
++        for (uint32_t i = 0; i < bedn && n > 0 && (size_t)n < cap; i++)
++            n += snprintf(buf + n, cap - n, "%s%s",
++                          i ? " " : "", label_to_short_name(bed[i]));
++        if (n > 0 && (size_t)n < cap)
++            n += snprintf(buf + n, cap - n, "%s%d objects", bedn ? "+" : "", objs);
++    }
++    if (dnorm != INT32_MIN && n > 0 && (size_t)n < cap)
++        snprintf(buf + n, cap - n, " · DialNorm %d dB", dnorm);
++
++    p->codec->codec_profile = buf;   // atomic publish of the new slot
++    p->profile_slot = slot;
++    p->last_objs = objs;
++    p->last_dnorm = dnorm;
++    p->last_bed_sig = bed_sig;
++}
++
++/* Build p->chmap from the renderer's output layout. Returns false if any
++ * speaker had no mpv mapping (caller still proceeds; positions are NA). */
++static bool build_chmap(struct priv *p)
++{
++    uint8_t labels[MP_NUM_CHANNELS];
++    uint32_t n = p->dl->channel_layout(p->renderer, labels, MP_NUM_CHANNELS);
++    if (n == 0 || n > MP_NUM_CHANNELS) {
++        p->chmap = (struct mp_chmap){0};
++        return false;
++    }
++    /* By-index mapping (the renderer default): a positionless chmap so mpv and
++     * the AO pass channels straight through by index — output port N carries
++     * layout speaker N, matching a custom rig wired in layout order. Only
++     * by-name (1) builds a positional map so a position-aware sink routes by
++     * speaker; <0 (error) also falls back to positionless. */
++    if (p->dl->channel_mapping(p->renderer) != 1) {
++        mp_chmap_set_unknown(&p->chmap, n);
++        return true;
++    }
++    p->chmap = (struct mp_chmap){0};
++    p->chmap.num = n;
++    bool ok = true;
++    for (uint32_t i = 0; i < n; i++) {
++        int sp = label_to_mp_speaker(labels[i]);
++        if (sp == MP_SPEAKER_ID_NA)
++            ok = false;
++        p->chmap.speaker[i] = sp;
++    }
++    return ok;
++}
++
++/* Try each entry in `sel` with `fns->create`, stopping at the first success. */
++static bool try_create_child(struct mp_filter *da, struct priv *p,
++                             const struct mp_decoder_fns *fns,
++                             struct mp_decoder_list *sel)
++{
++    for (int i = 0; i < sel->num_entries; i++) {
++        p->native = fns->create(da, p->codec, sel->entries[i].decoder);
++        if (p->native) {
++            MP_VERBOSE(da, "host-mode native decoder: %s\n", sel->entries[i].decoder);
++            return true;
++        }
++    }
++    return false;
++}
++
++/* Lazily create the native child decoder for host mode, picking the right driver
++ * + decoder for the codec via mpv's normal selection (so e.g. dts → "dca"). With
++ * host-decoder=spdif, request bitstream passthrough for this codec; if that is
++ * not available, fall back to lavc rather than leaving the track undecodable. */
++static bool ensure_native_child(struct mp_filter *da, struct priv *p)
++{
++    if (p->native)
++        return true;
++
++    if (p->host_decoder_idx == HOST_DEC_SPDIF) {
++        /* select_spdif_codec only enables passthrough for codecs listed in its
++         * `pref`; pass this codec so the explicit choice takes effect. */
++        struct mp_decoder_list *sel = select_spdif_codec(p->codec->codec, p->codec->codec);
++        bool ok = try_create_child(da, p, &ad_spdif, sel);
++        talloc_free(sel);
++        if (!ok)
++            MP_WARN(da, "spdif passthrough unavailable for %s; using lavc\n",
++                    p->codec->codec);
++    }
++
++    if (!p->native) {
++        struct mp_decoder_list *all = talloc_zero(NULL, struct mp_decoder_list);
++        ad_lavc.add_decoders(all);
++        struct mp_decoder_list *sel = mp_select_decoders(p->log, all, p->codec->codec, NULL);
++        talloc_free(all);
++        try_create_child(da, p, &ad_lavc, sel);
++        talloc_free(sel);
++    }
++
++    if (!p->native) {
++        MP_ERR(da, "could not create a host-mode native decoder for %s\n",
++               p->codec->codec);
++        return false;
++    }
++    return true;
++}
++
++static void clear_probe_packets(struct priv *p)
++{
++    for (int i = p->probe_packet_pos; i < p->num_probe_packets; i++)
++        mp_frame_unref(&p->probe_packets[i]);
++    p->num_probe_packets = 0;
++    p->probe_packet_pos = 0;
++}
++
++/* Host mode: pump the native child — forward packets in, decoded frames out. */
++static void process_host(struct mp_filter *da, struct priv *p)
++{
++    if (!ensure_native_child(da, p)) {
++        mp_filter_internal_mark_failed(da);
++        return;
++    }
++
++    struct mp_pin *child_in = p->native->f->pins[0];
++    struct mp_pin *child_out = p->native->f->pins[1];
++
++    // Drain decoded frames to our output (and forward EOF transparently).
++    if (mp_pin_can_transfer_data(da->ppins[1], child_out)) {
++        struct mp_frame frame = mp_pin_out_read(child_out);
++        mp_pin_in_write(da->ppins[1], frame);
++    }
++    // Feed input packets to the child.
++    if (p->probe_packet_pos < p->num_probe_packets &&
++        mp_pin_in_needs_data(child_in))
++    {
++        struct mp_frame frame = p->probe_packets[p->probe_packet_pos];
++        p->probe_packets[p->probe_packet_pos++] = MP_NO_FRAME;
++        mp_pin_in_write(child_in, frame);
++        if (p->probe_packet_pos == p->num_probe_packets) {
++            p->num_probe_packets = 0;
++            p->probe_packet_pos = 0;
++        }
++    } else if (mp_pin_can_transfer_data(child_in, da->ppins[0])) {
++        struct mp_frame frame = mp_pin_out_read(da->ppins[0]);
++        mp_pin_in_write(child_in, frame);
++    }
++}
++
++/* Spatial mode: decode + VBAP-render through the engine. */
++static void process_spatial(struct mp_filter *da, struct priv *p, bool probe_host)
++{
++    if (!mp_pin_can_transfer_data(da->ppins[1], da->ppins[0]))
++        return;
++
++    struct mp_frame inframe = mp_pin_out_read(da->ppins[0]);
++    if (inframe.type == MP_FRAME_EOF) {
++        if (probe_host && p->num_probe_packets > 0) {
++            MP_TARRAY_APPEND(p, p->probe_packets, p->num_probe_packets, inframe);
++            p->source_classified = true;
++            p->active_path = PATH_HOST;
++            p->dl->overlay_set_rendering(0);
++            p->dl->overlay_clear();
++            process_host(da, p);
++        } else {
++            mp_pin_in_write(da->ppins[1], inframe);
++        }
++        return;
++    } else if (inframe.type != MP_FRAME_PACKET) {
++        if (inframe.type) {
++            MP_ERR(da, "unknown frame type\n");
++            mp_filter_internal_mark_failed(da);
++        }
++        return;
++    }
++
++    struct demux_packet *mpkt = inframe.data;
++    struct mp_aframe *out = NULL;
++    bool failed = false;
++    double pts = mpkt->pts;   /* demuxer timestamp; drives A/V sync (see below) */
++
++    /* The output channel count can change mid-stream (Studio toggling the
++     * binaural ⇄ speaker output mode), so refresh it every packet and size
++     * the scratch buffer for the current mode. */
++    uint32_t cur_ch = p->dl->channel_count(p->renderer);
++    if (cur_ch > 0 && cur_ch <= MP_NUM_CHANNELS && (int)cur_ch != p->channels)
++        p->channels = (int)cur_ch;
++    int ch = p->channels > 0 ? p->channels : 1;
++    size_t capacity = (size_t)4096 * (size_t)ch;
++    float *samples = talloc_array(NULL, float, capacity);
++
++    uintptr_t n_frames = 0;
++    uint32_t n_ch = 0;
++    int64_t out_pts_us = 0;
++    int64_t pts_us = mpkt->pts == MP_NOPTS_VALUE ? 0 : (int64_t)(mpkt->pts * 1e6);
++
++    int ret = p->dl->process(p->renderer, mpkt->buffer, mpkt->len, pts_us,
++                             samples, capacity,
++                             &n_frames, &n_ch, &out_pts_us);
++    if (ret < 0) {
++        MP_ERR(da, "orender_process error %d\n", ret);
++        failed = true;
++        goto done;
++    }
++    if (ret > 0) {
++        MP_WARN(da, "orender output buffer too small; dropping packet\n");
++        goto done;
++    }
++
++    if (probe_host) {
++        /* Keep ownership of every packet until the bridge can classify the
++         * first decoded presentation. If it is a plain channel stream, replay
++         * these packets into the native decoder so probing loses no audio. */
++        MP_TARRAY_APPEND(p, p->probe_packets, p->num_probe_packets, inframe);
++        inframe = MP_NO_FRAME;
++        mpkt = NULL;
++    }
++
++    /* Classify only from *decoded* frames: before the first frame,
++     * has_objects reports the bridge's container-level guess (e.g. TrueHD
++     * assumes objects until proven otherwise), and latching that guess is
++     * exactly the failure the live-fact contract forbids. */
++    int spatial = p->dl->has_objects(p->renderer);
++    if (spatial == 1 && n_frames > 0) {
++        p->source_spatial = true;
++        p->source_classified = true;
++        clear_probe_packets(p);
++        p->dl->overlay_set_rendering(1);
++    } else if (probe_host && n_frames > 0) {
++        /* The bridge produced a real non-object frame: classification is now
++         * definitive. The decoded fact overrides the provisional container
++         * hint — this presentation is channel-based, not object content — so
++         * clear source_spatial too, else the next packet's routing
++         * (host = !source_spatial && …) would bounce it back to the spatial
++         * path and render HostPassthrough silence. Discard the probe render
++         * and replay from packet zero via the native child. */
++        p->source_spatial = false;
++        p->source_classified = true;
++        p->active_path = PATH_HOST;
++        p->dl->overlay_set_rendering(0);
++        p->dl->overlay_clear();
++        talloc_free(samples);
++        process_host(da, p);
++        return;
++    }
++
++    if (n_frames == 0)
++        goto done;   /* packet consumed; no output yet (need more data) */
++
++    /* Resolve the output chmap on the first *decoded* frame. Deferred until
++     * n_frames > 0: the layout is only meaningful once the bridge has decoded a
++     * frame (AC-3/DTS need several packets to acquire sync). */
++    if (!p->checked_spatial) {
++        p->checked_spatial = true;
++        p->last_mapping = p->dl->channel_mapping(p->renderer);
++        if (!build_chmap(p)) {
++            if (p->chmap.num == 0) {
++                /* The renderer reported no output channels (e.g. the speaker
++                 * layout could not be resolved). Spatial rendering is impossible,
++                 * so route to the native host decoder for the rest of the track
++                 * rather than dropping every frame (which would freeze audio). */
++                MP_WARN(da, "renderer reported no output layout; decoding "
++                            "natively instead (check the speaker layout in your "
++                            "omniphony config)\n");
++                p->force_host = true;
++                goto done;
++            }
++            MP_WARN(da, "output layout has speakers with no mpv mapping\n");
++        }
++    }
++
++    /* Live output-mode switches change the channel count mid-stream: rebuild
++     * the chmap so the frame below is allocated for what we actually copy —
++     * mpv's filter chain renegotiates downstream formats per frame. Without
++     * this, switching binaural → speakers made the memcpy below write
++     * n_frames × 12 floats into a 2-channel plane (heap corruption, SIGSEGV).
++     */
++    if (n_ch > 0 && n_ch != (uint32_t)p->chmap.num) {
++        MP_VERBOSE(da, "renderer output changed to %u channels; renegotiating chmap\n",
++                   n_ch);
++        if (!build_chmap(p))
++            MP_WARN(da, "output layout has speakers with no mpv mapping\n");
++        if (n_ch != (uint32_t)p->chmap.num) {
++            /* Safety net: still inconsistent → drop this frame instead of
++             * overflowing the plane. */
++            MP_ERR(da, "channel count %u does not match output layout (%d); "
++                       "dropping frame\n", n_ch, p->chmap.num);
++            goto done;
++        }
++    }
++
++    /* Live by-index/by-name switch: same channel count, but the chmap flips
++     * between positionless (by_index) and positional (by_name). The count check
++     * above misses it, so poll the mapping and rebuild on change — the new chmap
++     * set on the frame below makes mpv's filter chain reconfigure the output. */
++    {
++        int cur_mapping = p->dl->channel_mapping(p->renderer);
++        if (cur_mapping != p->last_mapping) {
++            MP_VERBOSE(da, "output channel mapping changed (%d -> %d); rebuilding chmap\n",
++                       p->last_mapping, cur_mapping);
++            build_chmap(p);
++            p->last_mapping = cur_mapping;
++        }
++    }
++
++    /* Now that a real frame has decoded, the engine knows the presentation's
++     * Atmos flag, object count and DialNorm — surface them as the track's codec
++     * profile so shift+I matches the native path (and adds objects + DialNorm). */
++    refresh_codec_profile(p);
++
++    /* Compensate the engine's constant DSP latency (ABI minor >= 7; the stub
++     * reports 0): with the linear-phase FIR crossover active, the samples in
++     * this frame render input from `latency` samples earlier, so stamping
++     * them earlier by the same amount lines the video up with what is
++     * actually heard. Polled per frame — the figure changes when the
++     * crossover engine or the output mode is switched live in Studio; mpv
++     * absorbs the resulting PTS step as an ordinary A/V resync. */
++    uint64_t latency = p->dl->output_latency_samples(p->renderer);
++    if (latency != p->last_latency) {
++        MP_VERBOSE(da, "render output latency: %llu samples (%.1f ms)\n",
++                   (unsigned long long)latency,
++                   p->sample_rate > 0 ? latency * 1000.0 / p->sample_rate : 0.0);
++        p->last_latency = latency;
++    }
++    if (latency > 0 && p->sample_rate > 0 && pts != MP_NOPTS_VALUE)
++        pts -= (double)latency / p->sample_rate;
++
++    out = mp_aframe_create();
++    mp_aframe_set_format(out, AF_FORMAT_FLOAT);   /* interleaved float32 */
++    mp_aframe_set_rate(out, p->sample_rate);
++    mp_aframe_set_chmap(out, &p->chmap);
++    /* Timestamp from the demuxer packet PTS (like ad_spdif), NOT the engine's
++     * internal sample clock (out_pts_us): that clock resets to 0 on seek
++     * (orender_reset), which puts the audio in the past so mpv drops every
++     * frame after a seek — video keeps playing but audio goes silent while the
++     * renderer is still producing samples. The packet PTS tracks seeks. */
++    mp_aframe_set_pts(out, pts);
++
++    /* format + rate + chmap must be set before allocating the data buffer. */
++    if (!mp_aframe_alloc_data(out, n_frames)) {
++        MP_ERR(da, "failed to allocate output frame (%zu frames, %u ch)\n",
++               n_frames, n_ch);
++        TA_FREEP(&out);
++        failed = true;
++        goto done;
++    }
++
++    uint8_t **data = mp_aframe_get_data_rw(out);
++    if (!data || !data[0]) {
++        MP_ERR(da, "no writable output plane\n");
++        TA_FREEP(&out);
++        failed = true;
++        goto done;
++    }
++    memcpy(data[0], samples, n_frames * (size_t)n_ch * sizeof(float));
++
++done:
++    talloc_free(samples);
++    talloc_free(mpkt);
++    if (out) {
++        mp_pin_in_write(da->ppins[1], MAKE_FRAME(MP_FRAME_AUDIO, out));
++    } else if (failed) {
++        mp_filter_internal_mark_failed(da);
++    } else {
++        // No output frame this pass: re-run so the graph stays active. The bridge
++        // needs several packets to acquire sync for some codecs (AC-3/DTS) before
++        // the first decoded frame, so early packets legitimately yield zero
++        // frames; re-running requests the next packet. Without this mpv never
++        // gets a first frame, the audio output is never created, and playback
++        // freezes on the first video frame with no sound. (Also covers the
++        // re-sync after a host→spatial switch, where the bridge was just reset.)
++        mp_filter_internal_mark_progress(da);
++    }
++}
++
++static void ad_orender_process(struct mp_filter *da)
++{
++    struct priv *p = da->priv;
++
++    /* The live channel mode only selects what to do with channel-based sources.
++     * Object content identified by the container or bridge always stays on the
++     * spatial path, independently of Studio's "Spatialize 2D sources" toggle. */
++    int mode = p->renderer ? p->dl->channel_mode(p->renderer) : 0;
++    bool probe_host = !p->force_host && !p->source_classified && mode != 1;
++    bool host = p->force_host || (!probe_host && !p->source_spatial && mode != 1);
++    int path = host ? PATH_HOST : PATH_SPATIAL;
++
++    /* On a mode flip, flush stale state on the side we switch *to* so it starts
++     * clean: the engine's bridge re-acquires sync (it wasn't fed during host),
++     * and the native child drops any partial state from a previous host stint. */
++    if (path != p->active_path) {
++        if (path == PATH_SPATIAL) {
++            if (p->renderer)
++                p->dl->reset(p->renderer);
++            p->checked_spatial = false;
++            p->dl->overlay_set_rendering(1);  // show the spatial overlay again
++            /* A host stint's child ad_lavc overwrote codec_desc/codec_profile
++             * with its own strings; restore our desc and force the next frame to
++             * republish our profile (reset the cache to impossible sentinels). */
++            p->codec->codec_desc = p->orender_desc;
++            p->last_objs = -1;
++            p->last_dnorm = 1;
++        } else {
++            if (p->native && p->native->f)
++                mp_filter_reset(p->native->f);
++            /* Hide the whole spatial overlay (wireframe cube included) while we
++             * decode natively — nothing is being spatialized — and drop the stale
++             * scene so it does not linger. The user's overlay on/off preference is
++             * preserved; spatial mode repopulates it. */
++            p->dl->overlay_set_rendering(0);
++            p->dl->overlay_clear();
++        }
++        p->active_path = path;
++    }
++
++    if (host)
++        process_host(da, p);
++    else
++        process_spatial(da, p, probe_host);
++}
++
++static void ad_orender_reset(struct mp_filter *da)
++{
++    struct priv *p = da->priv;
++    if (p->renderer)
++        p->dl->reset(p->renderer);
++    if (p->native && p->native->f)
++        mp_filter_reset(p->native->f);
++    clear_probe_packets(p);
++    p->checked_spatial = false;
++    p->active_path = PATH_NONE;
++}
++
++static void ad_orender_destroy(struct mp_filter *da)
++{
++    struct priv *p = da->priv;
++    clear_probe_packets(p);
++    /* The native child is a talloc child of `da` and is freed with it; the
++     * engine is an FFI handle we must release explicitly. The codec profile
++     * buffer is a talloc child of p->codec (not of `da`), so it correctly
++     * outlives this filter — see the profile_buf note in struct priv. */
++    if (p->renderer) {
++        p->dl->destroy(p->renderer);
++        p->renderer = NULL;
++    }
++}
++
++static const struct mp_filter_info ad_orender_filter = {
++    .name = "ad_orender",
++    .priv_size = sizeof(struct priv),
++    .process = ad_orender_process,
++    .reset = ad_orender_reset,
++    .destroy = ad_orender_destroy,
++};
++
++static struct mp_decoder *create(struct mp_filter *parent,
++                                 struct mp_codec_params *codec,
++                                 const char *decoder)
++{
++    if (!codec->codec ||
++        (strcmp(codec->codec, "truehd") != 0 && strcmp(codec->codec, "eac3") != 0 &&
++         strcmp(codec->codec, "ac3") != 0 && strcmp(codec->codec, "dts") != 0))
++        return NULL;
++
++    struct mp_filter *da = mp_filter_create(parent, &ad_orender_filter);
++    if (!da)
++        return NULL;
++
++    mp_filter_add_pin(da, MP_PIN_IN, "in");
++    mp_filter_add_pin(da, MP_PIN_OUT, "out");
++
++    da->log = mp_log_new(da, parent->log, NULL);
++
++    struct priv *p = da->priv;
++    p->log = da->log;
++    p->codec = codec;
++    p->sample_rate = codec->samplerate;
++    p->active_path = PATH_NONE;
++    p->source_spatial = codec_is_spatial_hint(codec);
++    /* The hint is provisional: routing follows the *decoded* fact (the
++     * engine's has_objects is live), so classification only happens once the
++     * bridge has produced frames. A container-profiled DTS:X track whose
++     * presentation is fixed channels (no dynamic objects) must still probe
++     * and fall back to the native path in host mode — terminally trusting
++     * the hint here left the embedded engine passing through silence
++     * forever (channel-object contract, phase 5). */
++    p->source_classified = false;
++    p->public.f = da;
++
++    MP_VERBOSE(da, "input profile: %s (early spatial=%s)\n",
++               codec->codec_profile ? codec->codec_profile : "unknown",
++               p->source_spatial ? "yes" : "no");
++
++    struct ad_orender_params *opts =
++        mp_get_config_group(da, da->global, &ad_orender_conf);
++    p->host_decoder_idx = opts->host_decoder_idx;
++
++    /* Load liborender (once per process; later calls hit the cache). On
++     * failure keep the all-stubs table so every call below stays valid;
++     * create() then returns NULL and the force_host path takes over. */
++    p->dl = orender_dl_get(da->global, da->log);
++    if (!p->dl) {
++        MP_ERR(da, "liborender unavailable (%s) — decoding natively. Install "
++                   "the engine library (Omniphony Studio deploys it), place it "
++                   "next to mpv, or point --ad-orender-library at it.\n",
++               orender_dl_error());
++        p->dl = orender_dl_stubs();
++    }
++
++    OrenderConfig cfg = {
++        .sample_rate         = p->sample_rate,
++        /* NULL → liborender resolves the shared omniphony config; these only
++         * override it for this mpv invocation. OSC: --ad-orender-osc forces it
++         * on, otherwise osc_enabled=0 lets liborender follow render.osc. Ports/
++         * host/bind 0/NULL fall back to the config then the built-in defaults. */
++        .config_yaml_path    = nz(opts->config_path),
++        .speaker_layout_path = NULL,
++        .bridge_path         = nz(opts->bridge_path),
++        /* Tell the bridge which codec the raw access units carry: its raw
++         * transport has no data-type byte to distinguish the supported
++         * codecs from each other. */
++        .codec               = codec->codec,
++        .osc_enabled         = opts->osc ? 1 : 0,
++        .osc_port_in         = (uint16_t)opts->osc_rx_port,
++        .osc_port_out        = (uint16_t)opts->osc_port,
++        .osc_bind            = nz(opts->osc_bind),
++        .osc_host            = nz(opts->osc_monitor_target),
++    };
++
++    p->renderer = p->dl->create(&cfg);
++    if (!p->renderer) {
++        /* The engine could not start (e.g. a bad render.bridge_path). Rather than
++         * leave the track with no decoder at all, stay selected and decode
++         * natively for the whole session (host). Spatial is impossible until the
++         * config is fixed and mpv restarted, but audio still plays. */
++#ifdef _WIN32
++        MP_ERR(da, "orender_create failed — decoding natively. Set "
++                   "render.bridge_path in your omniphony config "
++                   "(%%ProgramData%%\\omniphony\\config.yaml); see stderr.\n");
++#else
++        MP_ERR(da, "orender_create failed — decoding natively. Set "
++                   "render.bridge_path in your omniphony config "
++                   "(~/.config/omniphony/config.yaml); see stderr.\n");
++#endif
++        p->force_host = true;
++    }
++
++    /* Per-invocation override of the shared config's initial channel render mode.
++     * Option values: 0=auto (follow config), 1=host, 2=spatial (direct/virtual
++     * are legacy aliases of spatial). FFI mode codes: 0=host, 1=spatial — so
++     * `value - 1` maps host(1)→0 and spatial(2)→1. The live mode is then driven
++     * by Studio over OSC. */
++    if (p->renderer && opts->channel_mode_idx > 0)
++        p->dl->set_channel_mode(p->renderer, opts->channel_mode_idx - 1);
++
++    if (p->renderer)
++        p->channels = p->dl->channel_count(p->renderer);
++
++    /* Match the overlay's initial visibility to the starting mode, so it does not
++     * flash the wireframe cube before the first packet picks the path. */
++    bool start_host = p->force_host || !p->renderer ||
++                      (!p->source_spatial && p->dl->channel_mode(p->renderer) != 1);
++    p->dl->overlay_set_rendering(start_host ? 0 : 1);
++
++    /* Official-cased codec name. No "(orender)" suffix: the decoder already shows
++     * up as the trailing "[orender]" bracket (codec != decoder). The Atmos /
++     * DTS:X detail lands in the profile bracket built by refresh_codec_profile. */
++    if (strcmp(codec->codec, "eac3") == 0)
++        p->orender_desc = "E-AC-3";
++    else if (strcmp(codec->codec, "ac3") == 0)
++        p->orender_desc = "AC-3";
++    else if (strcmp(codec->codec, "dts") == 0)
++        p->orender_desc = "DTS";
++    else
++        p->orender_desc = "TrueHD";
++    codec->codec_desc = p->orender_desc;
++
++    /* Impossible sentinels (real: objs >=0, dnorm <=0 or INT32_MIN) so the first
++     * decoded spatial frame always publishes a codec profile. */
++    p->last_objs = -1;
++    p->last_dnorm = 1;
++
++    return &p->public;
++}
++
++static void add_decoders(struct mp_decoder_list *list)
++{
++    mp_add_decoder(list, "truehd", "orender",
++                   "Spatial audio via liborender (VBAP object rendering)");
++    mp_add_decoder(list, "eac3", "orender",
++                   "Spatial audio via liborender (VBAP object rendering)");
++    mp_add_decoder(list, "ac3", "orender",
++                   "Spatial audio via liborender (VBAP object rendering)");
++    mp_add_decoder(list, "dts", "orender",
++                   "Spatial audio via liborender (VBAP object rendering)");
++}
++
++const struct mp_decoder_fns ad_orender = {
++    .create = create,
++    .add_decoders = add_decoders,
++};
+diff --git a/audio/decode/ad_orender.h b/audio/decode/ad_orender.h
+new file mode 100644
+index 0000000..d9db0d6
+--- /dev/null
++++ b/audio/decode/ad_orender.h
+@@ -0,0 +1,39 @@
++/*
++ * --ad-orender-* option group, shared between the decoder
++ * (audio/decode/ad_orender.c) and the liborender runtime loader
++ * (common/orender_dl.c), which needs the library path option before any
++ * decoder exists.
++ *
++ * This file is part of mpv. mpv is free software; you can redistribute it
++ * and/or modify it under the terms of the GNU Lesser General Public License
++ * as published by the Free Software Foundation; either version 2.1 of the
++ * License, or (at your option) any later version.
++ */
++
++#ifndef MP_AD_ORENDER_H
++#define MP_AD_ORENDER_H
++
++#include <stdbool.h>
++
++#include "options/m_option.h"
++
++/* All paths/hosts default to empty → passed to liborender as NULL, which then
++ * resolves the shared omniphony config (~/.config/omniphony/config.yaml, the
++ * same one the CLI + studio use) for the bridge path, speaker layout, and OSC
++ * settings. These options only override the config per mpv invocation. */
++struct ad_orender_params {
++    char *library_path;         // explicit liborender path (else search order)
++    char *config_path;          // override render config YAML (else shared default)
++    char *bridge_path;          // override render.bridge_path
++    bool osc;                   // force OSC on (else follows config render.osc)
++    int osc_port;               // outgoing/monitoring port (0 = config/default)
++    int osc_rx_port;            // incoming control port  (0 = config/default 9000)
++    char *osc_bind;             // listener bind address (else config/default)
++    char *osc_monitor_target;   // monitoring host (else config/default)
++    int channel_mode_idx;       // initial render override: 0=auto 1=host 2=spatial
++    int host_decoder_idx;       // host-mode native decoder: 0=lavc 1=spdif
++};
++
++extern const struct m_sub_options ad_orender_conf;
++
++#endif
+diff --git a/audio/out/ao.c b/audio/out/ao.c
+index 4e5e9e3..1c11006 100644
+--- a/audio/out/ao.c
++++ b/audio/out/ao.c
+@@ -51,6 +51,7 @@ extern const struct ao_driver audio_out_opensles;
+ extern const struct ao_driver audio_out_null;
+ extern const struct ao_driver audio_out_alsa;
+ extern const struct ao_driver audio_out_wasapi;
++extern const struct ao_driver audio_out_asio;
+ extern const struct ao_driver audio_out_pcm;
+ extern const struct ao_driver audio_out_lavc;
+ extern const struct ao_driver audio_out_sdl;
+@@ -85,6 +86,9 @@ static const struct ao_driver * const audio_out_drivers[] = {
+ #if HAVE_WASAPI
+     &audio_out_wasapi,
+ #endif
++#if HAVE_ASIO
++    &audio_out_asio,
++#endif
+ #if HAVE_OSS_AUDIO
+     &audio_out_oss,
+ #endif
+diff --git a/audio/out/ao_asio.c b/audio/out/ao_asio.c
+new file mode 100644
+index 0000000..e1572df
+--- /dev/null
++++ b/audio/out/ao_asio.c
+@@ -0,0 +1,882 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or modify it under the
++ * terms of the GNU General Public License as published by the Free Software
++ * Foundation; either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * mpv is distributed in the hope that it will be useful, but WITHOUT ANY
++ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
++ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++// GPLv3, unlike most of mpv: this AO builds against Steinberg's ASIO SDK
++// headers, used under the GPLv3 half of the SDK's dual licence. See the note
++// at the top of ao_asio.h and the GPL-only file list in Copyright.
++
++// Steinberg ASIO output for mpv. Pull-style AO: the ASIO driver owns the
++// real-time callback thread, our bufferSwitch handler reads f32 planar
++// samples via ao_read_data() and converts per-channel into the ASIO
++// output buffers. mpv's native resampler (f_swresample) handles rate
++// conversion AND --video-sync=display-resample AV-sync compensation in
++// front of us; the AO just declares the negotiated rate and reports an
++// accurate delay so AV-sync works.
++
++#include <math.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <wchar.h>
++
++#include "mpv_talloc.h"
++
++#include "ao_asio.h"
++#include "audio/format.h"
++#include "audio/chmap.h"
++#include "audio/chmap_sel.h"
++#include "common/common.h"
++#include "options/m_option.h"
++#include "osdep/io.h"
++#include "osdep/timer.h"
++
++// ---------- Limits & constants ----------
++
++#define ASIO_MAX_DRIVERS  32
++#define ASIO_NAME_MAX     128
++
++enum asio_state_flag {
++    ASIO_STATE_INIT = 0,
++    ASIO_STATE_RUNNING,
++    ASIO_STATE_PAUSED,
++    ASIO_STATE_SHUTDOWN,
++};
++
++enum asio_opt_sample_type {
++    ASIO_OPT_TYPE_AUTO  = 0,
++    ASIO_OPT_TYPE_I16   = 1,
++    ASIO_OPT_TYPE_I24   = 2,
++    ASIO_OPT_TYPE_I32   = 3,
++    ASIO_OPT_TYPE_F32   = 4,
++};
++
++struct asio_driver_entry {
++    wchar_t name[ASIO_NAME_MAX];
++    CLSID   clsid;
++};
++
++struct asio_state {
++    struct mp_log *log;
++    struct ao     *ao;
++
++    // ASIO driver instance
++    IASIO *iasio;
++    CLSID  clsid;
++    char   driver_name[ASIO_NAME_MAX]; // UTF-8
++
++    // Negotiated configuration
++    long           num_in;
++    long           num_out;
++    int            num_used;       // ao->channels.num
++    int            channel_offset; // first physical output channel index used
++    ASIOSampleRate sample_rate;
++    long           buffer_size;
++    long           buf_min, buf_max, buf_pref, buf_gran;
++    long           input_lat;
++    long           output_lat;
++    ASIOSampleType sample_type;
++    asio_convert_fn convert_fn;
++
++    // ASIO buffer descriptors (one per used output channel)
++    ASIOBufferInfo *buffer_infos;     // talloc array of size num_used
++    ASIOChannelInfo *channel_infos;   // talloc array of size num_used
++    ASIOCallbacks  callbacks;
++
++    // Scratch planar f32 buffers for ao_read_data
++    float **temp_planar;         // talloc array of pointers (num_used)
++    float  *temp_planar_storage; // talloc buffer of num_used*buffer_size floats
++
++    // Runtime flags
++    _Atomic int state_flag;          // enum asio_state_flag
++    _Atomic bool supports_output_ready;
++    bool com_initialized;
++    bool driver_inited;              // IASIO::init() succeeded
++    bool buffers_created;            // IASIO::createBuffers() succeeded
++
++    // Options
++    char *opt_device;
++    int   opt_buffer_size;
++    int   opt_sample_rate;
++    int   opt_sample_type;
++    int   opt_channel_offset;
++};
++
++// ASIO callbacks are plain C function pointers with no user data, so we
++// must shuttle through a single global pointer. ASIO drivers are
++// single-instance per process anyway (SDK contract), so this is fine.
++static struct asio_state *g_active_state;
++
++// ---------- Sample-type converters ----------
++
++static inline float clampf(float v) {
++    return v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
++}
++
++static void conv_f32(void *dst, const float *src, int n, float vol)
++{
++    (void)vol;
++    memcpy(dst, src, (size_t)n * sizeof(float));
++}
++
++static void conv_s32(void *dst, const float *src, int n, float vol)
++{
++    (void)vol;
++    int32_t *d = dst;
++    // 2147483647 is not representable as float: scaling by 2147483647.0f
++    // rounds full scale to 2^31, and lrintf() of that overflows the 32-bit
++    // long, turning +1.0f into INT32_MIN — a full-scale polarity flip on
++    // every clipped peak. Scale in double, where INT32_MAX is exact.
++    for (int i = 0; i < n; i++)
++        d[i] = (int32_t)lrint(clampf(src[i]) * 2147483647.0);
++}
++
++static void conv_s24(void *dst, const float *src, int n, float vol)
++{
++    (void)vol;
++    uint8_t *d = dst;
++    for (int i = 0; i < n; i++) {
++        int32_t v = (int32_t)lrintf(clampf(src[i]) * 8388607.0f);
++        // 24-bit LSB-first, packed
++        d[i*3 + 0] = (uint8_t)(v & 0xFF);
++        d[i*3 + 1] = (uint8_t)((v >> 8) & 0xFF);
++        d[i*3 + 2] = (uint8_t)((v >> 16) & 0xFF);
++    }
++}
++
++static void conv_s16(void *dst, const float *src, int n, float vol)
++{
++    (void)vol;
++    int16_t *d = dst;
++    for (int i = 0; i < n; i++)
++        d[i] = (int16_t)lrintf(clampf(src[i]) * 32767.0f);
++}
++
++static size_t sample_bytes(ASIOSampleType t)
++{
++    switch (t) {
++    case ASIOSTInt16LSB:   return 2;
++    case ASIOSTInt24LSB:   return 3;
++    case ASIOSTInt32LSB:   return 4;
++    case ASIOSTFloat32LSB: return 4;
++    default:               return 0;
++    }
++}
++
++static asio_convert_fn convert_fn_for(ASIOSampleType t)
++{
++    switch (t) {
++    case ASIOSTInt16LSB:   return conv_s16;
++    case ASIOSTInt24LSB:   return conv_s24;
++    case ASIOSTInt32LSB:   return conv_s32;
++    case ASIOSTFloat32LSB: return conv_f32;
++    default:               return NULL;
++    }
++}
++
++static const char *sample_type_name(ASIOSampleType t)
++{
++    switch (t) {
++    case ASIOSTInt16LSB:   return "Int16LSB";
++    case ASIOSTInt24LSB:   return "Int24LSB";
++    case ASIOSTInt32LSB:   return "Int32LSB";
++    case ASIOSTFloat32LSB: return "Float32LSB";
++    case ASIOSTInt16MSB:   return "Int16MSB (unsupported)";
++    case ASIOSTInt24MSB:   return "Int24MSB (unsupported)";
++    case ASIOSTInt32MSB:   return "Int32MSB (unsupported)";
++    case ASIOSTFloat32MSB: return "Float32MSB (unsupported)";
++    case ASIOSTFloat64MSB: return "Float64MSB (unsupported)";
++    case ASIOSTFloat64LSB: return "Float64LSB (unsupported)";
++    default:               return "unknown";
++    }
++}
++
++// ---------- Registry-based driver enumeration ----------
++
++// Reads all ASIO drivers registered under HKLM\SOFTWARE\ASIO. Each
++// subkey is a driver display name; the "CLSID" string value holds the
++// COM CLSID of the driver. For ASIO, CLSID and IID are the same GUID
++// per driver (Steinberg convention).
++static int asio_enum_drivers(struct asio_driver_entry *out, int max,
++                             struct mp_log *log)
++{
++    HKEY hkey;
++    LONG err = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ASIO", 0,
++                             KEY_READ, &hkey);
++    if (err != ERROR_SUCCESS) {
++        if (log)
++            mp_verbose(log, "No ASIO drivers registered (RegOpenKeyExW=%ld)\n",
++                       err);
++        return 0;
++    }
++
++    int n = 0;
++    for (DWORD i = 0; n < max; i++) {
++        wchar_t name[ASIO_NAME_MAX];
++        DWORD name_len = ASIO_NAME_MAX;
++        if (RegEnumKeyExW(hkey, i, name, &name_len, NULL, NULL, NULL, NULL)
++            != ERROR_SUCCESS)
++        {
++            break;
++        }
++        HKEY sub;
++        if (RegOpenKeyExW(hkey, name, 0, KEY_READ, &sub) != ERROR_SUCCESS)
++            continue;
++        wchar_t clsid_str[64];
++        DWORD clen = sizeof(clsid_str);
++        DWORD type = 0;
++        if (RegQueryValueExW(sub, L"CLSID", NULL, &type, (BYTE *)clsid_str,
++                             &clen) == ERROR_SUCCESS && type == REG_SZ)
++        {
++            clsid_str[(clen / sizeof(wchar_t)) - 1] = 0;
++            CLSID clsid;
++            if (CLSIDFromString(clsid_str, &clsid) == NOERROR) {
++                wcsncpy(out[n].name, name, ASIO_NAME_MAX - 1);
++                out[n].name[ASIO_NAME_MAX - 1] = 0;
++                out[n].clsid = clsid;
++                n++;
++            }
++        }
++        RegCloseKey(sub);
++    }
++    RegCloseKey(hkey);
++    return n;
++}
++
++// Load the driver matching `wanted` (UTF-8 display name). If `wanted`
++// is NULL/empty, picks the first available driver. Returns 0 on
++// success; on success, *out is the live IASIO* pointer, and *clsid is
++// the driver's CLSID.
++static int asio_load_driver(struct mp_log *log, const char *wanted_utf8,
++                            IASIO **out_iasio, CLSID *out_clsid,
++                            wchar_t *out_name)
++{
++    struct asio_driver_entry entries[ASIO_MAX_DRIVERS];
++    int n = asio_enum_drivers(entries, ASIO_MAX_DRIVERS, log);
++    if (n == 0) {
++        mp_err(log, "No ASIO drivers found in HKLM\\SOFTWARE\\ASIO\n");
++        return -1;
++    }
++
++    wchar_t *wwanted = NULL;
++    if (wanted_utf8 && wanted_utf8[0])
++        wwanted = mp_from_utf8(NULL, wanted_utf8);
++
++    int idx = -1;
++    if (!wwanted) {
++        idx = 0;
++        mp_verbose(log, "No ASIO driver requested; using first available\n");
++    } else {
++        for (int i = 0; i < n; i++) {
++            if (wcscmp(entries[i].name, wwanted) == 0) {
++                idx = i;
++                break;
++            }
++        }
++        if (idx < 0) {
++            mp_err(log, "ASIO driver not found. Available drivers:\n");
++            for (int i = 0; i < n; i++) {
++                char *u = mp_to_utf8(NULL, entries[i].name);
++                mp_err(log, "  %s\n", u);
++                talloc_free(u);
++            }
++        }
++        talloc_free(wwanted);
++        if (idx < 0)
++            return -1;
++    }
++
++    // ASIO drivers use CLSID == IID (Steinberg convention). Try that
++    // first; if it fails, fall back to QI from IUnknown.
++    IASIO *iasio = NULL;
++    HRESULT hr = CoCreateInstance(&entries[idx].clsid, NULL,
++                                  CLSCTX_INPROC_SERVER,
++                                  &entries[idx].clsid, (void **)&iasio);
++    if (FAILED(hr) || !iasio) {
++        IUnknown *unk = NULL;
++        hr = CoCreateInstance(&entries[idx].clsid, NULL,
++                              CLSCTX_INPROC_SERVER,
++                              &IID_IUnknown, (void **)&unk);
++        if (SUCCEEDED(hr) && unk) {
++            hr = IUnknown_QueryInterface(unk, &entries[idx].clsid,
++                                         (void **)&iasio);
++            IUnknown_Release(unk);
++        }
++    }
++    if (FAILED(hr) || !iasio) {
++        char *u = mp_to_utf8(NULL, entries[idx].name);
++        mp_err(log, "CoCreateInstance failed for ASIO driver '%s': %s\n",
++               u, mp_HRESULT_to_str(hr));
++        talloc_free(u);
++        return -1;
++    }
++
++    *out_iasio = iasio;
++    *out_clsid = entries[idx].clsid;
++    if (out_name) {
++        wcsncpy(out_name, entries[idx].name, ASIO_NAME_MAX - 1);
++        out_name[ASIO_NAME_MAX - 1] = 0;
++    }
++    return 0;
++}
++
++// ---------- ASIO host callbacks (driver -> us) ----------
++
++static void cb_buffer_switch(long idx, ASIOBool direct)
++{
++    (void)direct;
++    struct asio_state *s = g_active_state;
++    if (!s)
++        return;
++
++    int flag = atomic_load(&s->state_flag);
++    size_t bytes_per_sample = sample_bytes(s->sample_type);
++
++    if (flag != ASIO_STATE_RUNNING) {
++        for (int c = 0; c < s->num_used; c++) {
++            memset(s->buffer_infos[c].buffers[idx], 0,
++                   (size_t)s->buffer_size * bytes_per_sample);
++        }
++        return;
++    }
++
++    // Delay accounting: the last sample of this block will physically emit
++    // after the current block drains plus the driver's reported output
++    // latency. ao_read_data uses this for AV-sync and display-resample.
++    long frames_ahead = s->output_lat + s->buffer_size;
++    int64_t delay_ns = (int64_t)((double)frames_ahead * 1e9 / s->sample_rate);
++    int64_t out_time = mp_time_ns() + delay_ns;
++
++    void *planes[MP_NUM_CHANNELS];
++    for (int c = 0; c < s->num_used; c++)
++        planes[c] = s->temp_planar[c];
++
++    ao_read_data(s->ao, planes, s->buffer_size, out_time, NULL,
++                 /* pad_silence= */ true, /* blocking= */ false);
++
++    for (int c = 0; c < s->num_used; c++) {
++        s->convert_fn(s->buffer_infos[c].buffers[idx],
++                      s->temp_planar[c], s->buffer_size, 1.0f);
++    }
++
++    if (atomic_load(&s->supports_output_ready))
++        IASIO_OutputReady(s->iasio);
++}
++
++static ASIOTime *cb_buffer_switch_time_info(ASIOTime *params, long idx,
++                                            ASIOBool direct)
++{
++    // For v1 we ignore the supplied time info and reuse the simple path;
++    // ASIOGetLatencies + buffer_size already gives us accurate enough
++    // delay reporting. A v2 refinement could use params->timeInfo for
++    // sub-block-precision delay.
++    cb_buffer_switch(idx, direct);
++    return params;
++}
++
++static void cb_sample_rate_did_change(ASIOSampleRate r)
++{
++    struct asio_state *s = g_active_state;
++    if (!s)
++        return;
++    MP_INFO(s, "ASIO driver reports sample rate change to %.0f Hz; "
++            "requesting reload\n", (double)r);
++    ao_request_reload(s->ao);
++}
++
++static long cb_asio_message(long selector, long value, void *msg, double *opt)
++{
++    (void)msg; (void)opt;
++    struct asio_state *s = g_active_state;
++    if (!s)
++        return 0;
++
++    switch (selector) {
++    case kAsioSelectorSupported:
++        switch (value) {
++        case kAsioEngineVersion:
++        case kAsioResetRequest:
++        case kAsioBufferSizeChange:
++        case kAsioResyncRequest:
++        case kAsioLatenciesChanged:
++        case kAsioSupportsTimeInfo:
++        case kAsioOverload:
++            return 1;
++        default:
++            return 0;
++        }
++    case kAsioEngineVersion:
++        return 2;
++    case kAsioResetRequest:
++        MP_INFO(s, "ASIO reset requested; reloading\n");
++        ao_request_reload(s->ao);
++        return 1;
++    case kAsioBufferSizeChange:
++        MP_INFO(s, "ASIO buffer size change requested (%ld); reloading\n",
++                value);
++        ao_request_reload(s->ao);
++        return 1;
++    case kAsioResyncRequest:
++        MP_WARN(s, "ASIO resync requested\n");
++        return 1;
++    case kAsioLatenciesChanged:
++        if (s->iasio) {
++            long in, out;
++            if (IASIO_GetLatencies(s->iasio, &in, &out) == ASE_OK) {
++                s->input_lat = in;
++                s->output_lat = out;
++                MP_VERBOSE(s, "ASIO latencies updated: in=%ld out=%ld frames\n",
++                           in, out);
++            }
++        }
++        return 1;
++    case kAsioSupportsTimeInfo:
++        return 1;
++    case kAsioOverload:
++        MP_WARN(s, "ASIO driver reported overload\n");
++        return 1;
++    default:
++        return 0;
++    }
++}
++
++// ---------- Lifecycle helpers ----------
++
++static void asio_teardown(struct ao *ao)
++{
++    struct asio_state *s = ao->priv;
++
++    if (s->iasio) {
++        if (s->buffers_created) {
++            // ASIOStop is implied by ASIODisposeBuffers but explicit is
++            // safer; ignore errors.
++            s->iasio->lpVtbl->stop(s->iasio);
++            s->iasio->lpVtbl->disposeBuffers(s->iasio);
++            s->buffers_created = false;
++        }
++        IASIO_Release(s->iasio);
++        s->iasio = NULL;
++        s->driver_inited = false;
++    }
++
++    talloc_free(s->buffer_infos);
++    s->buffer_infos = NULL;
++    talloc_free(s->channel_infos);
++    s->channel_infos = NULL;
++    talloc_free(s->temp_planar);
++    s->temp_planar = NULL;
++    talloc_free(s->temp_planar_storage);
++    s->temp_planar_storage = NULL;
++
++    if (s->com_initialized) {
++        CoUninitialize();
++        s->com_initialized = false;
++    }
++
++    if (g_active_state == s)
++        g_active_state = NULL;
++}
++
++static int negotiate_sample_rate(struct asio_state *s)
++{
++    static const double candidates[] = {
++        48000.0, 44100.0, 96000.0, 192000.0,
++        88200.0, 176400.0, 32000.0,
++    };
++
++    double primary = s->opt_sample_rate > 0
++        ? (double)s->opt_sample_rate
++        : (double)s->ao->samplerate;
++
++    if (primary > 0 && IASIO_CanSampleRate(s->iasio, primary) == ASE_OK) {
++        if (IASIO_SetSampleRate(s->iasio, primary) == ASE_OK) {
++            s->sample_rate = primary;
++            return 0;
++        }
++    }
++
++    for (size_t i = 0; i < MP_ARRAY_SIZE(candidates); i++) {
++        double r = candidates[i];
++        if (IASIO_CanSampleRate(s->iasio, r) != ASE_OK)
++            continue;
++        if (IASIO_SetSampleRate(s->iasio, r) == ASE_OK) {
++            s->sample_rate = r;
++            return 0;
++        }
++    }
++
++    // Last chance: whatever the driver is set to.
++    ASIOSampleRate r = 0;
++    if (IASIO_GetSampleRate(s->iasio, &r) == ASE_OK && r > 0) {
++        s->sample_rate = r;
++        return 0;
++    }
++    return -1;
++}
++
++static long pick_buffer_size(struct asio_state *s)
++{
++    if (s->opt_buffer_size <= 0)
++        return s->buf_pref;
++
++    long want = s->opt_buffer_size;
++    if (want < s->buf_min) want = s->buf_min;
++    if (want > s->buf_max) want = s->buf_max;
++    if (s->buf_gran > 0) {
++        // Snap to granularity from the minimum.
++        long delta = want - s->buf_min;
++        long snap = (delta + s->buf_gran / 2) / s->buf_gran;
++        want = s->buf_min + snap * s->buf_gran;
++        if (want > s->buf_max) want = s->buf_max;
++        if (want < s->buf_min) want = s->buf_min;
++    } else if (s->buf_gran == -1) {
++        // Powers of two from min to max.
++        long p = s->buf_min;
++        while (p * 2 <= want && p * 2 <= s->buf_max)
++            p *= 2;
++        want = p;
++    }
++    return want;
++}
++
++static int pick_sample_type(struct asio_state *s)
++{
++    // ASIO does not let you force a sample type — each channel has a
++    // fixed native type. We honor the driver's type unless the user
++    // explicitly requested one that doesn't match (in which case fail).
++    ASIOSampleType native = s->channel_infos[0].type;
++    for (int c = 1; c < s->num_used; c++) {
++        if (s->channel_infos[c].type != native) {
++            MP_ERR(s, "ASIO channels report mixed sample types (%s vs %s); "
++                   "unsupported\n",
++                   sample_type_name(native),
++                   sample_type_name(s->channel_infos[c].type));
++            return -1;
++        }
++    }
++
++    if (s->opt_sample_type != ASIO_OPT_TYPE_AUTO) {
++        ASIOSampleType wanted;
++        switch (s->opt_sample_type) {
++        case ASIO_OPT_TYPE_I16: wanted = ASIOSTInt16LSB;   break;
++        case ASIO_OPT_TYPE_I24: wanted = ASIOSTInt24LSB;   break;
++        case ASIO_OPT_TYPE_I32: wanted = ASIOSTInt32LSB;   break;
++        case ASIO_OPT_TYPE_F32: wanted = ASIOSTFloat32LSB; break;
++        default:                wanted = native;           break;
++        }
++        if (wanted != native) {
++            MP_ERR(s, "ASIO driver uses %s but --asio-sample-type forces "
++                   "a different type. The driver does not allow this.\n",
++                   sample_type_name(native));
++            return -1;
++        }
++    }
++
++    asio_convert_fn fn = convert_fn_for(native);
++    if (!fn) {
++        MP_ERR(s, "Unsupported ASIO sample type: %s. Only Int16LSB, "
++               "Int24LSB, Int32LSB and Float32LSB are supported.\n",
++               sample_type_name(native));
++        return -1;
++    }
++    s->sample_type = native;
++    s->convert_fn = fn;
++    return 0;
++}
++
++// ---------- ao_driver entry points ----------
++
++static void uninit(struct ao *ao)
++{
++    struct asio_state *s = ao->priv;
++    MP_DBG(s, "Uninit ASIO\n");
++    atomic_store(&s->state_flag, ASIO_STATE_SHUTDOWN);
++    asio_teardown(ao);
++}
++
++static int init(struct ao *ao)
++{
++    struct asio_state *s = ao->priv;
++    s->log = ao->log;
++    s->ao  = ao;
++    atomic_store(&s->state_flag, ASIO_STATE_INIT);
++    atomic_store(&s->supports_output_ready, false);
++
++    if (g_active_state) {
++        MP_ERR(ao, "Another ao_asio instance is already active; ASIO is "
++               "single-instance per process.\n");
++        return -1;
++    }
++    g_active_state = s;
++
++    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
++    // S_OK or S_FALSE means we own a refcount; RPC_E_CHANGED_MODE means
++    // someone else already chose MTA on this thread, which is fine for
++    // most ASIO drivers in practice.
++    s->com_initialized = SUCCEEDED(hr);
++
++    // Resolve driver name: --audio-device=asio/<name> stripped to <name>
++    // is in ao->device; --asio-device is the explicit option.
++    const char *wanted = (ao->device && ao->device[0]) ? ao->device
++                                                       : s->opt_device;
++    wchar_t wname[ASIO_NAME_MAX] = {0};
++    MP_VERBOSE(ao, "Loading ASIO driver '%s' (this may take a moment)...\n",
++               wanted ? wanted : "<first available>");
++    if (asio_load_driver(ao->log, wanted, &s->iasio, &s->clsid, wname) < 0)
++        goto fail;
++
++    char *u_name = mp_to_utf8(NULL, wname);
++    snprintf(s->driver_name, sizeof(s->driver_name), "%s", u_name);
++    talloc_free(u_name);
++    MP_VERBOSE(ao, "Loaded ASIO driver: %s\n", s->driver_name);
++
++    // ASIO drivers historically expect a HWND in sysHandle on Windows
++    // even though most ignore it. The desktop window is a safe default.
++    if (!IASIO_Init(s->iasio, (void *)GetDesktopWindow())) {
++        char errbuf[128] = {0};
++        IASIO_GetErrorMessage(s->iasio, errbuf);
++        MP_ERR(ao, "IASIO::init failed: %s\n", errbuf);
++        goto fail;
++    }
++    s->driver_inited = true;
++
++    if (IASIO_GetChannels(s->iasio, &s->num_in, &s->num_out) != ASE_OK
++        || s->num_out <= 0)
++    {
++        MP_ERR(ao, "IASIO::getChannels failed or no output channels\n");
++        goto fail;
++    }
++    MP_VERBOSE(ao, "Driver reports %ld input / %ld output channels\n",
++               s->num_in, s->num_out);
++
++    s->channel_offset = s->opt_channel_offset;
++    if (s->channel_offset >= s->num_out) {
++        MP_ERR(ao, "channel-offset=%d exceeds driver outputs (%ld)\n",
++               s->channel_offset, s->num_out);
++        goto fail;
++    }
++    int avail = (int)s->num_out - s->channel_offset;
++
++    // Channel layout negotiation: advertise the full waveext set (mono up to
++    // 9.1.6, including 5.1.4 and 7.1.4 height layouts) so spatial inputs
++    // (Atmos beds + objects rendered to N speakers) aren't downmixed to 7.1
++    // before they reach the driver. waveext also forces a stable, well-known
++    // channel order that ASIO drivers expose on their physical outputs.
++    // mp_chmap_from_channels only knows layouts up to 7.1 (default_layouts[]
++    // stops at 8) so it would otherwise cap the negotiated output at 8 ch.
++    struct mp_chmap_sel chmap_sel = {0};
++    mp_chmap_sel_add_waveext(&chmap_sel);
++    // Also accept any chmap that fits the available physical outputs — covers
++    // unusual driver configurations (e.g. 24-ch MOTU surfaces).
++    if (avail > 0)
++        chmap_sel.allow_any = true;
++    if (!ao_chmap_sel_adjust(ao, &chmap_sel, &ao->channels)) {
++        MP_ERR(ao, "Could not negotiate a channel layout within the %d "
++               "available ASIO output channels\n", avail);
++        goto fail;
++    }
++    s->num_used = ao->channels.num;
++    MP_VERBOSE(ao, "Using %d channels starting at physical channel %d\n",
++               s->num_used, s->channel_offset);
++
++    if (negotiate_sample_rate(s) < 0) {
++        MP_ERR(ao, "Could not select a sample rate on the ASIO driver\n");
++        goto fail;
++    }
++    MP_VERBOSE(ao, "Sample rate: %.0f Hz\n", (double)s->sample_rate);
++
++    if (IASIO_GetBufferSize(s->iasio, &s->buf_min, &s->buf_max,
++                            &s->buf_pref, &s->buf_gran) != ASE_OK)
++    {
++        MP_ERR(ao, "IASIO::getBufferSize failed\n");
++        goto fail;
++    }
++    s->buffer_size = pick_buffer_size(s);
++    MP_VERBOSE(ao, "Buffer size: %ld frames (min=%ld max=%ld pref=%ld gran=%ld)\n",
++               s->buffer_size, s->buf_min, s->buf_max, s->buf_pref, s->buf_gran);
++
++    s->channel_infos = talloc_zero_array(NULL, ASIOChannelInfo, s->num_used);
++    for (int c = 0; c < s->num_used; c++) {
++        s->channel_infos[c].channel = s->channel_offset + c;
++        s->channel_infos[c].isInput = ASIOFalse;
++        if (IASIO_GetChannelInfo(s->iasio, &s->channel_infos[c]) != ASE_OK) {
++            MP_ERR(ao, "IASIO::getChannelInfo failed for channel %ld\n",
++                   s->channel_infos[c].channel);
++            goto fail;
++        }
++    }
++
++    if (pick_sample_type(s) < 0)
++        goto fail;
++    MP_VERBOSE(ao, "Driver sample type: %s\n", sample_type_name(s->sample_type));
++
++    s->buffer_infos = talloc_zero_array(NULL, ASIOBufferInfo, s->num_used);
++    for (int c = 0; c < s->num_used; c++) {
++        s->buffer_infos[c].isInput   = ASIOFalse;
++        s->buffer_infos[c].channelNum = s->channel_offset + c;
++    }
++
++    s->callbacks.bufferSwitch         = cb_buffer_switch;
++    s->callbacks.sampleRateDidChange  = cb_sample_rate_did_change;
++    s->callbacks.asioMessage          = cb_asio_message;
++    s->callbacks.bufferSwitchTimeInfo = cb_buffer_switch_time_info;
++
++    if (IASIO_CreateBuffers(s->iasio, s->buffer_infos, s->num_used,
++                            s->buffer_size, &s->callbacks) != ASE_OK)
++    {
++        MP_ERR(ao, "IASIO::createBuffers failed (size=%ld, channels=%d)\n",
++               s->buffer_size, s->num_used);
++        goto fail;
++    }
++    s->buffers_created = true;
++
++    if (IASIO_GetLatencies(s->iasio, &s->input_lat, &s->output_lat) != ASE_OK) {
++        MP_WARN(ao, "IASIO::getLatencies failed; assuming output_lat=0\n");
++        s->input_lat = 0;
++        s->output_lat = 0;
++    }
++    MP_VERBOSE(ao, "Latencies: input=%ld output=%ld frames\n",
++               s->input_lat, s->output_lat);
++
++    // Probe ASIOOutputReady support (defaults to "no" if call fails).
++    atomic_store(&s->supports_output_ready,
++                 IASIO_OutputReady(s->iasio) == ASE_OK);
++
++    // Allocate scratch f32 buffers (one per used channel).
++    size_t total = (size_t)s->num_used * (size_t)s->buffer_size;
++    s->temp_planar_storage = talloc_array(NULL, float, total);
++    memset(s->temp_planar_storage, 0, total * sizeof(float));
++    s->temp_planar = talloc_array(NULL, float *, s->num_used);
++    for (int c = 0; c < s->num_used; c++)
++        s->temp_planar[c] = s->temp_planar_storage + (size_t)c * s->buffer_size;
++
++    // Publish negotiated values back to mpv. f_swresample will be wired
++    // upstream with these as the target.
++    ao->samplerate    = (int)s->sample_rate;
++    ao->format        = AF_FORMAT_FLOATP;
++    ao->device_buffer = s->buffer_size;
++
++    MP_VERBOSE(ao, "ao_asio init done: %d Hz, %d ch, FLOATP, %ld-frame buffer\n",
++               ao->samplerate, s->num_used, s->buffer_size);
++    return 0;
++
++fail:
++    asio_teardown(ao);
++    return -1;
++}
++
++static void audio_start(struct ao *ao)
++{
++    struct asio_state *s = ao->priv;
++    atomic_store(&s->state_flag, ASIO_STATE_RUNNING);
++    ASIOError err = IASIO_Start(s->iasio);
++    if (err != ASE_OK) {
++        MP_ERR(ao, "IASIO::start failed (%ld); requesting reload\n", (long)err);
++        atomic_store(&s->state_flag, ASIO_STATE_PAUSED);
++        ao_request_reload(ao);
++    }
++}
++
++static void audio_reset(struct ao *ao)
++{
++    struct asio_state *s = ao->priv;
++    atomic_store(&s->state_flag, ASIO_STATE_PAUSED);
++    IASIO_Stop(s->iasio);
++}
++
++static bool audio_set_pause(struct ao *ao, bool paused)
++{
++    struct asio_state *s = ao->priv;
++    if (paused) {
++        atomic_store(&s->state_flag, ASIO_STATE_PAUSED);
++        IASIO_Stop(s->iasio);
++    } else {
++        atomic_store(&s->state_flag, ASIO_STATE_RUNNING);
++        ASIOError err = IASIO_Start(s->iasio);
++        if (err != ASE_OK) {
++            MP_ERR(ao, "IASIO::start failed on unpause (%ld)\n", (long)err);
++            atomic_store(&s->state_flag, ASIO_STATE_PAUSED);
++            return false;
++        }
++    }
++    return true;
++}
++
++static int control(struct ao *ao, enum aocontrol cmd, void *arg)
++{
++    (void)ao; (void)arg;
++    switch (cmd) {
++    case AOCONTROL_GET_VOLUME:
++    case AOCONTROL_SET_VOLUME:
++    case AOCONTROL_GET_MUTE:
++    case AOCONTROL_SET_MUTE:
++        // ASIO exposes no hardware mixer; mpv's software volume gain is
++        // already applied by ao_read_data() upstream.
++        return CONTROL_FALSE;
++    case AOCONTROL_UPDATE_STREAM_TITLE:
++        // ASIO drivers have no display channel.
++        return CONTROL_FALSE;
++    }
++    return CONTROL_UNKNOWN;
++}
++
++static void list_devs(struct ao *ao, struct ao_device_list *list)
++{
++    bool need_uninit = false;
++    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
++    if (SUCCEEDED(hr))
++        need_uninit = true;
++
++    struct asio_driver_entry entries[ASIO_MAX_DRIVERS];
++    int n = asio_enum_drivers(entries, ASIO_MAX_DRIVERS, ao->log);
++    for (int i = 0; i < n; i++) {
++        char *u = mp_to_utf8(NULL, entries[i].name);
++        ao_device_list_add(list, ao, &(struct ao_device_desc){u, u});
++        talloc_free(u);
++    }
++
++    if (need_uninit)
++        CoUninitialize();
++}
++
++#define OPT_BASE_STRUCT struct asio_state
++
++const struct ao_driver audio_out_asio = {
++    .description    = "Steinberg ASIO audio output",
++    .name           = "asio",
++    .init           = init,
++    .uninit         = uninit,
++    .control        = control,
++    .reset          = audio_reset,
++    .start          = audio_start,
++    .set_pause      = audio_set_pause,
++    .list_devs      = list_devs,
++    .priv_size      = sizeof(struct asio_state),
++    .options_prefix = "asio",
++    .options        = (const struct m_option[]) {
++        {"device",         OPT_STRING(opt_device)},
++        {"buffer-size",    OPT_INT(opt_buffer_size), M_RANGE(0, 65536)},
++        {"sample-rate",    OPT_INT(opt_sample_rate), M_RANGE(0, 384000)},
++        {"sample-type",    OPT_CHOICE(opt_sample_type,
++                              {"auto",    ASIO_OPT_TYPE_AUTO},
++                              {"int16",   ASIO_OPT_TYPE_I16},
++                              {"int24",   ASIO_OPT_TYPE_I24},
++                              {"int32",   ASIO_OPT_TYPE_I32},
++                              {"float32", ASIO_OPT_TYPE_F32})},
++        {"channel-offset", OPT_INT(opt_channel_offset), M_RANGE(0, 255)},
++        {0}
++    },
++};
+diff --git a/audio/out/ao_asio.h b/audio/out/ao_asio.h
+new file mode 100644
+index 0000000..c3f85dc
+--- /dev/null
++++ b/audio/out/ao_asio.h
+@@ -0,0 +1,121 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or modify it under the
++ * terms of the GNU General Public License as published by the Free Software
++ * Foundation; either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * mpv is distributed in the hope that it will be useful, but WITHOUT ANY
++ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
++ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++// GPLv3, not LGPL like the rest of mpv: this file includes Steinberg's ASIO
++// SDK headers, taken under the GPLv3 half of the SDK's dual licence (since
++// 2025-10-15; the other half is Steinberg's proprietary licence, which mpv
++// cannot use). ao_asio is therefore gated on -Dgpl=true, and an LGPL build
++// has no ASIO output. See DOCS/contribute.md and the Copyright file.
++//
++// Everything the ABI defines — types, structs, enums, sample-type and
++// selector constants — comes from the SDK's <asio.h>. What follows is the
++// one thing the SDK cannot give a C translation unit: IASIO itself, which
++// the SDK declares in iasiodrv.h as a C++ class with virtual methods
++// ("interface IASIO : public IUnknown"). Re-expressed here as the COM vtbl
++// that class produces, because C has no other way to call through it. The
++// slot order is not a design choice: it is what the ABI is.
++
++#ifndef MP_AO_ASIO_H_
++#define MP_AO_ASIO_H_
++
++#include <stdatomic.h>
++#include <stdbool.h>
++#include <stdint.h>
++
++#include <windows.h>
++#include <objbase.h>
++
++// Steinberg ASIO SDK (GPLv3 option). asiosys.h must come first: it sets the
++// platform macros asio.h keys off.
++#include <asiosys.h>
++#include <asio.h>
++
++#include "common/msg.h"
++#include "osdep/windows_utils.h"
++#include "internal.h"
++#include "ao.h"
++
++// Sample-type converter signature: writes `n` samples from planar f32
++// src into the ASIO output buffer dst, scaled by `vol`.
++struct asio_state;
++typedef void (*asio_convert_fn)(void *dst, const float *src, int n, float vol);
++
++// --- IASIO as a C vtbl (see the note at the top of this file) ---
++//
++// Each ASIO driver implements IASIO with a vtbl in the same layout the
++// C++ "interface IASIO : public IUnknown" produces on MSVC/MinGW (vtbl
++// pointer first, IUnknown methods at slots 0..2, IASIO methods after).
++
++typedef struct IASIO IASIO;
++
++typedef struct IASIOVtbl {
++    // IUnknown
++    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IASIO *, REFIID, void **);
++    ULONG   (STDMETHODCALLTYPE *AddRef)(IASIO *);
++    ULONG   (STDMETHODCALLTYPE *Release)(IASIO *);
++    // IASIO
++    ASIOBool (STDMETHODCALLTYPE *init)(IASIO *, void *sysHandle);
++    void     (STDMETHODCALLTYPE *getDriverName)(IASIO *, char *name);
++    long     (STDMETHODCALLTYPE *getDriverVersion)(IASIO *);
++    void     (STDMETHODCALLTYPE *getErrorMessage)(IASIO *, char *string);
++    ASIOError(STDMETHODCALLTYPE *start)(IASIO *);
++    ASIOError(STDMETHODCALLTYPE *stop)(IASIO *);
++    ASIOError(STDMETHODCALLTYPE *getChannels)(IASIO *, long *in, long *out);
++    ASIOError(STDMETHODCALLTYPE *getLatencies)(IASIO *, long *in, long *out);
++    ASIOError(STDMETHODCALLTYPE *getBufferSize)(IASIO *, long *min, long *max,
++                                                long *pref, long *gran);
++    ASIOError(STDMETHODCALLTYPE *canSampleRate)(IASIO *, ASIOSampleRate);
++    ASIOError(STDMETHODCALLTYPE *getSampleRate)(IASIO *, ASIOSampleRate *);
++    ASIOError(STDMETHODCALLTYPE *setSampleRate)(IASIO *, ASIOSampleRate);
++    ASIOError(STDMETHODCALLTYPE *getClockSources)(IASIO *, ASIOClockSource *,
++                                                  long *num);
++    ASIOError(STDMETHODCALLTYPE *setClockSource)(IASIO *, long ref);
++    ASIOError(STDMETHODCALLTYPE *getSamplePosition)(IASIO *, ASIOSamples *,
++                                                    ASIOTimeStamp *);
++    ASIOError(STDMETHODCALLTYPE *getChannelInfo)(IASIO *, ASIOChannelInfo *);
++    ASIOError(STDMETHODCALLTYPE *createBuffers)(IASIO *, ASIOBufferInfo *,
++                                                long n, long size,
++                                                ASIOCallbacks *);
++    ASIOError(STDMETHODCALLTYPE *disposeBuffers)(IASIO *);
++    ASIOError(STDMETHODCALLTYPE *controlPanel)(IASIO *);
++    ASIOError(STDMETHODCALLTYPE *future)(IASIO *, long selector, void *opt);
++    ASIOError(STDMETHODCALLTYPE *outputReady)(IASIO *);
++} IASIOVtbl;
++
++struct IASIO {
++    const IASIOVtbl *lpVtbl;
++};
++
++// Only the vtbl slots this AO calls are wrapped; the vtbl itself must
++// stay complete for the layout to match.
++#define IASIO_Release(p)                  ((p)->lpVtbl->Release((p)))
++#define IASIO_Init(p,h)                   ((p)->lpVtbl->init((p),(h)))
++#define IASIO_GetErrorMessage(p,buf)      ((p)->lpVtbl->getErrorMessage((p),(buf)))
++#define IASIO_Start(p)                    ((p)->lpVtbl->start((p)))
++#define IASIO_Stop(p)                     ((p)->lpVtbl->stop((p)))
++#define IASIO_GetChannels(p,i,o)          ((p)->lpVtbl->getChannels((p),(i),(o)))
++#define IASIO_GetLatencies(p,i,o)         ((p)->lpVtbl->getLatencies((p),(i),(o)))
++#define IASIO_GetBufferSize(p,a,b,c,d)    ((p)->lpVtbl->getBufferSize((p),(a),(b),(c),(d)))
++#define IASIO_CanSampleRate(p,r)          ((p)->lpVtbl->canSampleRate((p),(r)))
++#define IASIO_GetSampleRate(p,r)          ((p)->lpVtbl->getSampleRate((p),(r)))
++#define IASIO_SetSampleRate(p,r)          ((p)->lpVtbl->setSampleRate((p),(r)))
++#define IASIO_GetChannelInfo(p,info)      ((p)->lpVtbl->getChannelInfo((p),(info)))
++#define IASIO_CreateBuffers(p,bi,n,s,cb)  ((p)->lpVtbl->createBuffers((p),(bi),(n),(s),(cb)))
++#define IASIO_DisposeBuffers(p)           ((p)->lpVtbl->disposeBuffers((p)))
++#define IASIO_OutputReady(p)              ((p)->lpVtbl->outputReady((p)))
++
++#endif /* MP_AO_ASIO_H_ */
+diff --git a/audio/out/ao_wasapi_utils.c b/audio/out/ao_wasapi_utils.c
+index b8a7f40..51ed4db 100644
+--- a/audio/out/ao_wasapi_utils.c
++++ b/audio/out/ao_wasapi_utils.c
+@@ -434,7 +434,12 @@ static bool search_channels(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
+     struct wasapi_state *state = ao->priv;
+     struct mp_chmap_sel chmap_sel = {.tmp = state};
+     struct mp_chmap entry;
+-    // put common layouts first so that we find sample rate/format early
++    // put common layouts first so that we find sample rate/format early.
++    // Height layouts (5.1.4 / 7.1.4 / 9.1.6) are at the end so the loop
++    // exits as soon as the driver rejects them on hardware that caps at
++    // 7.1, but lets pro multi-channel devices (e.g. MOTU 24Ao in WASAPI
++    // exclusive) negotiate the full speaker count instead of being
++    // downmixed to octagonal (8 ch).
+     char *channel_layouts[] =
+         {"stereo", "5.1", "7.1", "6.1", "mono", "2.1", "4.0", "5.0",
+          "3.0", "3.0(back)",
+@@ -442,7 +447,13 @@ static bool search_channels(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
+          "5.0(side)", "4.1",
+          "5.1(side)", "6.0", "6.0(front)", "hexagonal",
+          "6.1(back)", "6.1(front)", "7.0", "7.0(front)",
+-         "7.1(wide)", "7.1(wide-side)", "7.1(rear)", "octagonal", NULL};
++         "7.1(wide)", "7.1(wide-side)", "7.1(rear)", "octagonal",
++         // Surround layouts with height channels — not in std_layout_names[],
++         // mp_chmap_from_str parses the raw "fl-fr-…" speaker lists directly.
++         "fl-fr-fc-lfe-bl-br-tfl-tfr-tbl-tbr",                 // 5.1.4 (10)
++         "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr",           // 7.1.4 (12)
++         "fl-fr-fc-lfe-bl-br-sl-sr-flc-frc-tfl-tfr-tsl-tsr-tbl-tbr", // 9.1.6
++         NULL};
+ 
+     wformat->Format.nSamplesPerSec = 0;
+     for (int j = 0; channel_layouts[j]; j++) {
+@@ -457,6 +468,28 @@ static bool search_channels(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
+         }
+     }
+ 
++    // Pro multi-channel devices (MOTU 24Ao, RME MADI, …) expose raw N-channel
++    // formats beyond the named layouts above. Try every count from 17 up to
++    // the mpv cap as "discrete": unknown speaker map + a fake-full channel
++    // mask (mp_chmap_to_lavc_unchecked returns 2^N − 1 for unknown layouts).
++    // Many WASAPI drivers reject dwChannelMask=0 outright, so the fake mask
++    // is what makes the driver accept the format. Drivers without that many
++    // physical outputs just fail try_format_exclusive — no harm done.
++    for (int n = 17; n <= MP_NUM_CHANNELS; n++) {
++        struct mp_chmap discrete;
++        mp_chmap_set_unknown(&discrete, n);
++        if (!wformat->Format.nSamplesPerSec) {
++            if (search_samplerates(ao, wformat, &discrete))
++                mp_chmap_sel_add_map(&chmap_sel, &discrete);
++        } else {
++            wformat->Format.nChannels = discrete.num;
++            wformat->dwChannelMask    = mp_chmap_to_lavc_unchecked(&discrete);
++            update_waveformat_datarate(wformat);
++            if (try_format_exclusive(ao, wformat))
++                mp_chmap_sel_add_map(&chmap_sel, &discrete);
++        }
++    }
++
+     entry = ao->channels;
+     if (ao_chmap_sel_adjust2(ao, &chmap_sel, &entry, !state->opt_exclusive)){
+         change_waveformat_channels(wformat, &entry);
+diff --git a/common/orender_abi.h b/common/orender_abi.h
+new file mode 100644
+index 0000000..927b863
+--- /dev/null
++++ b/common/orender_abi.h
+@@ -0,0 +1,347 @@
++/*
++ * Vendored liborender ABI header — copy of orender_ffi/include/orender.h
++ * generated by cbindgen in the Omniphony repo (mgth/Omniphony @ e1d47c4,
++ * ABI 0.7). mpv loads liborender at runtime (see common/orender_dl.[ch]);
++ * nothing links against these prototypes — they are kept so an accidental
++ * direct call fails at link time instead of compiling silently.
++ *
++ * Refresh by copying the newly generated header over the section below the
++ * provenance block whenever mpv starts using new ABI additions.
++ */
++
++#ifndef ORENDER_H
++#define ORENDER_H
++
++#pragma once
++
++#include <stdarg.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++
++// C-ABI major version of this library. A bump means a breaking change: the
++// Linux soname `liborender.so.<major>` follows automatically (see build.rs);
++// Windows/macOS consumers must gate on [`orender_version_major`] at load time
++// (their library file name does not change).
++//
++// Exported into the generated header (as a `#define`) so a consumer can
++// compare the constants it was compiled against with the runtime values
++// reported by [`orender_version_major`]/[`orender_version_minor`]. Policy:
++// additive change (new symbol, new [`orender_set_option`] key, enum value
++// appended) bumps the minor; anything else (signature/struct/semantic change,
++// symbol removal, enum reorder) bumps the major. See ABI.md.
++#define ORENDER_ABI_MAJOR 0
++
++// C-ABI minor version: backwards-compatible additions only. Consumers should
++// gate optional features on symbol presence (dlsym), not on this value; it
++// exists for logging and diagnostics.
++#define ORENDER_ABI_MINOR 7
++
++// Speaker-position labels written by [`orender_channel_layout`] and
++// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
++// ABI-stable `bridge_api::RChannelLabel` exactly (a unit test asserts
++// discriminant parity); values are append-only per the ABI policy.
++enum OrenderChannelLabel {
++    OrenderChannelLabel_L = 0,
++    OrenderChannelLabel_R = 1,
++    OrenderChannelLabel_C = 2,
++    OrenderChannelLabel_Lfe = 3,
++    OrenderChannelLabel_Ls = 4,
++    OrenderChannelLabel_Rs = 5,
++    OrenderChannelLabel_Tfl = 6,
++    OrenderChannelLabel_Tfr = 7,
++    OrenderChannelLabel_Tsl = 8,
++    OrenderChannelLabel_Tsr = 9,
++    OrenderChannelLabel_Tbl = 10,
++    OrenderChannelLabel_Tbr = 11,
++    OrenderChannelLabel_Lsc = 12,
++    OrenderChannelLabel_Rsc = 13,
++    OrenderChannelLabel_Lb = 14,
++    OrenderChannelLabel_Rb = 15,
++    OrenderChannelLabel_Cb = 16,
++    OrenderChannelLabel_Tc = 17,
++    OrenderChannelLabel_Lsd = 18,
++    OrenderChannelLabel_Rsd = 19,
++    OrenderChannelLabel_Lw = 20,
++    OrenderChannelLabel_Rw = 21,
++    OrenderChannelLabel_Tfc = 22,
++    OrenderChannelLabel_Lfe2 = 23,
++    // The channel carries dynamic-object audio (position driven by metadata).
++    OrenderChannelLabel_Object = 24,
++    OrenderChannelLabel_Unknown = 255,
++};
++typedef uint8_t OrenderChannelLabel;
++
++// Opaque handle to a decode→render session. Created by [`orender_create`],
++// freed by [`orender_destroy`]. Internally a boxed [`Engine`].
++typedef struct OrenderRenderer {
++    uint8_t _private[0];
++} OrenderRenderer;
++
++// Session configuration passed to [`orender_create`]. All `*const c_char`
++// fields are UTF-8, nul-terminated, and may be NULL (treated as "unset").
++//
++// **FROZEN at ABI major 0** — never add, remove, reorder, or retype fields:
++// consumers compiled against an older header pass this struct by layout with
++// no size handshake, so any change here is silently breaking. New knobs go
++// through [`orender_set_option`] (post-create) or the config YAML
++// (create-time). See ABI.md.
++typedef struct OrenderConfig {
++    // Output/host sample rate in Hz. 0 → 48000.
++    uint32_t sample_rate;
++    // Path to the omniphony YAML config (drives bridge path, speaker layout +
++    // all render params). NULL → the shared default config used by the orender
++    // CLI + studio (`~/.config/omniphony/config.yaml`).
++    const char *config_yaml_path;
++    // Optional speaker-layout YAML path overriding the config. NULL → use the
++    // config's embedded layout, else the 7.1.4 preset.
++    const char *speaker_layout_path;
++    // Optional decoder bridge plugin path (the `*_bridge.so` produced by
++    // the input format's bridge crate) overriding the config. NULL → taken
++    // from the config YAML's `render.bridge_path` (the source of truth;
++    // library hosts have no exe-relative search).
++    const char *bridge_path;
++    // Codec identifier of the raw access units the host will feed (matches
++    // the bridge's supported codec IDs, e.g. as used in FFmpeg/IEC958).
++    // Disambiguates the bridge's raw transport (which carries no data-type
++    // byte). NULL → the bridge sniffs the sync word.
++    const char *codec;
++    // Force the OSC live-control server on (non-zero). 0 → follow the
++    // config's `render.osc`; when that is unset too, OSC defaults to on iff
++    // `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port implies
++    // the engine must be reachable there).
++    int osc_enabled;
++    // Incoming OSC port (0 → config `render.osc_rx_port`, else
++    // `OMNIPHONY_OSC_PORT`, else 9000).
++    uint16_t osc_port_in;
++    // Outgoing/monitoring OSC port (0 → config `render.osc_port`, else
++    // `OMNIPHONY_OSC_PORT`, else 9000).
++    uint16_t osc_port_out;
++    // OSC bind address (default "127.0.0.1").
++    const char *osc_bind;
++    // OSC monitoring target host.
++    const char *osc_host;
++} OrenderConfig;
++
++// Create a session. Returns NULL on failure (bad config, missing bridge, etc.).
++struct OrenderRenderer *orender_create(const struct OrenderConfig *cfg);
++
++// Free a session created by [`orender_create`]. NULL is ignored.
++void orender_destroy(struct OrenderRenderer *r);
++
++// 1 while the current presentation carries dynamic objects, 0 while it is a
++// plain multichannel stream, <0 on error.
++//
++// A live, observable fact about the stream (`docs/channel-object-contract.md`):
++// it may flip in either direction mid-stream and must not be latched. Before
++// the first decoded frame it reports the bridge's container-level guess.
++// Hosts keep object-bearing tracks on the renderer regardless of the channel
++// mode (a host cannot render objects); channel-based content follows
++// [`orender_channel_mode`].
++int orender_has_objects(const struct OrenderRenderer *r);
++
++// Deprecated alias of [`orender_has_objects`], kept for hosts compiled
++// against ABI minor < 6. Same values, same live semantics.
++int orender_is_spatial(const struct OrenderRenderer *r);
++
++// Dynamic object count of the last rendered frame (decoded channels minus the
++// bed channels) for object-based content, `0` for plain multichannel, `-1` on
++// a NULL handle / error. For the host's track info display. Meaningful after at
++// least one [`orender_process`] call.
++int orender_object_count(const struct OrenderRenderer *r);
++
++// Dialogue normalisation level in dBFS (always ≤ 0) once the stream has
++// declared it, or [`i32::MIN`] when unknown / not yet seen (also on a NULL
++// handle / error). For the host's track info display.
++int orender_dialnorm_db(const struct OrenderRenderer *r);
++
++// Write the bed channel labels of the last object-based frame (one
++// [`OrenderChannelLabel`] byte per bed channel) so the host can show the bed
++// composition (e.g. "LFE+11 objects").
++//
++// Same query/fill convention as [`orender_channel_layout`]: returns the bed
++// channel count `N`; if `out_labels` is non-NULL and `cap >= N`, the first `N`
++// bytes are filled (else nothing is written — call with `out_labels = NULL` to
++// query `N`). `0` for plain multichannel / no bed / NULL handle / error.
++uint32_t orender_bed_layout(const struct OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
++
++// Constant DSP latency of the rendered output, in samples at the engine
++// sample rate: PCM fed to [`orender_process`] emerges this many samples later
++// in the rendered stream. 0 for the default filters; non-zero when the
++// linear-phase FIR crossover sits on the rendered path. The host should
++// subtract `latency / sample_rate` from the presentation timestamps of
++// rendered frames (or delay video by the same amount) to preserve A/V sync.
++// May change mid-stream (live crossover / output-mode switch), so poll it
++// per rendered frame; meaningful after the first [`orender_process`] call.
++// 0 on a NULL handle / error.
++uint64_t orender_output_latency_samples(const struct OrenderRenderer *r);
++
++// Configured render mode for channel-based (non-object) content:
++// 0 = host, 1 = spatial; <0 on error. When this is `host` (0) and
++// [`orender_has_objects`] reports 0, the host should decline this track and fall
++// back to its native decoder. Meaningful once the renderer is created (the mode
++// comes from config / live params, not from the stream).
++int orender_channel_mode(const struct OrenderRenderer *r);
++
++// Override the channel render mode for non-object content at runtime (a
++// per-host override of the config value): 0 = host, 1 = spatial. No-op on a
++// NULL handle.
++void orender_set_channel_mode(struct OrenderRenderer *r, int mode);
++
++// Output channel mapping: 0 = by_index (positionless — output port N carries
++// layout speaker N), 1 = by_name (positional — each channel tagged with its
++// speaker position). <0 on error. The host uses this to choose between a
++// positionless and a positional channel map.
++int orender_channel_mapping(const struct OrenderRenderer *r);
++
++// Override the output channel mapping at runtime: 0 = by_index, 1 = by_name.
++// No-op on a NULL handle or an unknown code.
++void orender_set_channel_mapping(struct OrenderRenderer *r, int mode);
++
++// Number of output channels (speakers) the renderer produces, 0 on error.
++uint32_t orender_channel_count(const struct OrenderRenderer *r);
++
++// Write the active output layout's per-channel labels (one
++// [`OrenderChannelLabel`] byte per speaker, in render order) so the host can
++// build a channel map.
++//
++// Returns the channel count `N`. If `out_labels` is non-NULL and `cap >= N`,
++// the first `N` bytes are filled with label discriminants; otherwise nothing is
++// written — call with `out_labels = NULL` to query `N`, size a buffer, then
++// call again. Each byte is an [`OrenderChannelLabel`] value (255 = Unknown).
++// Returns 0 on error/NULL handle.
++uint32_t orender_channel_layout(const struct OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
++
++// Reset after a seek/discontinuity (flushes decoder + renderer state, keeps
++// live params).
++void orender_reset(struct OrenderRenderer *r);
++
++// Push one raw encoded packet and render whatever frames it yields.
++//
++// The caller owns `out` (capacity `out_cap_samples` floats). On success the
++// rendered interleaved samples are written there and `*out_frames` /
++// `*out_channels` / `*out_pts_us` are set.
++//
++// Returns: 0 = OK (may be 0 frames — need more data), >0 = output buffer too
++// small (nothing written; retry with a larger buffer), <0 = error.
++int orender_process(struct OrenderRenderer *r,
++                    const uint8_t *pkt,
++                    uintptr_t pkt_len,
++                    int64_t _pts_us,
++                    float *out,
++                    uintptr_t out_cap_samples,
++                    uintptr_t *out_frames,
++                    uint32_t *out_channels,
++                    int64_t *out_pts_us);
++
++// Render the spatial overlay for the given OSD resolution and copy the ASS
++// `osd-overlay` payload into `out` (UTF-8, not nul-terminated).
++//
++// This *is* the overlay redraw: each call rebuilds the scene and advances the
++// motion trails, so the host (the mpv Lua shim) must call it exactly once per
++// redraw — typically on a periodic timer and on OSD resize. It also marks the
++// overlay "active" so the engine starts feeding it (the engine does no overlay
++// work until the first pull).
++//
++// Returns the number of bytes the payload needs. If `out` is non-NULL and
++// `cap >= len`, the first `len` bytes are written; otherwise nothing is written
++// (the host should grow its buffer and skip this redraw — the next one fits).
++// A handful of KiB is always enough; the output is bounded. Returns 0 when the
++// overlay is disabled, the resolution is zero, or there is nothing to draw.
++//
++// Handle-less by design: the overlay is a process-global singleton, and the Lua
++// shim has no session handle (it `ffi.load`s this already-loaded library).
++uintptr_t orender_overlay_ass(uint32_t res_x, uint32_t res_y, uint8_t *out, uintptr_t cap);
++
++// Enable or disable the overlay (host keybind / script message). Disabling also
++// makes the engine stop feeding it. `0` = off, non-zero = on.
++void orender_overlay_set_enabled(int enabled);
++
++// Drop all overlay scene state (object positions, levels, trails, labels)
++// without touching the master enable. Used by a host that stops feeding the
++// overlay — e.g. mpv routing channel audio to its native decoder in host mode —
++// so the spatial overlay clears immediately instead of lingering on the last
++// frame until the trails decay. The next pull after feeding resumes shows the
++// live scene again; the user's overlay on/off preference is preserved.
++void orender_overlay_clear(void);
++
++// Suppress or resume *all* overlay drawing — the wireframe cube included — for a
++// live session, independent of the master enable. A host that keeps the engine
++// alive but is not spatial-rendering (mpv in host mode, decoding channel audio
++// natively) sets `0` so the whole overlay disappears, and `1` when it resumes
++// spatial rendering. `0` = not rendering (blank), non-zero = rendering.
++void orender_overlay_set_rendering(int rendering);
++
++// Flip the master enable and return the new state (1 = on, 0 = off).
++int orender_overlay_toggle(void);
++
++// Flip object-label visibility and return the new state (1 = on, 0 = off).
++int orender_overlay_toggle_labels(void);
++
++// Flip object visibility (markers + labels + trails + depth lines) and return
++// the new state (1 = on, 0 = off).
++int orender_overlay_toggle_objects(void);
++
++// Flip whether motion trails are drawn and return the new state (1 = on,
++// 0 = off). Clears the trail buffers when disabling.
++int orender_overlay_toggle_trails(void);
++
++// Flip the object energy heatmap and return the new state (1 = on, 0 = off).
++int orender_overlay_toggle_heatmap(void);
++
++// Advance the heatmap colour gradient to the next index (wraps 0..=4) and return
++// the new index.
++uint32_t orender_overlay_cycle_heatmap_colormap(void);
++
++// Step the heatmap depth-plane count by `delta` (clamped to 1..=12) and return
++// the new count.
++uint32_t orender_overlay_adjust_heatmap_bands(int32_t delta);
++
++// Render the object energy heatmap as a single flattened BGRA bitmap
++// (premultiplied alpha) for mpv's `overlay-add`, drawn *under* the ASS overlay.
++//
++// On success copies `w*h*4` BGRA bytes into `out` and writes the geometry into
++// `geom` (6 × i32: `[x, y, w, h, dw, dh]` — top-left position, source size, and
++// the on-screen display size mpv scales the source to), then returns the number
++// of bytes written. Returns 0 — and writes nothing — when the overlay is
++// disabled, the resolution is zero, the buffers are too small, or there is no
++// audible object. The bitmap is bounded (`FIELD_BITMAP_MAX²·4` ≈ 256 KiB).
++//
++// Read-only with respect to the scene: unlike `orender_overlay_ass`, this does
++// not advance trails or the pull clock (the ASS pull already does), so the host
++// may call it alongside the ASS redraw.
++uintptr_t orender_overlay_heatmap_bgra(uint32_t res_x,
++                                       uint32_t res_y,
++                                       uint8_t *out,
++                                       uintptr_t cap,
++                                       int32_t *geom);
++
++// ABI major version of the loaded library (see [`ORENDER_ABI_MAJOR`]). A
++// consumer must refuse a library whose major differs from the one it was
++// compiled against.
++uint32_t orender_version_major(void);
++
++// ABI minor version of the loaded library (backwards-compatible additions;
++// see [`ORENDER_ABI_MINOR`]). For logging — gate features on symbol presence.
++uint32_t orender_version_minor(void);
++
++// Human-readable build identifier of the loaded library:
++// `"<crate-version> <git-describe> (built <timestamp>)"`. Static storage,
++// never NULL — for host logs, so "which engine did I actually load" is one
++// log line instead of a debugging session.
++const char *orender_build_id(void);
++
++// Set a named runtime option on a session — the additive evolution path for
++// the frozen [`OrenderConfig`]: new knobs get a string key here instead of a
++// struct field, so consumers compiled against older headers keep working and
++// newer consumers can probe.
++//
++// Returns 0 on success, -1 for an unknown key (also how a consumer probes
++// whether this build supports a key), -2 for an invalid value, -3 on a NULL
++// handle/argument or internal error.
++//
++// No keys are defined at ABI 0.5 — every call returns -1. The mechanism ships
++// ahead of the first key so consumers can adopt the probe pattern now.
++int orender_set_option(struct OrenderRenderer *r, const char *key, const char *value);
++
++#endif  /* ORENDER_H */
+diff --git a/common/orender_dl.c b/common/orender_dl.c
+new file mode 100644
+index 0000000..97950d4
+--- /dev/null
++++ b/common/orender_dl.c
+@@ -0,0 +1,429 @@
++/*
++ * Runtime loader for liborender — see orender_dl.h for the contract.
++ *
++ * Search order (first winner is cached for the process lifetime):
++ *   1. --ad-orender-library=PATH    (explicit user intent: failure is final,
++ *   2. $ORENDER_LIBRARY              no fall-through to later candidates)
++ *   3. the Studio-deployed per-user library:
++ *        Linux   $XDG_DATA_HOME/omniphony/lib/liborender.so.<major>
++ *                (default ~/.local/share)
++ *        macOS   ~/Library/Application Support/omniphony/lib/liborender.dylib
++ *        Windows %LOCALAPPDATA%\omniphony\lib\orender.dll
++ *   4. next to the mpv executable   (the lib bundled in the release zip)
++ *   5. the bare platform name via the system loader (ldconfig paths / distro
++ *      package). Skipped on Windows: mp_dlopen resolves relative names
++ *      against the CWD, which is not a meaningful search location.
++ *
++ * A candidate is accepted only if it exports the version handshake, reports
++ * the ABI major mpv was compiled against, and resolves every required symbol.
++ * Rejected candidates (skew, pre-handshake builds) fall through to the next
++ * one, so e.g. a stale Studio deployment degrades to the bundled fallback
++ * instead of killing spatial audio.
++ *
++ * This file is part of mpv. mpv is free software; you can redistribute it
++ * and/or modify it under the terms of the GNU Lesser General Public License
++ * as published by the Free Software Foundation; either version 2.1 of the
++ * License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "audio/decode/ad_orender.h"
++#include "common/common.h"
++#include "common/global.h"
++#include "common/msg.h"
++#include "misc/bstr.h"
++#include "misc/path_utils.h"
++#include "mpv_talloc.h"
++#include "options/m_config.h"
++#include "osdep/io.h"
++#include "osdep/threads.h"
++
++#if defined(_WIN32)
++#include <windows.h>
++#else
++#include <dlfcn.h>
++#include <unistd.h>
++#endif
++#if defined(__APPLE__)
++#include <mach-o/dyld.h>
++#include <sys/param.h>
++#endif
++
++#include "common/orender_dl.h"
++
++#define OR_STR_(x) #x
++#define OR_STR(x) OR_STR_(x)
++
++#if defined(_WIN32)
++#define ORENDER_LIB_NAME "orender.dll"
++#elif defined(__APPLE__)
++#define ORENDER_LIB_NAME "liborender.dylib"
++#else
++#define ORENDER_LIB_NAME "liborender.so." OR_STR(ORENDER_ABI_MAJOR)
++#endif
++
++static void lib_close(void *handle)
++{
++#if defined(_WIN32)
++    FreeLibrary((HMODULE)handle);
++#else
++    dlclose(handle);
++#endif
++}
++
++/* ── no-op stubs for optional symbols ─────────────────────────────────────── */
++
++static int stub_has_objects(const struct OrenderRenderer *r) { return -1; }
++static uint64_t stub_output_latency_samples(const struct OrenderRenderer *r)
++{
++    return 0;
++}
++static int stub_set_option(struct OrenderRenderer *r, const char *key,
++                           const char *value) { return -1; }
++static const char *stub_build_id(void) { return NULL; }
++static void stub_overlay_set_rendering(int rendering) {}
++static void stub_overlay_clear(void) {}
++static uintptr_t stub_overlay_ass(uint32_t res_x, uint32_t res_y, uint8_t *out,
++                                  uintptr_t cap) { return 0; }
++static uintptr_t stub_overlay_heatmap_bgra(uint32_t res_x, uint32_t res_y,
++                                           uint8_t *out, uintptr_t cap,
++                                           int32_t *geom) { return 0; }
++static void stub_overlay_set_enabled(int enabled) {}
++static int stub_overlay_toggle(void) { return 0; }
++static int stub_overlay_toggle_flag(void) { return 0; }
++static uint32_t stub_overlay_cycle_heatmap_colormap(void) { return 0; }
++static uint32_t stub_overlay_adjust_heatmap_bands(int32_t delta) { return 0; }
++
++/* Stub used when the whole load failed and the host still wants unconditional
++ * call sites: create() returning NULL routes the caller into its existing
++ * no-engine fallback. */
++static struct OrenderRenderer *stub_create(const struct OrenderConfig *cfg)
++{
++    return NULL;
++}
++static void stub_destroy(struct OrenderRenderer *r) {}
++static int stub_process(struct OrenderRenderer *r, const uint8_t *pkt,
++                        uintptr_t pkt_len, int64_t pts_us, float *out,
++                        uintptr_t out_cap_samples, uintptr_t *out_frames,
++                        uint32_t *out_channels, int64_t *out_pts_us)
++{
++    return -1;
++}
++static void stub_reset(struct OrenderRenderer *r) {}
++static uint32_t stub_channel_count(const struct OrenderRenderer *r) { return 0; }
++static uint32_t stub_layout(const struct OrenderRenderer *r,
++                            uint8_t *out_labels, uint32_t cap) { return 0; }
++static int stub_channel_mapping(const struct OrenderRenderer *r) { return -1; }
++static int stub_channel_mode(const struct OrenderRenderer *r) { return -1; }
++static void stub_set_channel_mode(struct OrenderRenderer *r, int mode) {}
++static int stub_object_count(const struct OrenderRenderer *r) { return -1; }
++static int stub_dialnorm_db(const struct OrenderRenderer *r) { return INT32_MIN; }
++
++static const struct orender_dl stubs = {
++    .create = stub_create,
++    .destroy = stub_destroy,
++    .process = stub_process,
++    .reset = stub_reset,
++    .channel_count = stub_channel_count,
++    .channel_layout = stub_layout,
++    .channel_mapping = stub_channel_mapping,
++    .channel_mode = stub_channel_mode,
++    .set_channel_mode = stub_set_channel_mode,
++    .object_count = stub_object_count,
++    .dialnorm_db = stub_dialnorm_db,
++    .bed_layout = stub_layout,
++    .has_objects = stub_has_objects,
++    .output_latency_samples = stub_output_latency_samples,
++    .set_option = stub_set_option,
++    .build_id = stub_build_id,
++    .overlay_set_rendering = stub_overlay_set_rendering,
++    .overlay_clear = stub_overlay_clear,
++    .overlay_ass = stub_overlay_ass,
++    .overlay_heatmap_bgra = stub_overlay_heatmap_bgra,
++    .overlay_set_enabled = stub_overlay_set_enabled,
++    .overlay_toggle = stub_overlay_toggle,
++    .overlay_toggle_labels = stub_overlay_toggle_flag,
++    .overlay_toggle_objects = stub_overlay_toggle_flag,
++    .overlay_toggle_trails = stub_overlay_toggle_flag,
++    .overlay_toggle_heatmap = stub_overlay_toggle_flag,
++    .overlay_cycle_heatmap_colormap = stub_overlay_cycle_heatmap_colormap,
++    .overlay_adjust_heatmap_bands = stub_overlay_adjust_heatmap_bands,
++    .path = "(none)",
++};
++
++/* ── loader state (process singleton) ─────────────────────────────────────── */
++
++static mp_static_mutex load_lock = MP_STATIC_MUTEX_INITIALIZER;
++static enum { LOAD_UNTRIED, LOAD_OK, LOAD_FAILED } load_state = LOAD_UNTRIED;
++static struct orender_dl table;
++static char load_error[512];
++
++static void set_error(const char *fmt, ...) MP_PRINTF_ATTRIBUTE(1, 2);
++static void set_error(const char *fmt, ...)
++{
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(load_error, sizeof(load_error), fmt, ap);
++    va_end(ap);
++}
++
++static char *get_exe_dir(void *ta)
++{
++#if defined(_WIN32)
++    wchar_t wpath[MAX_PATH];
++    DWORD n = GetModuleFileNameW(NULL, wpath, MP_ARRAY_SIZE(wpath));
++    if (n == 0 || n >= MP_ARRAY_SIZE(wpath))
++        return NULL;
++    char *path = mp_to_utf8(ta, wpath);
++#elif defined(__APPLE__)
++    char buf[MAXPATHLEN];
++    uint32_t size = sizeof(buf);
++    if (_NSGetExecutablePath(buf, &size) != 0)
++        return NULL;
++    char *path = talloc_strdup(ta, buf);
++#else
++    char buf[4096];
++    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
++    if (n <= 0)
++        return NULL;
++    buf[n] = '\0';
++    char *path = talloc_strdup(ta, buf);
++#endif
++    if (!path)
++        return NULL;
++    return bstrdup0(ta, mp_dirname(path));
++}
++
++/* Where the Studio distribution deploys the engine library for external
++ * consumers (see the search-order comment at the top). */
++static char *get_studio_lib_path(void *ta)
++{
++#if defined(_WIN32)
++    const char *base = getenv("LOCALAPPDATA");
++    if (!base || !base[0])
++        return NULL;
++    return talloc_asprintf(ta, "%s\\omniphony\\lib\\%s", base, ORENDER_LIB_NAME);
++#elif defined(__APPLE__)
++    const char *home = getenv("HOME");
++    if (!home || !home[0])
++        return NULL;
++    return talloc_asprintf(ta, "%s/Library/Application Support/omniphony/lib/%s",
++                           home, ORENDER_LIB_NAME);
++#else
++    const char *xdg = getenv("XDG_DATA_HOME");
++    if (xdg && xdg[0])
++        return talloc_asprintf(ta, "%s/omniphony/lib/%s", xdg, ORENDER_LIB_NAME);
++    const char *home = getenv("HOME");
++    if (!home || !home[0])
++        return NULL;
++    return talloc_asprintf(ta, "%s/.local/share/omniphony/lib/%s",
++                           home, ORENDER_LIB_NAME);
++#endif
++}
++
++/* Try one candidate. On success fills `table` and returns true; on failure
++ * logs why (verbose for "not there", warn for "there but unusable"), records
++ * the reason, closes the handle, and returns false. */
++static bool try_load(struct mp_log *log, const char *path, const char *origin)
++{
++    void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (!h) {
++        const char *err = dlerror();
++        mp_msg(log, MSGL_V, "orender: no library at %s candidate '%s'%s%s\n",
++               origin, path, err ? ": " : "", err ? err : "");
++        set_error("%s: not loadable (%s)", path, err ? err : "unknown error");
++        return false;
++    }
++
++    uint32_t (*vmajor)(void) = (uint32_t (*)(void))dlsym(h, "orender_version_major");
++    uint32_t (*vminor)(void) = (uint32_t (*)(void))dlsym(h, "orender_version_minor");
++    if (!vmajor || !vminor) {
++        mp_msg(log, MSGL_WARN, "orender: rejecting '%s' (%s): no version "
++               "handshake — liborender predates ABI reporting\n", path, origin);
++        set_error("%s: no version handshake", path);
++        lib_close(h);
++        return false;
++    }
++    uint32_t abi_major = vmajor(), abi_minor = vminor();
++    if (abi_major != ORENDER_ABI_MAJOR) {
++        mp_msg(log, MSGL_WARN, "orender: rejecting '%s' (%s): ABI major %u, "
++               "this mpv needs %u\n", path, origin, (unsigned)abi_major,
++               (unsigned)ORENDER_ABI_MAJOR);
++        set_error("%s: ABI major %u incompatible with %u", path,
++                  (unsigned)abi_major, (unsigned)ORENDER_ABI_MAJOR);
++        lib_close(h);
++        return false;
++    }
++
++    /* Seed with stubs so every optional slot is callable, then overwrite. */
++    struct orender_dl t = stubs;
++    t.abi_major = abi_major;
++    t.abi_minor = abi_minor;
++
++    const struct { const char *name; size_t offset; } required[] = {
++#define REQ(field, sym) {sym, offsetof(struct orender_dl, field)}
++        REQ(create,           "orender_create"),
++        REQ(destroy,          "orender_destroy"),
++        REQ(process,          "orender_process"),
++        REQ(reset,            "orender_reset"),
++        REQ(channel_count,    "orender_channel_count"),
++        REQ(channel_layout,   "orender_channel_layout"),
++        REQ(channel_mapping,  "orender_channel_mapping"),
++        REQ(channel_mode,     "orender_channel_mode"),
++        REQ(set_channel_mode, "orender_set_channel_mode"),
++        REQ(object_count,     "orender_object_count"),
++        REQ(dialnorm_db,      "orender_dialnorm_db"),
++        REQ(bed_layout,       "orender_bed_layout"),
++#undef REQ
++    };
++    for (int i = 0; i < MP_ARRAY_SIZE(required); i++) {
++        void *sym = dlsym(h, required[i].name);
++        if (!sym) {
++            mp_msg(log, MSGL_WARN, "orender: rejecting '%s' (%s): missing "
++                   "required symbol %s\n", path, origin, required[i].name);
++            set_error("%s: missing required symbol %s", path, required[i].name);
++            lib_close(h);
++            return false;
++        }
++        memcpy((char *)&t + required[i].offset, &sym, sizeof(sym));
++    }
++
++    /* Optional symbols: resolve individually, keep the stub when absent. An
++     * older engine simply lacks the newer features — never a reason to reject. */
++    const struct { const char *name; size_t offset; } optional[] = {
++#define OPT_SYM(field, sym) {sym, offsetof(struct orender_dl, field)}
++        /* Alias first so the preferred name overwrites it when both exist. */
++        OPT_SYM(has_objects,           "orender_is_spatial"),
++        OPT_SYM(has_objects,           "orender_has_objects"),
++        OPT_SYM(output_latency_samples, "orender_output_latency_samples"),
++        OPT_SYM(set_option,            "orender_set_option"),
++        OPT_SYM(build_id,              "orender_build_id"),
++        OPT_SYM(overlay_set_rendering, "orender_overlay_set_rendering"),
++        OPT_SYM(overlay_clear,         "orender_overlay_clear"),
++        OPT_SYM(overlay_ass,           "orender_overlay_ass"),
++        OPT_SYM(overlay_heatmap_bgra,  "orender_overlay_heatmap_bgra"),
++        OPT_SYM(overlay_set_enabled,   "orender_overlay_set_enabled"),
++        OPT_SYM(overlay_toggle,        "orender_overlay_toggle"),
++        OPT_SYM(overlay_toggle_labels, "orender_overlay_toggle_labels"),
++        OPT_SYM(overlay_toggle_objects, "orender_overlay_toggle_objects"),
++        OPT_SYM(overlay_toggle_trails, "orender_overlay_toggle_trails"),
++        OPT_SYM(overlay_toggle_heatmap, "orender_overlay_toggle_heatmap"),
++        OPT_SYM(overlay_cycle_heatmap_colormap,
++                "orender_overlay_cycle_heatmap_colormap"),
++        OPT_SYM(overlay_adjust_heatmap_bands,
++                "orender_overlay_adjust_heatmap_bands"),
++#undef OPT_SYM
++    };
++    int missing_optional = 0;
++    for (int i = 0; i < MP_ARRAY_SIZE(optional); i++) {
++        void *sym = dlsym(h, optional[i].name);
++        if (sym) {
++            memcpy((char *)&t + optional[i].offset, &sym, sizeof(sym));
++        } else {
++            missing_optional++;
++            mp_msg(log, MSGL_V, "orender: '%s' lacks optional symbol %s "
++                   "(feature disabled)\n", path, optional[i].name);
++        }
++    }
++    /* The overlay client needs the whole group; the two calls the decoder
++     * makes (set_rendering/clear) stay safe through the stubs either way. */
++    t.have_overlay = t.overlay_ass != stub_overlay_ass &&
++                     t.overlay_set_enabled != stub_overlay_set_enabled &&
++                     t.overlay_toggle != stub_overlay_toggle;
++    t.have_set_option = t.set_option != stub_set_option;
++    t.path = talloc_strdup(NULL, path);   // process singleton; never freed
++
++    table = t;
++
++    const char *build = t.build_id();
++    mp_msg(log, MSGL_INFO, "orender: loaded liborender ABI %u.%u%s%s from %s (%s)%s\n",
++           (unsigned)abi_major, (unsigned)abi_minor,
++           build ? " " : "", build ? build : "",
++           t.path, origin,
++           missing_optional ? " — older engine, some optional features off" : "");
++    return true;
++}
++
++const struct orender_dl *orender_dl_get(struct mpv_global *global,
++                                        struct mp_log *log)
++{
++    mp_mutex_lock(&load_lock);
++    if (load_state != LOAD_UNTRIED) {
++        const struct orender_dl *r = load_state == LOAD_OK ? &table : NULL;
++        mp_mutex_unlock(&load_lock);
++        return r;
++    }
++
++    void *tmp = talloc_new(NULL);
++    bool ok = false;
++
++    struct ad_orender_params *opts =
++        mp_get_config_group(tmp, global, &ad_orender_conf);
++
++    /* 1-2: explicit user intent — an unusable library here is an error the
++     * user must see, not something to silently paper over with a fallback. */
++    const char *explicit_path = NULL, *explicit_origin = NULL;
++    if (opts->library_path && opts->library_path[0]) {
++        explicit_path = opts->library_path;
++        explicit_origin = "--ad-orender-library";
++    } else {
++        const char *env = getenv("ORENDER_LIBRARY");
++        if (env && env[0]) {
++            explicit_path = env;
++            explicit_origin = "$ORENDER_LIBRARY";
++        }
++    }
++    if (explicit_path) {
++        ok = try_load(log, explicit_path, explicit_origin);
++        if (!ok)
++            mp_msg(log, MSGL_ERR, "orender: %s points at an unusable library "
++                   "(%s); spatial audio disabled\n", explicit_origin, load_error);
++    } else {
++        /* 3-5: implicit locations — fall through on any failure. */
++        const char *studio = get_studio_lib_path(tmp);
++        if (studio)
++            ok = try_load(log, studio, "studio install");
++
++        if (!ok) {
++            const char *exe_dir = get_exe_dir(tmp);
++            if (exe_dir) {
++                ok = try_load(log, mp_path_join(tmp, exe_dir, ORENDER_LIB_NAME),
++                              "next to mpv");
++            }
++        }
++
++#if !defined(_WIN32)
++        if (!ok)
++            ok = try_load(log, ORENDER_LIB_NAME, "system loader");
++#endif
++
++        if (!ok)
++            mp_msg(log, MSGL_V, "orender: no usable liborender found (last: "
++                   "%s); spatial audio unavailable\n", load_error);
++    }
++
++    talloc_free(tmp);
++    if (ok) {
++        load_error[0] = '\0';
++        load_state = LOAD_OK;
++    } else {
++        load_state = LOAD_FAILED;
++    }
++    const struct orender_dl *r = ok ? &table : NULL;
++    mp_mutex_unlock(&load_lock);
++    return r;
++}
++
++const struct orender_dl *orender_dl_stubs(void)
++{
++    return &stubs;
++}
++
++const char *orender_dl_error(void)
++{
++    return load_error;
++}
+diff --git a/common/orender_dl.h b/common/orender_dl.h
+new file mode 100644
+index 0000000..75147e6
+--- /dev/null
++++ b/common/orender_dl.h
+@@ -0,0 +1,111 @@
++/*
++ * Runtime loader for liborender (the Omniphony spatial render engine).
++ *
++ * mpv used to link liborender at build time (DT_NEEDED), which welded every
++ * release to the engine version it was built against. This module dlopens it
++ * instead, walking a search order (see orender_dl.c) and performing the ABI
++ * handshake from common/orender_abi.h: the library's orender_version_major()
++ * must equal the ORENDER_ABI_MAJOR mpv was compiled against; optional features
++ * are gated on symbol presence, never on the minor version. A missing or
++ * incompatible library degrades to mpv's native decode path — it is never
++ * fatal.
++ *
++ * This file is part of mpv. mpv is free software; you can redistribute it
++ * and/or modify it under the terms of the GNU Lesser General Public License
++ * as published by the Free Software Foundation; either version 2.1 of the
++ * License, or (at your option) any later version.
++ */
++
++#ifndef MP_ORENDER_DL_H
++#define MP_ORENDER_DL_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "common/orender_abi.h"
++
++struct mpv_global;
++struct mp_log;
++
++/* Function table over the loaded library. Field types mirror the prototypes in
++ * common/orender_abi.h exactly; names drop the `orender_` prefix.
++ *
++ * REQUIRED symbols make or break the load: a candidate library missing any of
++ * them (or failing the major check) is rejected. OPTIONAL symbols are resolved
++ * individually and replaced by no-op/neutral stubs when absent, so call sites
++ * stay unconditional and an older engine simply lacks the newer features. */
++struct orender_dl {
++    /* required — decoder core */
++    struct OrenderRenderer *(*create)(const struct OrenderConfig *cfg);
++    void (*destroy)(struct OrenderRenderer *r);
++    int (*process)(struct OrenderRenderer *r, const uint8_t *pkt,
++                   uintptr_t pkt_len, int64_t pts_us, float *out,
++                   uintptr_t out_cap_samples, uintptr_t *out_frames,
++                   uint32_t *out_channels, int64_t *out_pts_us);
++    void (*reset)(struct OrenderRenderer *r);
++    uint32_t (*channel_count)(const struct OrenderRenderer *r);
++    uint32_t (*channel_layout)(const struct OrenderRenderer *r,
++                               uint8_t *out_labels, uint32_t cap);
++    int (*channel_mapping)(const struct OrenderRenderer *r);
++    int (*channel_mode)(const struct OrenderRenderer *r);
++    void (*set_channel_mode)(struct OrenderRenderer *r, int mode);
++    int (*object_count)(const struct OrenderRenderer *r);
++    int (*dialnorm_db)(const struct OrenderRenderer *r);
++    uint32_t (*bed_layout)(const struct OrenderRenderer *r,
++                           uint8_t *out_labels, uint32_t cap);
++
++    /* optional — stubbed when missing */
++    /* Resolved from orender_has_objects (ABI minor >= 6), falling back to
++     * its deprecated alias orender_is_spatial on older engines. Live fact:
++     * may flip mid-stream, never latch it. */
++    int (*has_objects)(const struct OrenderRenderer *r);
++    /* Constant DSP latency of the rendered output, in samples at the engine
++     * sample rate (ABI minor >= 7; the stub reports 0). Non-zero when the
++     * engine's linear-phase FIR crossover is active. May change mid-stream
++     * (live crossover / output-mode switch) — poll it per rendered frame.
++     * The decoder subtracts latency/sample_rate from output PTS so mpv keeps
++     * A/V sync. */
++    uint64_t (*output_latency_samples)(const struct OrenderRenderer *r);
++    int (*set_option)(struct OrenderRenderer *r, const char *key,
++                      const char *value);
++    const char *(*build_id)(void);
++    void (*overlay_set_rendering)(int rendering);
++    void (*overlay_clear)(void);
++    uintptr_t (*overlay_ass)(uint32_t res_x, uint32_t res_y, uint8_t *out,
++                             uintptr_t cap);
++    uintptr_t (*overlay_heatmap_bgra)(uint32_t res_x, uint32_t res_y,
++                                      uint8_t *out, uintptr_t cap,
++                                      int32_t *geom);
++    void (*overlay_set_enabled)(int enabled);
++    int (*overlay_toggle)(void);
++    int (*overlay_toggle_labels)(void);
++    int (*overlay_toggle_objects)(void);
++    int (*overlay_toggle_trails)(void);
++    int (*overlay_toggle_heatmap)(void);
++    uint32_t (*overlay_cycle_heatmap_colormap)(void);
++    uint32_t (*overlay_adjust_heatmap_bands)(int32_t delta);
++
++    uint32_t abi_major, abi_minor;  // reported by the loaded library
++    const char *path;               // candidate that won (for logging)
++    bool have_overlay;              // full overlay symbol group present
++    bool have_set_option;
++};
++
++/* Load liborender once per process (thread-safe; both success and failure are
++ * cached — the search does not re-run). Returns NULL when no compatible
++ * library was found; the reason is available via orender_dl_error(). Only the
++ * first call logs the candidate walk, through its `log`. */
++const struct orender_dl *orender_dl_get(struct mpv_global *global,
++                                        struct mp_log *log);
++
++/* All-stubs table for hosts that want unconditional call sites even when the
++ * load failed: create() returns NULL (the caller's existing no-engine path),
++ * queries return their neutral values, overlay calls are no-ops. */
++const struct orender_dl *orender_dl_stubs(void);
++
++/* Human-readable reason of a failed load ("" before the first orender_dl_get
++ * or after a successful one). Static storage. */
++const char *orender_dl_error(void);
++
++#endif
+diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
+index b0f0461..6b556cd 100644
+--- a/filters/f_decoder_wrapper.c
++++ b/filters/f_decoder_wrapper.c
+@@ -26,6 +26,7 @@
+ #include <libavutil/common.h>
+ #include <libavutil/rational.h>
+ 
++#include "config.h"
+ #include "options/options.h"
+ #include "common/msg.h"
+ #include "options/m_config.h"
+@@ -419,6 +420,26 @@ struct mp_decoder_list *audio_decoder_list(void)
+     return list;
+ }
+ 
++#if HAVE_ORENDER
++// True if `tok` appears as a whole entry in a "," separated decoder list.
++static bool decoder_list_has(const char *list, const char *tok)
++{
++    if (!list)
++        return false;
++    size_t tlen = strlen(tok);
++    for (const char *p = list; *p;) {
++        const char *e = strchr(p, ',');
++        size_t len = e ? (size_t)(e - p) : strlen(p);
++        if (len == tlen && strncmp(p, tok, tlen) == 0)
++            return true;
++        if (!e)
++            break;
++        p = e + 1;
++    }
++    return false;
++}
++#endif
++
+ static bool reinit_decoder(struct priv *p)
+ {
+     if (p->decoder)
+@@ -456,6 +477,33 @@ static bool reinit_decoder(struct priv *p)
+                 talloc_free(spdif);
+             }
+         }
++
++#if HAVE_ORENDER
++        // Opt-in spatial object rendering for the supported codecs via
++        // `--ad=orender`. Unlike ad_spdif this outputs normal float PCM
++        // (AF_FORMAT_FLOAT), so the native resampler / audio filter chain still
++        // applies. Gated on the explicit decoder name so default playback is
++        // unaffected. ad_orender stays selected for the whole track and decodes
++        // host-mode content via an internal native child, so the wrapper never
++        // needs to swap it back out.
++        if (driver == &ad_lavc && p->codec->codec &&
++            (strcmp(p->codec->codec, "truehd") == 0 ||
++             strcmp(p->codec->codec, "eac3") == 0 ||
++             strcmp(p->codec->codec, "ac3") == 0 ||
++             strcmp(p->codec->codec, "dts") == 0) &&
++            decoder_list_has(user_list, "orender"))
++        {
++            struct mp_decoder_list *ol =
++                talloc_zero(NULL, struct mp_decoder_list);
++            ad_orender.add_decoders(ol);
++            if (ol->num_entries) {
++                driver = &ad_orender;
++                list = ol;
++            } else {
++                talloc_free(ol);
++            }
++        }
++#endif
+     }
+ 
+     if (!driver)
+@@ -1089,8 +1137,9 @@ static void read_frame(struct priv *p)
+     p->reverse_queue_complete = false;
+ 
+     frame = mp_pin_out_read(p->decoder->f->pins[1]);
+-    if (!frame.type)
++    if (!frame.type) {
+         return;
++    }
+ 
+     mp_mutex_lock(&p->cache_lock);
+     if (p->attached_picture && frame.type == MP_FRAME_VIDEO)
+diff --git a/filters/f_decoder_wrapper.h b/filters/f_decoder_wrapper.h
+index c2ad95a..dc1ab3c 100644
+--- a/filters/f_decoder_wrapper.h
++++ b/filters/f_decoder_wrapper.h
+@@ -112,6 +112,9 @@ struct mp_decoder_fns {
+ extern const struct mp_decoder_fns vd_lavc;
+ extern const struct mp_decoder_fns ad_lavc;
+ extern const struct mp_decoder_fns ad_spdif;
++#if HAVE_ORENDER
++extern const struct mp_decoder_fns ad_orender;
++#endif
+ 
+ // Convenience wrapper for lavc based decoders. Treat lavc_state as private;
+ // init to all-0 on init and resets.
+diff --git a/meson.build b/meson.build
+index 5a34384..0dd0b9c 100644
+--- a/meson.build
++++ b/meson.build
+@@ -711,6 +711,16 @@ if features['libarchive']
+                      'stream/stream_libarchive.c')
+ endif
+ 
++# liborender is loaded at runtime (dlopen) against the vendored ABI header
++# common/orender_abi.h — no build-time library or pkg-config dependency. See
++# common/orender_dl.c for the search order and the version handshake.
++features += {'orender': get_option('orender').allowed()}
++if features['orender']
++    sources += files('audio/decode/ad_orender.c',
++                     'common/orender_dl.c',
++                     'player/orender_overlay.c')
++endif
++
+ libavdevice = dependency('libavdevice', version: '>= 60.3.100', required: get_option('libavdevice'))
+ features += {'libavdevice': libavdevice.found()}
+ if features['libavdevice']
+@@ -971,6 +981,33 @@ if features['wasapi']
+                      'audio/out/ao_wasapi_utils.c')
+ endif
+ 
++# ao_asio includes Steinberg's ASIO SDK headers under the GPLv3 half of the
++# SDK's dual licence, so it is a GPL-only file like ao_jack. Point -Dasio-sdk
++# at the SDK root (the directory holding common/asio.h): only the headers are
++# used, none of the SDK sources are compiled.
++asio_opt = get_option('asio').require(win32).require(
++    get_option('gpl'),
++    error_message: 'the build is not GPL!',
++)
++asio_sdk = get_option('asio-sdk')
++asio = false
++if asio_sdk != ''
++    asio = cc.has_header('objbase.h', required: asio_opt) and \
++           cc.has_header('asio.h', args: ['-I' + asio_sdk / 'common'],
++                         required: asio_opt)
++elif asio_opt.enabled()
++    error('-Dasio=enabled needs -Dasio-sdk=<path to the ASIO SDK>; ' +
++          'get it from https://github.com/audiosdk/asio')
++endif
++features += {'asio': asio}
++if features['asio']
++    sources += files('audio/out/ao_asio.c')
++    dependencies += declare_dependency(
++        compile_args: ['-I' + asio_sdk / 'common'],
++    )
++    dependencies += cc.find_library('advapi32', required: false)
++endif
++
+ 
+ # video output dependencies
+ caca_opt = get_option('caca').require(
+diff --git a/meson.options b/meson.options
+index 416ee3b..44a0261 100644
+--- a/meson.options
++++ b/meson.options
+@@ -19,6 +19,7 @@ option('jpeg', type: 'feature', value: 'auto', description: 'libjpeg image write
+ option('lcms2', type: 'feature', value: 'auto', description: 'LCMS2 support')
+ option('libarchive', type: 'feature', value: 'auto', description: 'libarchive wrapper for reading zip files and more')
+ option('libavdevice', type: 'feature', value: 'auto', description: 'libavdevice')
++option('orender', type: 'feature', value: 'auto', description: 'Spatial audio decoder via the orender (liborender) library, loaded at runtime (dlopen); no build-time dependency')
+ option('libbluray', type: 'feature', value: 'auto', description: 'Bluray support')
+ option('libcurl', type: 'feature', value: 'auto', description: 'libcurl-based stream backend')
+ option('lua',
+@@ -57,6 +58,9 @@ option('pulse', type: 'feature', value: 'auto', description: 'PulseAudio audio o
+ option('sdl2-audio', type: 'feature', value: 'disabled', description: 'SDL2 audio output')
+ option('sndio', type: 'feature', value: 'auto', description: 'sndio audio output')
+ option('wasapi', type: 'feature', value: 'auto', description: 'WASAPI audio output')
++option('asio', type: 'feature', value: 'auto', description: 'Steinberg ASIO audio output (Windows, GPL only)')
++option('asio-sdk', type: 'string', value: '',
++       description: 'Path to the Steinberg ASIO SDK root, used under its GPLv3 licence (required by -Dasio)')
+ 
+ # video output features
+ option('amf', type: 'feature', value: 'auto', description: 'AMD AMF')
+diff --git a/options/options.c b/options/options.c
+index 3287d1c..c45f407 100644
+--- a/options/options.c
++++ b/options/options.c
+@@ -76,6 +76,9 @@ extern const struct m_sub_options demux_sbr_conf;
+ #endif
+ extern const struct m_sub_options vd_lavc_conf;
+ extern const struct m_sub_options ad_lavc_conf;
++#if HAVE_ORENDER
++extern const struct m_sub_options ad_orender_conf;
++#endif
+ extern const struct m_sub_options hwdec_conf;
+ extern const struct m_sub_options input_config;
+ extern const struct m_sub_options encode_config;
+@@ -713,6 +716,9 @@ static const m_option_t mp_opts[] = {
+     {"", OPT_SUBSTRUCT(dec_wrapper, dec_wrapper_conf)},
+     {"", OPT_SUBSTRUCT(vd_lavc_params, vd_lavc_conf)},
+     {"ad-lavc", OPT_SUBSTRUCT(ad_lavc_params, ad_lavc_conf)},
++#if HAVE_ORENDER
++    {"ad-orender", OPT_SUBSTRUCT(ad_orender_params, ad_orender_conf)},
++#endif
+ 
+     {"", OPT_SUBSTRUCT(hwdec_opts, hwdec_conf)},
+ 
+diff --git a/options/options.h b/options/options.h
+index 26a7913..0bf689c 100644
+--- a/options/options.h
++++ b/options/options.h
+@@ -394,6 +394,9 @@ typedef struct MPOpts {
+ 
+     struct vd_lavc_params *vd_lavc_params;
+     struct ad_lavc_params *ad_lavc_params;
++    // Always present (incomplete type when orender is disabled); only the
++    // ad-orender sub-option registration in options.c is HAVE_ORENDER-gated.
++    struct ad_orender_params *ad_orender_params;
+ 
+     struct hwdec_opts *hwdec_opts;
+ 
+diff --git a/player/core.h b/player/core.h
+index 2889d35..7dd56f8 100644
+--- a/player/core.h
++++ b/player/core.h
+@@ -664,6 +664,9 @@ bool mp_load_scripts(struct MPContext *mpctx);
+ void mp_load_builtin_scripts(struct MPContext *mpctx);
+ int64_t mp_load_user_script(struct MPContext *mpctx, const char *fname);
+ 
++// orender_overlay.c (built only with the orender feature)
++void mp_orender_overlay_start(struct MPContext *mpctx);
++
+ // sub.c
+ void redraw_subs(struct MPContext *mpctx);
+ void reset_subtitle_state(struct MPContext *mpctx);
+diff --git a/player/main.c b/player/main.c
+index 0ef3d7f..416dbf8 100644
+--- a/player/main.c
++++ b/player/main.c
+@@ -441,6 +441,10 @@ int mp_initialize(struct MPContext *mpctx, char **options)
+ 
+     mp_load_scripts(mpctx);
+ 
++#if HAVE_ORENDER
++    mp_orender_overlay_start(mpctx);
++#endif
++
+     if (opts->force_vo == 2 && handle_force_window(mpctx, false) < 0)
+         return -1;
+ 
+diff --git a/player/orender_overlay.c b/player/orender_overlay.c
+new file mode 100644
+index 0000000..b22742e
+--- /dev/null
++++ b/player/orender_overlay.c
+@@ -0,0 +1,400 @@
++/*
++ * Built-in client that drives liborender's spatial object overlay.
++ *
++ * Replaces the former omniphony-overlay.lua shim: that script needed LuaJIT's
++ * FFI to reach the liborender symbols, so it silently disabled itself on
++ * builds using PUC Lua (the released Windows/Linux bundles). The overlay is
++ * still generated entirely inside liborender — this file only pulls the
++ * finished ASS payload (and the BGRA heatmap bitmap) and hands them to mpv's
++ * `osd-overlay` / `overlay-add` commands, which must be issued from a client
++ * handle on its own thread (the decoder thread has neither).
++ *
++ * The client is named "omniphony_overlay" (mp_new_client rewrites any
++ * non-alphanumeric character to '_', so a dashed name cannot exist). User
++ * input.conf lines:
++ *     KEY script-binding omniphony_overlay/<name>
++ *     KEY script-message omniphony-overlay <name>
++ *
++ * This file is part of mpv. mpv is free software; you can redistribute it
++ * and/or modify it under the terms of the GNU Lesser General Public License
++ * as published by the Free Software Foundation; either version 2.1 of the
++ * License, or (at your option) any later version.
++ */
++
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "common/orender_abi.h"
++#include "common/orender_dl.h"
++
++#include "common/common.h"
++#include "common/msg.h"
++#include "mpv/client.h"
++#include "osdep/threads.h"
++#include "osdep/timer.h"
++#include "player/client.h"
++#include "player/core.h"
++
++#define OVERLAY_ID 47
++#define HEATMAP_OVERLAY_ID 48
++#define REDRAW_PERIOD (1.0 / 30)
++/* Generous fixed buffer: the ASS payload is bounded (cube + capped objects
++ * and trails). If a frame ever exceeds it we grow and skip that one redraw. */
++#define INITIAL_CAP (64 * 1024)
++#define HEATMAP_PIX_CAP (256 * 256 * 4)
++
++struct overlay_ctx {
++    struct mp_log *log;
++    mpv_handle *client;
++    const struct orender_dl *dl;   // loaded + overlay group verified by start()
++
++    bool enabled;
++    bool shown;
++    bool heatmap_shown;
++
++    uint8_t *buf;
++    size_t cap;
++
++    uint8_t *heatmap_buf;
++    int32_t heatmap_geom[6];
++    /* Fixed-lifetime buffer → its address is constant; formatted once. */
++    char heatmap_addr[32];
++};
++
++static void cmd_show_text(struct overlay_ctx *ctx, const char *text)
++{
++    const char *args[] = {"show-text", text, "1000", NULL};
++    mpv_command(ctx->client, args);
++}
++
++static void hide(struct overlay_ctx *ctx)
++{
++    if (!ctx->shown)
++        return;
++    ctx->shown = false;
++
++    char *keys[] = {"name", "id", "format", "data", "res_x", "res_y", "z",
++                    "hidden"};
++    mpv_node vals[8] = {
++        {.format = MPV_FORMAT_STRING, .u.string = "osd-overlay"},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = OVERLAY_ID},
++        {.format = MPV_FORMAT_STRING, .u.string = "none"},
++        {.format = MPV_FORMAT_STRING, .u.string = ""},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = 0},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = 0},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = 0},
++        {.format = MPV_FORMAT_FLAG,   .u.flag = 1},
++    };
++    mpv_node_list map = {.num = 8, .values = vals, .keys = keys};
++    mpv_node cmd = {.format = MPV_FORMAT_NODE_MAP, .u.list = &map};
++    mpv_command_node(ctx->client, &cmd, NULL);
++}
++
++static void hide_heatmap(struct overlay_ctx *ctx)
++{
++    if (!ctx->heatmap_shown)
++        return;
++    ctx->heatmap_shown = false;
++
++    char id[12];
++    snprintf(id, sizeof(id), "%d", HEATMAP_OVERLAY_ID);
++    const char *args[] = {"overlay-remove", id, NULL};
++    mpv_command(ctx->client, args);
++}
++
++/* Pull the flattened BGRA heatmap and hand it to `overlay-add`, composited
++ * under the ASS layer. A 0 return (disabled / silent / no objects) clears it.
++ * Independent of the ASS pull — does not advance trails. */
++static void redraw_heatmap(struct overlay_ctx *ctx, int64_t res_x, int64_t res_y)
++{
++    size_t n = ctx->dl->overlay_heatmap_bgra(res_x, res_y, ctx->heatmap_buf,
++                                             HEATMAP_PIX_CAP, ctx->heatmap_geom);
++    if (n == 0) {
++        hide_heatmap(ctx);
++        return;
++    }
++    ctx->heatmap_shown = true;
++
++    int32_t *g = ctx->heatmap_geom;
++    mpv_node vals[12] = {
++        {.format = MPV_FORMAT_STRING, .u.string = "overlay-add"},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = HEATMAP_OVERLAY_ID},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[0]},  /* x (screen px) */
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[1]},  /* y */
++        {.format = MPV_FORMAT_STRING, .u.string = ctx->heatmap_addr},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = 0},     /* offset */
++        {.format = MPV_FORMAT_STRING, .u.string = "bgra"},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[2]},  /* source w */
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[3]},  /* source h */
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[2] * 4}, /* stride */
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[4]},  /* display w */
++        {.format = MPV_FORMAT_INT64,  .u.int64 = g[5]},  /* display h */
++    };
++    mpv_node_list args = {.num = 12, .values = vals};
++    mpv_node cmd = {.format = MPV_FORMAT_NODE_ARRAY, .u.list = &args};
++    mpv_command_node(ctx->client, &cmd, NULL);
++}
++
++static void redraw(struct overlay_ctx *ctx)
++{
++    if (!ctx->enabled)
++        return;
++
++    int64_t res_x = 0, res_y = 0;
++    mpv_get_property(ctx->client, "osd-width", MPV_FORMAT_INT64, &res_x);
++    mpv_get_property(ctx->client, "osd-height", MPV_FORMAT_INT64, &res_y);
++    if (res_x <= 0 || res_y <= 0)
++        return;
++
++    /* One call == one overlay redraw: the library rebuilds the scene and
++     * advances the motion trails on each call, so call exactly once. */
++    size_t n = ctx->dl->overlay_ass(res_x, res_y, ctx->buf, ctx->cap);
++    if (n == 0) {
++        /* Nothing to draw (disabled, non-spatial, or empty) → clear both. */
++        hide(ctx);
++        hide_heatmap(ctx);
++        return;
++    }
++    if (n > ctx->cap) {
++        /* Outgrew the buffer (very unlikely): grow, skip this frame. */
++        ctx->cap = n;
++        ctx->buf = realloc(ctx->buf, ctx->cap + 1);
++        MP_HANDLE_OOM(ctx->buf);
++        return;
++    }
++    ctx->buf[n] = '\0';
++
++    ctx->shown = true;
++    char *keys[] = {"name", "id", "format", "data", "res_x", "res_y", "z",
++                    "hidden"};
++    mpv_node vals[8] = {
++        {.format = MPV_FORMAT_STRING, .u.string = "osd-overlay"},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = OVERLAY_ID},
++        {.format = MPV_FORMAT_STRING, .u.string = "ass-events"},
++        {.format = MPV_FORMAT_STRING, .u.string = (char *)ctx->buf},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = res_x},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = res_y},
++        {.format = MPV_FORMAT_INT64,  .u.int64 = 0},
++        {.format = MPV_FORMAT_FLAG,   .u.flag = 0},
++    };
++    mpv_node_list map = {.num = 8, .values = vals, .keys = keys};
++    mpv_node cmd = {.format = MPV_FORMAT_NODE_MAP, .u.list = &map};
++    mpv_command_node(ctx->client, &cmd, NULL);
++
++    redraw_heatmap(ctx, res_x, res_y);
++}
++
++/* Absolute master enable/disable. Also gates the redraw timer and hides both
++ * OSD layers when off. */
++static void set_active(struct overlay_ctx *ctx, bool on)
++{
++    ctx->enabled = on;
++    ctx->dl->overlay_set_enabled(on);
++    if (on) {
++        redraw(ctx);
++    } else {
++        hide(ctx);
++        hide_heatmap(ctx);
++    }
++}
++
++/* Master toggle: flip in the library (returns the new state) so it tracks
++ * Studio's OSC changes; the renderer is the single source of truth. */
++static void toggle_master(struct overlay_ctx *ctx)
++{
++    ctx->enabled = ctx->dl->overlay_toggle() != 0;
++    if (ctx->enabled) {
++        redraw(ctx);
++    } else {
++        hide(ctx);
++        hide_heatmap(ctx);
++    }
++    cmd_show_text(ctx, ctx->enabled ? "Spatial overlay: on"
++                                    : "Spatial overlay: off");
++}
++
++static void bool_toggle(struct overlay_ctx *ctx, int (*fn)(void),
++                        const char *label)
++{
++    char text[80];
++    snprintf(text, sizeof(text), "%s: %s", label, fn() ? "on" : "off");
++    cmd_show_text(ctx, text);
++    redraw(ctx);
++}
++
++static void cycle_colormap(struct overlay_ctx *ctx)
++{
++    char text[80];
++    snprintf(text, sizeof(text), "Heatmap colormap: %" PRIu32,
++             ctx->dl->overlay_cycle_heatmap_colormap());
++    cmd_show_text(ctx, text);
++    redraw(ctx);
++}
++
++static void adjust_bands(struct overlay_ctx *ctx, int32_t delta)
++{
++    char text[80];
++    snprintf(text, sizeof(text), "Heatmap planes: %" PRIu32,
++             ctx->dl->overlay_adjust_heatmap_bands(delta));
++    cmd_show_text(ctx, text);
++    redraw(ctx);
++}
++
++/* Shared command vocabulary of the named key bindings
++ * (`script-binding omniphony-overlay/<cmd>`) and the script message
++ * (`script-message omniphony-overlay <cmd>`). */
++static void run_overlay_cmd(struct overlay_ctx *ctx, const char *cmd)
++{
++    if (!strcmp(cmd, "enable")) {
++        set_active(ctx, true);
++    } else if (!strcmp(cmd, "disable")) {
++        set_active(ctx, false);
++    } else if (!strcmp(cmd, "toggle")) {
++        toggle_master(ctx);
++    } else if (!strcmp(cmd, "labels")) {
++        bool_toggle(ctx, ctx->dl->overlay_toggle_labels, "Overlay labels");
++    } else if (!strcmp(cmd, "objects")) {
++        bool_toggle(ctx, ctx->dl->overlay_toggle_objects, "Overlay objects");
++    } else if (!strcmp(cmd, "trails")) {
++        bool_toggle(ctx, ctx->dl->overlay_toggle_trails, "Overlay trails");
++    } else if (!strcmp(cmd, "heatmap")) {
++        bool_toggle(ctx, ctx->dl->overlay_toggle_heatmap, "Energy heatmap");
++    } else if (!strcmp(cmd, "colormap") || !strcmp(cmd, "heatmap-colormap")) {
++        cycle_colormap(ctx);
++    } else if (!strcmp(cmd, "bands-inc") || !strcmp(cmd, "heatmap-bands-inc")) {
++        adjust_bands(ctx, 1);
++    } else if (!strcmp(cmd, "bands-dec") || !strcmp(cmd, "heatmap-bands-dec")) {
++        adjust_bands(ctx, -1);
++    } else {
++        MP_VERBOSE(ctx, "unknown overlay command: %s\n", cmd);
++    }
++}
++
++/* Mirror the dispatch rule of Lua's mp.add_key_binding (defaults.lua,
++ * non-repeatable form): plain keys fire on down/press, mouse buttons on
++ * up/press; canceled and repeat events are dropped. */
++static bool key_state_fires(const char *state)
++{
++    bool is_mouse = state[0] && state[1] == 'm';
++    bool canceled = state[0] && state[1] && state[2] == 'c';
++    if (canceled || state[0] == 'r')
++        return false;
++    if (is_mouse)
++        return state[0] == 'u' || state[0] == 'p';
++    return state[0] == 'd' || state[0] == 'p';
++}
++
++static void handle_client_message(struct overlay_ctx *ctx,
++                                  mpv_event_client_message *msg)
++{
++    if (msg->num_args >= 3 && !strcmp(msg->args[0], "key-binding")) {
++        if (key_state_fires(msg->args[2]))
++            run_overlay_cmd(ctx, msg->args[1]);
++        return;
++    }
++    /* `script-message omniphony-overlay <cmd>` broadcasts to every client.
++     * Also accept the underscored spelling of the client name. */
++    if (msg->num_args >= 2 && (!strcmp(msg->args[0], "omniphony-overlay") ||
++                               !strcmp(msg->args[0], "omniphony_overlay")))
++        run_overlay_cmd(ctx, msg->args[1]);
++}
++
++static MP_THREAD_VOID overlay_thread(void *p)
++{
++    struct overlay_ctx *ctx = p;
++    mp_thread_set_name("orender-ov");
++
++    mpv_observe_property(ctx->client, 0, "osd-width", MPV_FORMAT_INT64);
++    mpv_observe_property(ctx->client, 0, "osd-height", MPV_FORMAT_INT64);
++
++    double next_redraw = mp_time_sec();
++    bool terminate = false;
++    while (!terminate) {
++        double timeout = ctx->enabled
++                             ? MPMAX(0, next_redraw - mp_time_sec())
++                             : 1e9;
++        mpv_event *ev = mpv_wait_event(ctx->client, timeout);
++        switch (ev->event_id) {
++        case MPV_EVENT_SHUTDOWN:
++            terminate = true;
++            break;
++        case MPV_EVENT_PROPERTY_CHANGE:
++            /* osd-width/-height: redraw immediately so the overlay tracks
++             * window resizes snappily. */
++            redraw(ctx);
++            next_redraw = mp_time_sec() + REDRAW_PERIOD;
++            break;
++        case MPV_EVENT_CLIENT_MESSAGE:
++            handle_client_message(ctx, ev->data);
++            break;
++        default:
++            break;
++        }
++        if (ctx->enabled && mp_time_sec() >= next_redraw) {
++            redraw(ctx);
++            next_redraw = mp_time_sec() + REDRAW_PERIOD;
++        }
++    }
++
++    /* Clear on shutdown so the OSD doesn't linger past quit (best effort —
++     * the core may already reject commands). */
++    ctx->enabled = false;
++    hide(ctx);
++    hide_heatmap(ctx);
++
++    mpv_handle *client = ctx->client;
++    free(ctx->buf);
++    free(ctx->heatmap_buf);
++    talloc_free(ctx);
++    mpv_destroy(client);
++    MP_THREAD_RETURN();
++}
++
++void mp_orender_overlay_start(struct MPContext *mpctx)
++{
++    /* The overlay is pure cosmetics: when liborender is absent/incompatible
++     * (the decoder already logs the one actionable warning) or predates the
++     * overlay API, quietly don't start the client thread. */
++    const struct orender_dl *dl = orender_dl_get(mpctx->global, mpctx->log);
++    if (!dl || !dl->have_overlay) {
++        MP_VERBOSE(mpctx, "orender overlay: not starting (%s)\n",
++                   dl ? "library lacks the overlay symbols"
++                      : orender_dl_error());
++        return;
++    }
++
++    /* Created before the thread so a destroyed MPContext can't race the
++     * client creation (same pattern as scripting.c). */
++    mpv_handle *client = mp_new_client(mpctx->clients, "omniphony_overlay");
++    if (!client) {
++        MP_ERR(mpctx, "orender overlay: failed to create client\n");
++        return;
++    }
++    mp_client_set_weak(client);
++
++    struct overlay_ctx *ctx = talloc_zero(NULL, struct overlay_ctx);
++    ctx->log = mp_client_get_log(client);
++    ctx->client = client;
++    ctx->dl = dl;
++    ctx->enabled = true;
++    ctx->cap = INITIAL_CAP;
++    ctx->buf = malloc(ctx->cap + 1);
++    ctx->heatmap_buf = malloc(HEATMAP_PIX_CAP);
++    if (!ctx->buf || !ctx->heatmap_buf)
++        abort();
++    snprintf(ctx->heatmap_addr, sizeof(ctx->heatmap_addr), "&0x%" PRIxPTR,
++             (uintptr_t)ctx->heatmap_buf);
++
++    mp_thread thread;
++    if (mp_thread_create(&thread, overlay_thread, ctx)) {
++        free(ctx->buf);
++        free(ctx->heatmap_buf);
++        talloc_free(ctx);
++        mpv_destroy(client);
++        MP_ERR(mpctx, "orender overlay: failed to create thread\n");
++        return;
++    }
++    mp_thread_detach(thread);
++}

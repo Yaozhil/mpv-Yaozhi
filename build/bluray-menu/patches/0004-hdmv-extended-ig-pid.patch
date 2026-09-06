@@ -1,0 +1,16 @@
+diff --git a/src/libbluray/decoders/graphics_controller.c b/src/libbluray/decoders/graphics_controller.c
+--- a/src/libbluray/decoders/graphics_controller.c
++++ b/src/libbluray/decoders/graphics_controller.c
+@@ -853,7 +853,11 @@ int gc_decode_ts(GRAPHICS_CONTROLLER *gc, uint16_t pid, uint8_t *block, unsigned num_
+         return -1;
+     }
+ 
+-    if (IS_HDMV_PID_IG(pid)) {
++    /* The caller supplies the IG PID selected from the playlist STN. Some
++     * reauthored discs place it above the conventional 0x141f limit (e.g.
++     * 0x14a0). Keep the graphics namespace bounded, but accept that selected
++     * stream instead of silently discarding its interactive composition. */
++    if ((pid & 0xff00) == HDMV_PID_IG_FIRST) {
+         /* IG stream */
+ 
+         if (!gc->igp) {
