@@ -36,6 +36,8 @@ mpv.write_text(text)
 # before the independent Atmos decoder patch. Both variants must carry it.
 shutil.copyfile(root/'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch',
                 packages/'mpv-9001-hdmv-overlay-video-ready.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0006-bluray-title-resync-hdmv-context.patch',
+                packages/'mpv-9002-bluray-title-resync-hdmv-context.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'

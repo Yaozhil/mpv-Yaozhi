@@ -1,0 +1,32 @@
+--- a/libavformat/mpegts.c
++++ b/libavformat/mpegts.c
+@@ -161,6 +161,7 @@
+     int skip_unknown_pmt;
+ 
+     int scan_all_pmts;
++    int force_hdmv;
+ 
+     int resync_size;
+     int merge_pmt_versions;
+@@ -197,6 +198,8 @@
+ 
+ static const AVOption options[] = {
+     MPEGTS_OPTIONS,
++    {"force_hdmv", "use HDMV stream types when Blu-ray program registration is missing", offsetof(MpegTSContext, force_hdmv), AV_OPT_TYPE_BOOL,
++     {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+     {"fix_teletext_pts", "try to fix pts values of dvb teletext streams", offsetof(MpegTSContext, fix_teletext_pts), AV_OPT_TYPE_BOOL,
+      {.i64 = 1}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+     {"scan_all_pmts", "scan and combine all PMTs", offsetof(MpegTSContext, scan_all_pmts), AV_OPT_TYPE_BOOL,
+@@ -2627,6 +2630,12 @@
+     if (p >= p_end)
+         goto out;
+ 
++    // A caller demuxing a known Blu-ray title can supply the registration
++    // omitted by some authored PMTs. Reuse the complete HDMV type handling,
++    // including TrueHD substreams; never override an explicit registration.
++    if (!prog_reg_desc && ts->force_hdmv)
++        prog_reg_desc = AV_RL32("HDMV");
++
+     // stop parsing after pmt, we found header
+     if (!ts->pkt)
+         ts->stop_parse = 2;

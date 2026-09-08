@@ -274,6 +274,8 @@ jobs:
             packages/ffmpeg-9001-av3a-multiframe-probe.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-frame-parser.patch" \
             packages/ffmpeg-9002-av3a-frame-parser.patch
+          cp "$GITHUB_WORKSPACE/build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch" \
+            packages/ffmpeg-9005-bluray-hdmv-context.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-nvenc-sdk-13.1.patch" \
             packages/ffmpeg-9003-nvenc-sdk-13.1.patch
           cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
@@ -342,6 +344,7 @@ jobs:
               "ffmpeg-9001-av3a-multiframe-probe.patch",
               "ffmpeg-9002-av3a-frame-parser.patch",
               "ffmpeg-9003-nvenc-sdk-13.1.patch",
+              "ffmpeg-9005-bluray-hdmv-context.patch",
               "ffmpeg-9010-truehd-mat-padding.patch",
           ]
           patch = (
@@ -995,6 +998,7 @@ jobs:
           cp "$archive" artifact/
           cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
           cp build/dolby-vision/verify-fel.ps1 artifact/
+          cp build/bluray-menu/tests/verify-hdmv-context.py artifact/
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
             artifact/AV3A-SYMBOLS.txt
@@ -1027,6 +1031,7 @@ jobs:
               verify-stage2.ps1 \
               verify-spatial-layouts.ps1 \
               verify-fel.ps1 \
+              verify-hdmv-context.py \
               > SHA256SUMS.txt
           )
 
@@ -1171,6 +1176,11 @@ jobs:
               throw "Required feature was lost: $feature`n$featureText"
             }
           }
+
+          python (Join-Path $artifact "verify-hdmv-context.py") `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --mpv $mpv --work (Join-Path $artifact "hdmv-context-validation")
+          if ($LASTEXITCODE -ne 0) { throw 'HDMV missing-registration audio regression' }
 
           & (Join-Path $artifact "verify-fel.ps1") `
             -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `

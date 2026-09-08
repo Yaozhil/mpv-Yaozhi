@@ -1,0 +1,71 @@
+From 348739a827254c97eb82a6f47548d1ac7f2a50f8 Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 12:39:28 +0800
+Subject: [PATCH] bluray: resync plain titles and retain HDMV demux context
+
+---
+ demux/demux_lavf.c     | 17 +++++++++++++++++
+ player/discnav.c       |  4 +++-
+ stream/stream_bluray.c |  5 +++++
+ 3 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index c19b92e..a466e69 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -1520,6 +1520,23 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
+             av_dict_set(&dopts, "rtsp_transport", transport, 0);
+     }
+ 
++    // Some authored Blu-rays omit the program-level HDMV registration in
++    // their PMT. Probing cannot infer private LPCM/PGS stream types reliably.
++    // Only a Blu-ray stream backend can supply this missing format context;
++    // leave ordinary files, network TS, DVD and explicit PMT registrations alone.
++    if (priv->stream && matches_avinputformat_name(priv, "mpegts")) {
++        const char *name = priv->stream->info->name;
++        bool bluray = strcmp(name, "bd") == 0 || strcmp(name, "bdnav") == 0 ||
++                      strcmp(name, "bdmv/bluray") == 0;
++        const AVClass *cls = priv->avif->priv_class;
++        if (bluray && cls && av_opt_find(&cls, "force_hdmv", NULL, 0,
++                                        AV_OPT_SEARCH_FAKE_OBJ))
++        {
++            av_dict_set(&dopts, "force_hdmv", "1", 0);
++            MP_VERBOSE(demuxer, "Using Blu-ray context for unregistered HDMV streams\n");
++        }
++    }
++
+     guess_and_set_vobsub_name(demuxer, &dopts);
+ 
+     avfc->interrupt_callback = (AVIOInterruptCB){
+diff --git a/player/discnav.c b/player/discnav.c
+index a0550ae..b910ca1 100644
+--- a/player/discnav.c
++++ b/player/discnav.c
+@@ -255,8 +255,10 @@ static void sync_current_edition(struct MPContext *mpctx, struct stream *s,
+         desired = demuxer->num_editions - 1;
+     } else {
+         unsigned title;
++        // Only navigation mode appends a synthetic Disc Menu edition.
++        int num_titles = demuxer->num_editions - (nav->nav_active ? 1 : 0);
+         if (stream_control(s, STREAM_CTRL_GET_CURRENT_TITLE, &title) >= 1 &&
+-            (int)title < demuxer->num_editions - 1)
++            title < num_titles)
+         {
+             desired = (int)title;
+         }
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 21c17ff..8f78e2c 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -1050,6 +1050,11 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+             // the player tracks the disc author's defaults on a plain-title
+             // playback.
+             *st = (struct stream_nav_state){
++                // Plain-title selection also holds a discontinuity boundary.
++                // Publish it so the player can acknowledge and reopen lavf,
++                // instead of treating the temporary drain as the title's EOF.
++                .discontinuity_id = b->discontinuity_id,
++                .drain_pending = b->resync_owed,
+                 .no_audio = no_audio,
+                 .active_audio_id = audio_pid,
+                 .active_sub_id = sub_pid,

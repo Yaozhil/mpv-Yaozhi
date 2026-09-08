@@ -48,7 +48,9 @@ lock = {
                 for p in sorted(out.glob('*.patch'))},
     'common_patches': {name: hashlib.sha256((root/name).read_bytes()).hexdigest()
         for name in ['build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch',
-                     'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch']},
+                     'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch',
+                     'build/bluray-menu/patches/0006-bluray-title-resync-hdmv-context.patch',
+                     'build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch']},
     'integration_notes': [
         '0012/0015 preserve main VDCTRL_SET_EXTRA_HW_FRAMES while adding/removing the temporary fallback enum.',
         '9001 is superseded: main keeps both unknown input and output layouts unspecified and preserves native_equal_layout.',
