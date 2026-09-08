@@ -1,0 +1,68 @@
+name: Diagnose Blu-ray Windows shutdown
+on:
+  push:
+    branches: [codex/v100-core-parity-20260907]
+    paths: [.github/workflows/diagnose-bluray-windows.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34188139667
+          name: mpv-v100-main-x86_64
+          path: candidate
+      - uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34054633292
+          name: mpv-v100-main-x86_64
+          path: baseline
+      - name: Compare identical audio fixture and shutdown paths
+        shell: pwsh
+        run: |
+          foreach ($dir in @('baseline','candidate')) {
+            $archive = Get-ChildItem $dir -Filter '*.7z' | Select-Object -First 1
+            & 7z x -y "-o$dir/mpv" $archive.FullName | Out-Null
+            if ($LASTEXITCODE) { throw 'Unpack failed' }
+          }
+          @'
+          import json, subprocess
+          from pathlib import Path
+          work=Path.cwd()
+          c=work/'candidate'
+          tool=c/'verify-hdmv-context.py'
+          subprocess.run(['python',str(tool),'--ffmpeg',str(c/'ffmpeg-av3a-validation.exe'),
+              '--work',str(work/'fixtures'),'--baseline'],check=True)
+          fixtures=work/'fixtures'; report=[]
+          for name in ['baseline','candidate']:
+              player=next((work/name/'mpv').rglob('mpv.com'))
+              for mode,extra in [('default',[]),('no-stats',['--load-stats-overlay=no']),
+                  ('audio-only',['--vid=no']),('audio-only-no-stats',['--vid=no','--load-stats-overlay=no'])]:
+                  for repeat in range(3):
+                      log=work/f'{name}-{mode}-{repeat}.log'
+                      cmd=[str(player),'--no-config','--load-scripts=no','--vo=null','--ao=pcm',
+                          '--media-controls=no','--ao-pcm-file='+str(work/'output.wav'),*extra,
+                          str(fixtures/'48000-2.m2ts')]
+                      p=subprocess.run(cmd,capture_output=True,timeout=25)
+                      log.write_bytes(p.stdout+p.stderr)
+                      row=dict(core=name,mode=mode,repeat=repeat,exit=p.returncode)
+                      report.append(row);print(json.dumps(row),flush=True)
+          (work/'shutdown-results.json').write_text(json.dumps(report,indent=2))
+          '@ | Set-Content -Encoding utf8 compare.py
+          python compare.py
+          if ($LASTEXITCODE) { throw 'Diagnostic harness failed' }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: bluray-shutdown-diagnostics
+          path: |
+            shutdown-results.json
+            *.log
+          retention-days: 7
