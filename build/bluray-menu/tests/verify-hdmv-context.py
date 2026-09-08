@@ -109,7 +109,10 @@ def main():
                 # Exercise the linked lavf in each player, not just ffmpeg.exe.
                 output = args.work / (label + '-mpv.wav')
                 log = run(label + '-mpv', [args.mpv, '--no-config', '--load-scripts=no',
-                    '--vo=null', '--ao=pcm', '--ao-pcm-file=' + str(output),
+                    # Audio decode test: video is checked by real-disc tests.
+                    # Both old/new cores hit an unrelated null-VO teardown AV
+                    # on Windows CI (diagnostic run 34211243394).
+                    '--vid=no', '--vo=null', '--ao=pcm', '--ao-pcm-file=' + str(output),
                     '--media-controls=no', '--demuxer-lavf-o=force_hdmv=1', missing])
                 assert 'pcm_bluray' in log and output.stat().st_size > 90000
         results.append({'rate': rate, 'channels': channels, 'samples': len(samples),

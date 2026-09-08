@@ -1,0 +1,313 @@
+name: Validate built Blu-ray candidates
+on:
+  push:
+    branches: [codex/v100-core-parity-20260907]
+    paths: [.github/workflows/validate-bluray-candidates.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  validate-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, atmos]
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download custom mpv
+        uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34188139667
+          name: mpv-v100-${{ matrix.variant }}-x86_64
+          path: artifact
+
+      - name: Download matching renderer
+        if: matrix.variant == 'atmos'
+        uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34188139667
+          name: orender-v0.5.2-windows-x86_64
+          path: renderer
+
+      - name: Verify spatial audio and AV3A playback on Windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifact = Join-Path $env:GITHUB_WORKSPACE "artifact"
+
+          Get-Content -LiteralPath (Join-Path $artifact "SHA256SUMS.txt") |
+            ForEach-Object {
+              if ($_ -notmatch "^([0-9a-f]{64})\s+(.+)$") {
+                throw "Invalid SHA256SUMS entry: $_"
+              }
+              $expected = $matches[1].ToUpperInvariant()
+              $path = Join-Path $artifact $matches[2]
+              $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+              if ($actual -ne $expected) {
+                throw "SHA-256 mismatch for $path"
+              }
+            }
+
+          $archive = Get-ChildItem -LiteralPath $artifact -Filter "mpv-x86_64-*.7z" |
+            Select-Object -First 1
+          if (-not $archive) {
+            throw "mpv release archive not found"
+          }
+
+          $mpvDir = Join-Path $artifact "mpv"
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$mpvDir" $archive.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip extraction failed with exit code $LASTEXITCODE"
+          }
+
+          # The release archive preserves its staging directory. Locate the
+          # executable after extraction instead of assuming a flat archive.
+          $mpv = Get-ChildItem -LiteralPath $mpvDir -Filter "mpv.com" -File -Recurse |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $mpv) {
+            throw "mpv.com not found in release archive"
+          }
+          $aoHelp = & $mpv --no-config --ao=help 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "mpv --ao=help failed"
+          }
+          $aoText = ($aoHelp | ForEach-Object { "$_" }) -join "`n"
+          foreach ($required in @("wasapi", "sdl", "SDL Audio")) {
+            if ($aoText -notmatch [regex]::Escape($required)) {
+              throw "Missing audio output marker: $required"
+            }
+          }
+
+          $versionText = (& $mpv --version 2>&1 | ForEach-Object { "$_" }) -join "`n"
+          if ($versionText -notmatch 'libavformat\s+62\.13\.102') {
+            throw "mpv linked an unexpected libavformat version; expected 62.13.102 for Dolby Vision stream groups:`n$versionText"
+          }
+
+          $optionText = (& $mpv --no-config --list-options 2>&1 |
+            ForEach-Object { "$_" }) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $optionText -notmatch 'secondary-sub-scale') {
+            throw "mpv is missing the formal core secondary-sub-scale option"
+          }
+
+          $featureOutput = & $mpv `
+            --no-config `
+            --idle=no `
+            --vo=null `
+            --ao=null `
+            --media-controls=yes `
+            --frames=1 `
+            --msg-level=all=v `
+            'av://lavfi:testsrc2=size=64x64:rate=1:duration=1' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "SMTC feature probe failed"
+          }
+          $featureText = ($featureOutput | ForEach-Object { "$_" }) -join "`n"
+          $featureLine = ($featureOutput | Where-Object {
+              "$_" -match 'List of enabled features:'
+            } | Select-Object -First 1)
+          if (-not $featureLine) {
+            throw "mpv did not publish its enabled feature list"
+          }
+          $requiredFeatures = @(
+            'amf', 'build-date', 'cplugins', 'cuda-hwaccel', 'cuda-interop',
+            'd3d-hwaccel', 'd3d11', 'd3d9-hwaccel', 'debug', 'direct3d',
+            'dos-paths', 'dvda', 'dvdnav', 'dxgi-debug-d3d11', 'egl-angle',
+            'egl-angle-win32', 'ffmpeg', 'ffnvcodec', 'gl', 'gl-dxinterop',
+            'gl-dxinterop-d3d9', 'gl-win32', 'glob', 'glob-win32', 'gpl',
+            'iconv', 'javascript', 'jpeg', 'lcms2', 'libarchive', 'libass',
+            'libavdevice', 'libbluray', 'libcurl', 'libplacebo', 'luajit',
+            'openal', 'rubberband', 'rubberband-3', 'sdl2-audio',
+            'sdl2-gamepad', 'shaderc', 'sixel', 'spirv-cross', 'subrandr',
+            'uchardet', 'vaapi', 'vaapi-win32', 'vapoursynth', 'vector',
+            'vk-khr-display', 'vulkan', 'wasapi', 'win32', 'win32-desktop',
+            'win32-executable', 'win32-smtc', 'win32-threads', 'zimg',
+            'zimg-st428', 'zlib'
+          )
+          if ('${{ matrix.variant }}' -eq 'atmos') {
+            $requiredFeatures += @('orender','asio')
+            if ($optionText -notmatch 'ad-orender-library' -or $aoText -notmatch 'Steinberg ASIO') {
+              throw 'Atmos decoder/ASIO interface missing'
+            }
+          }
+          $enabledFeatures = @(
+            (("$featureLine" -split 'List of enabled features:', 2)[1] -split '\s+') |
+              Where-Object { $_ }
+          )
+          foreach ($feature in $requiredFeatures) {
+            if ($feature -notin $enabledFeatures) {
+              throw "Required feature was lost: $feature`n$featureText"
+            }
+          }
+
+          python build/bluray-menu/tests/verify-hdmv-context.py `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --mpv $mpv --work (Join-Path $artifact "hdmv-context-validation")
+          if ($LASTEXITCODE -ne 0) { throw 'HDMV missing-registration audio regression' }
+
+          & (Join-Path $artifact "verify-fel.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv
+
+          & (Join-Path $artifact "verify-spatial-layouts.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -WorkDir (Join-Path $artifact "spatial-layout-validation")
+
+          # SDL only exposes a channel count to mpv.  The dummy backend makes
+          # negotiation deterministic and must successfully open both spatial
+          # layouts.  This catches mpv layout folds as well as SDL's historical
+          # public eight-channel limit before the Windows WASAPI endpoint applies
+          # the matching WAVEFORMATEXTENSIBLE speaker mask.
+          $sdlSpatialCases = @(
+            @{
+              Name = "5.1.4"
+              Count = 10
+              Layout = "fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr"
+            },
+            @{
+              Name = "7.1.4"
+              Count = 12
+              Layout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr"
+            }
+          )
+          $previousSdlDriver = $env:SDL_AUDIODRIVER
+          $env:SDL_AUDIODRIVER = "dummy"
+          try {
+            foreach ($spatialCase in $sdlSpatialCases) {
+              $channelCount = [int]$spatialCase.Count
+              $layout = [string]$spatialCase.Layout
+              $sample = Join-Path $artifact "sdl-$($spatialCase.Name)-silence.raw"
+              [IO.File]::WriteAllBytes(
+                $sample,
+                (New-Object byte[] (48000 * $channelCount * 2 / 10))
+              )
+              $sdlSpatialOutput = & $mpv `
+                --no-config `
+                --demuxer=rawaudio `
+                --demuxer-rawaudio-format=s16le `
+                "--demuxer-rawaudio-channels=$layout" `
+                --demuxer-rawaudio-rate=48000 `
+                "--audio-channels=$layout" `
+                --vo=null `
+                --ao=sdl `
+                --length=0.05 `
+                --msg-level=all=warn,ao/sdl=trace `
+                $sample 2>&1
+              $sdlSpatialExit = $LASTEXITCODE
+              $sdlSpatialText = `
+                ($sdlSpatialOutput | ForEach-Object { "$_" }) -join "`n"
+
+              if ($sdlSpatialExit -ne 0) {
+                throw "SDL $($spatialCase.Name) open failed:`n$sdlSpatialText"
+              }
+              $expectedResult = "result: $layout"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedResult)) {
+                throw "SDL changed the $($spatialCase.Name) channel layout"
+              }
+              $expectedRequested = `
+                "requested format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedRequested)) {
+                throw "SDL requested the wrong $($spatialCase.Name) channel count"
+              }
+              $expectedObtained = `
+                "obtained format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedObtained)) {
+                throw "SDL did not open $($spatialCase.Name) with $channelCount channels"
+              }
+              if ($sdlSpatialText -match "Unsupported number of audio channels") {
+                throw "SDL still rejects $($spatialCase.Name) before opening the device"
+              }
+            }
+          } finally {
+            $env:SDL_AUDIODRIVER = $previousSdlDriver
+          }
+
+          $hdrVividSample = Join-Path $artifact "hdr_vivid_h265_sample.hevc"
+          Invoke-WebRequest `
+            -Uri "https://fate-suite.ffmpeg.org/hevc/hdr_vivid_h265_sample.hevc" `
+            -OutFile $hdrVividSample
+          $expectedHdrVividSha = `
+            "F03A633D537C8B34B3FA81EC17C986A5E05E13F22C4B43ADCF1DF0CECE9DCBAC"
+          $actualHdrVividSha = `
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrVividSample).Hash
+          if ($actualHdrVividSha -ne $expectedHdrVividSha) {
+            throw "HDR Vivid FATE sample SHA-256 mismatch"
+          }
+
+          # Keep mpv alive after the first frame.  Some Windows runners
+          # report an access violation while tearing down this raw HEVC
+          # sample, after the metadata probe has already succeeded.  The
+          # probe must validate the exposed property, not the unrelated EOF
+          # teardown path, so terminate the idle process after observing it.
+          $hdrVividStdout = Join-Path $artifact "hdr-vivid.stdout.log"
+          $hdrVividStderr = Join-Path $artifact "hdr-vivid.stderr.log"
+          $hdrVividArgs = @(
+            '--no-config',
+            '--hwdec=no',
+            '--vo=null',
+            '--ao=null',
+            '--no-correct-pts',
+            '--container-fps-override=25',
+            '--frames=1',
+            '--idle=yes',
+            '--term-playing-msg=HDR_VIVID=${video-params/hdr-vivid}',
+            $hdrVividSample
+          )
+          $hdrVividProcess = Start-Process -FilePath $mpv `
+            -ArgumentList $hdrVividArgs `
+            -RedirectStandardOutput $hdrVividStdout `
+            -RedirectStandardError $hdrVividStderr `
+            -PassThru -WindowStyle Hidden
+          try {
+            $hdrVividDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            $hdrVividText = ''
+            while ([DateTime]::UtcNow -lt $hdrVividDeadline) {
+              Start-Sleep -Milliseconds 200
+              $hdrVividParts = @()
+              if (Test-Path -LiteralPath $hdrVividStdout) {
+                $hdrVividParts += Get-Content -Raw -LiteralPath $hdrVividStdout
+              }
+              if (Test-Path -LiteralPath $hdrVividStderr) {
+                $hdrVividParts += Get-Content -Raw -LiteralPath $hdrVividStderr
+              }
+              $hdrVividText = $hdrVividParts -join "`n"
+              if ($hdrVividText -match "HDR_VIVID=yes") {
+                break
+              }
+              if ($hdrVividProcess.HasExited) {
+                throw "HDR Vivid FATE sample exited before metadata probe (exit code $($hdrVividProcess.ExitCode))"
+              }
+            }
+            if ($hdrVividText -notmatch "HDR_VIVID=yes") {
+              Write-Host $hdrVividText
+              throw "mpv did not expose video-params/hdr-vivid within 20 seconds"
+            }
+            Write-Host $hdrVividText
+          } finally {
+            if (!$hdrVividProcess.HasExited) {
+              Stop-Process -Id $hdrVividProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          & (Join-Path $artifact "verify-stage2.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a") `
+            -ObjectSamplePath (Join-Path $artifact "bed-object-moving.av3a") `
+            -MetadataProbePath (Join-Path $artifact "object-metadata-probe.exe")
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: bluray-validation-${{ matrix.variant }}
+          path: |
+            artifact/hdmv-context-validation/result.json
+            artifact/hdmv-context-validation/*.log
+          retention-days: 7
