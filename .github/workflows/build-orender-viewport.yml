@@ -1,0 +1,53 @@
+name: Build Atmos viewport candidate
+on:
+  push:
+    branches: [codex/v100-core-parity-20260907]
+    paths:
+      - .github/workflows/build-orender-viewport.yml
+      - build/feedback/patches/orender-viewport-safe-area.patch
+permissions:
+  contents: read
+jobs:
+  renderer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: mgth/Omniphony
+          ref: f9a79721af64ad9c39042d4deded158b568fc598
+      - uses: actions/checkout@v6
+        with:
+          path: ci-config
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply viewport patch and locked dependencies
+        shell: pwsh
+        run: |
+          git apply --check ci-config/build/feedback/patches/orender-viewport-safe-area.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git apply ci-config/build/feedback/patches/orender-viewport-safe-area.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item ci-config/build/atmos/parity/orender-Cargo.lock omniphony-renderer/Cargo.lock
+      - name: Verify spatial geometry, state and heatmap
+        working-directory: omniphony-renderer
+        run: cargo test --locked -p orender_engine overlay::tests -- --test-threads=1
+      - name: Build renderer
+        working-directory: omniphony-renderer
+        run: cargo build --locked --profile release-deploy -p orender_ffi
+      - name: Package review artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item omniphony-renderer/target/release-deploy/orender.dll out/
+          Copy-Item omniphony-renderer/orender_ffi/include/orender.h out/
+          Copy-Item omniphony-renderer/Cargo.lock out/
+          Copy-Item ci-config/build/feedback/patches/orender-viewport-safe-area.patch out/
+          Get-ChildItem -File -Filter 'LICENSE*' | Copy-Item -Destination out/
+          Get-ChildItem out -File | Get-FileHash -Algorithm SHA256 |
+            Select-Object Hash,Path | ConvertTo-Json | Set-Content out/SHA256.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: orender-v0.5.2-viewport-windows-x86_64
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7

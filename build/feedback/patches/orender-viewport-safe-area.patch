@@ -1,0 +1,101 @@
+--- a/omniphony-renderer/orender_engine/src/overlay.rs
++++ b/omniphony-renderer/orender_engine/src/overlay.rs
+@@ -772,6 +772,15 @@
+     1.0 - (aspect / CINEMA_ASPECT).min(1.0)
+ }
+ 
++// Reserve a border for centered labels, marker radii and diffuse trails.
++// One uniform scale is shared by ASS geometry and the BGRA field, preserving
++// the sound-space coordinates and perspective on all window aspect ratios.
++fn viewport_scale(res_x: f64, res_y: f64) -> f64 {
++    let short = res_x.min(res_y).max(1.0);
++    let margin = (short * 0.085).max(24.0);
++    (1.0 - 2.0 * margin / short).clamp(0.1, 1.0)
++}
++
+ /// Pseudo-3D front-view projection (identical to the former Lua `project_vertex`
+ /// / `project_trail_point`): X drives screen X, Z drives screen Y, Y drives the
+ /// depth-squeeze factor `s`.
+@@ -787,13 +796,14 @@
+ ) -> (f64, f64, f64) {
+     let depth_t = clamp((y + 1.0) * 0.5, 0.0, 1.0);
+     let s = 1.0 - depth_t * depth_span;
+-    let sx = cx + x * (res_x / 2.0) * s;
+-    let sy = cy - (z - 0.5) * res_y * s;
++    let inset = viewport_scale(res_x, res_y);
++    let sx = cx + x * (res_x / 2.0) * s * inset;
++    let sy = cy - (z - 0.5) * res_y * s * inset;
+     (sx, sy, s)
+ }
+ 
+ // 8 edges of the unit cube X∈{-1,+1} × Y∈{-1,+1} × Z∈{0,+1}. The Y=-1 face is
+-// omitted (its edges trace the screen border anyway).
++// omitted to retain the unobtrusive, open-front wireframe.
+ const CUBE_EDGES: [[f64; 6]; 8] = [
+     [-1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+     [-1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+@@ -1040,8 +1050,9 @@
+     }
+ 
+     // Display rect (front plane) and internal raster size (adaptive, capped).
+-    let dw = (res_x * s_front).round().max(1.0);
+-    let dh = (res_y * s_front).round().max(1.0);
++    let inset = viewport_scale(res_x, res_y);
++    let dw = (res_x * s_front * inset).round().max(1.0);
++    let dh = (res_y * s_front * inset).round().max(1.0);
+     let x = (cx - dw * 0.5).round();
+     let y = (cy - dh * 0.5).round();
+     let w = (dw as usize).clamp(8, FIELD_BITMAP_MAX);
+@@ -1346,8 +1357,8 @@
+     let cx = res_x / 2.0;
+     let cy = res_y / 2.0;
+     let depth_span = depth_span_for(res_x, res_y);
+-    let base_radius = (res_y * BASE_RADIUS_RATIO).max(8.0);
+-    let label_fs = (res_y * LABEL_FONT_RATIO).round().max(12.0);
++    let base_radius = (res_x.min(res_y) * BASE_RADIUS_RATIO).max(8.0);
++    let label_fs = (res_x.min(res_y) * LABEL_FONT_RATIO).round().max(12.0);
+ 
+     let mut out: Vec<String> = Vec::new();
+     // The energy heatmap is a separate BGRA bitmap overlay (built via
+@@ -1700,6 +1711,41 @@
+         assert!(ass.contains("&H6B6BFF&"), "palette colour 0 present: {ass}");
+     }
+ 
++
++    #[test]
++    fn viewport_corners_keep_labels_and_markers_inside() {
++        for (w, h) in [(1920.0,1080.0),(3840.0,2160.0),(3440.0,1440.0),
++                       (640.0,360.0),(360.0,640.0),(320.0,180.0)] {
++            let label = (w.min(h) * LABEL_FONT_RATIO).round().max(12.0);
++            let radius = (w.min(h) * BASE_RADIUS_RATIO).max(8.0) * 2.4 + 3.0;
++            for x in [-1.0,1.0] { for y in [-1.0,1.0] { for z in [0.0,1.0] {
++                let (sx,sy,_) = project(x,y,z,w/2.0,h/2.0,w,h,depth_span_for(w,h));
++                let mx = radius.max(label * 1.05 + 3.0);
++                let my = radius.max(label * 0.5 + 3.0);
++                assert!(sx >= mx && sx <= w-mx, "horizontal {w}x{h}: {sx}");
++                assert!(sy >= my && sy <= h-my, "vertical {w}x{h}: {sy}");
++            }}}
++            let (sx,sy,_) = project(0.0,0.0,0.5,w/2.0,h/2.0,w,h,depth_span_for(w,h));
++            assert_eq!((sx,sy),(w/2.0,h/2.0));
++        }
++    }
++
++    #[test]
++    fn viewport_heatmap_matches_projected_front_band() {
++        let mut s = OverlayState::default();
++        s.heatmap_enabled = true;
++        s.positions = vec![(1,0.0,0.0,0.5)];
++        s.levels.insert(1,-20.0);
++        for (w,h) in [(1920.0,1080.0),(640.0,360.0),(360.0,640.0)] {
++            let b = build_heatmap_bitmap(&s,w,h).unwrap();
++            let y = -1.0 + 1.0 / s.heatmap_bands as f64;
++            let (x0,y0,_) = project(-1.0,y,1.0,w/2.0,h/2.0,w,h,depth_span_for(w,h));
++            assert!((b.x as f64-x0).abs() <= 1.0);
++            assert!((b.y as f64-y0).abs() <= 1.0);
++            assert!(b.x > 0 && b.y > 0 && b.x+b.dw < w as i32 && b.y+b.dh < h as i32);
++        }
++    }
++
+     #[test]
+     fn center_object_projects_to_screen_centre() {
+         let _g = guard();
