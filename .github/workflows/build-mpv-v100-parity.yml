@@ -3,7 +3,7 @@ name: "Build V1.0.0 main and Atmos parity candidates"
 on:
   workflow_dispatch:
   push:
-    branches: [codex/v100-core-parity-20260907]
+    branches: [codex/bluray-menu-dv-20260912]
     paths:
       - .github/workflows/build-mpv-v100-parity.yml
       - build/atmos/**
@@ -915,6 +915,14 @@ jobs:
           fi
           cp -a "$built_dir" release/
           7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
+
+      - name: Verify menu command termination and late enhancement selection
+        if: steps.build.outcome == 'success'
+        run: |
+          python3 build/bluray-menu/tests/verify-menu-dv-state.py \
+            --mpv-source winbuild/mpv-winbuild-cmake/src_packages/mpv \
+            --bd-source winbuild/mpv-winbuild-cmake/src_packages/libbluray \
+            --work menu-dv-state-verification
 
       - name: Preserve dependency cache after a failed build
         if: steps.build.outcome == 'failure'

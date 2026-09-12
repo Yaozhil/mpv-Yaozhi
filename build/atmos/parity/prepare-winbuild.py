@@ -38,6 +38,8 @@ shutil.copyfile(root/'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.pa
                 packages/'mpv-9001-hdmv-overlay-video-ready.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0006-bluray-title-resync-hdmv-context.patch',
                 packages/'mpv-9002-bluray-title-resync-hdmv-context.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0007-select-late-video-enhancement-layer.patch',
+                packages/'mpv-9003-select-late-video-enhancement-layer.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
@@ -50,10 +52,14 @@ assert text.count(anchor)==1
 patch='${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9004-hdmv-extended-ig-pid.patch'
 text=text.replace(anchor,anchor+
     '    PATCH_COMMAND ${EXEC} git apply --check '+patch+'\n'
-    '        COMMAND ${EXEC} git apply '+patch+'\n',1)
+    '        COMMAND ${EXEC} git apply '+patch+'\n'
+    '        COMMAND ${EXEC} git apply --check ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n'
+    '        COMMAND ${EXEC} git apply ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n',1)
 bluray.write_text(text)
 shutil.copyfile(root/'build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch',
                 packages/'libbluray-9004-hdmv-extended-ig-pid.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0008-hdmv-link-terminate-command-list.patch',
+                packages/'libbluray-9008-hdmv-link-terminate-command-list.patch')
 # MinGW already supplies the secure CRT functions. An undefined _MSC_VER
 # must not enable libvpl's pre-2005 MSVC macros inside Windows headers.
 vpl=packages/'libvpl.cmake'
