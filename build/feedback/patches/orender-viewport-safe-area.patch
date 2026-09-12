@@ -64,7 +64,7 @@
 +
 +    #[test]
 +    fn viewport_corners_keep_labels_and_markers_inside() {
-+        for (w, h) in [(1920.0,1080.0),(3840.0,2160.0),(3440.0,1440.0),
++        for (w, h) in [(1920.0_f64,1080.0_f64),(3840.0,2160.0),(3440.0,1440.0),
 +                       (640.0,360.0),(360.0,640.0),(320.0,180.0)] {
 +            let label = (w.min(h) * LABEL_FONT_RATIO).round().max(12.0);
 +            let radius = (w.min(h) * BASE_RADIUS_RATIO).max(8.0) * 2.4 + 3.0;

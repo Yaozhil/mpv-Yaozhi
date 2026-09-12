@@ -26,6 +26,8 @@ jobs:
           $source = 'omniphony-renderer/orender_engine/src/overlay.rs'
           $text = [IO.File]::ReadAllText($source).Replace("`r`n", "`n")
           [IO.File]::WriteAllText($source, $text, [Text.UTF8Encoding]::new($false))
+          $patch = 'ci-config/build/feedback/patches/orender-viewport-safe-area.patch'
+          [IO.File]::WriteAllText($patch, [IO.File]::ReadAllText($patch).Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
           git apply --check ci-config/build/feedback/patches/orender-viewport-safe-area.patch
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git apply ci-config/build/feedback/patches/orender-viewport-safe-area.patch
