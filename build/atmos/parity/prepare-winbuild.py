@@ -54,7 +54,9 @@ text=text.replace(anchor,anchor+
     '    PATCH_COMMAND ${EXEC} git apply --check '+patch+'\n'
     '        COMMAND ${EXEC} git apply '+patch+'\n'
     '        COMMAND ${EXEC} git apply --check ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n'
-    '        COMMAND ${EXEC} git apply ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n',1)
+    '        COMMAND ${EXEC} git apply ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n'
+    '        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/menu-dv-bd-source/src/libbluray/hdmv\n'
+    '        COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/src/libbluray/hdmv/hdmv_vm.c ${CMAKE_BINARY_DIR}/menu-dv-bd-source/src/libbluray/hdmv/hdmv_vm.c\n',1)
 bluray.write_text(text)
 shutil.copyfile(root/'build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch',
                 packages/'libbluray-9004-hdmv-extended-ig-pid.patch')
