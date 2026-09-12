@@ -1,0 +1,15 @@
+--- a/src/libbluray/hdmv/hdmv_vm.c
++++ b/src/libbluray/hdmv/hdmv_vm.c
+@@ -684,6 +684,12 @@
+         BD_DEBUG(DBG_HDMV, "link_at(mark %d)\n", playmark);
+         _queue_event(p, HDMV_EVENT_PLAY_PM, playmark);
+     }
++
++    /* LinkPI/LinkMK end the interactive command list. Running commands
++     * after the link can overwrite its destination (for example, a fallback
++     * JumpTitle restarts the feature instead of playing the selected mark).
++     * Let the normal termination path emit IG_END and release the object. */
++    p->pc = 1 << 17;
+ 
+     return 0;
+ }

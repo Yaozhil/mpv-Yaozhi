@@ -1,0 +1,36 @@
+From d0db88377ced9f28035622f729458621fbbc8c5e Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 12 Sep 2026 22:20:11 +0800
+Subject: [PATCH] player: select enhancement layer discovered after disc
+ navigation
+
+---
+ player/loadfile.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/player/loadfile.c b/player/loadfile.c
+index 6223ca2..89cd4b9 100644
+--- a/player/loadfile.c
++++ b/player/loadfile.c
+@@ -1639,8 +1639,19 @@ void update_vo_chain_el_pair(struct MPContext *mpctx)
+     if (!mpctx->vo_chain || !mpctx->vo_chain->filter)
+         return;
+     struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+-    mp_output_chain_set_el_stream(mpctx->vo_chain->filter,
+-        track ? sh_stream_dependent_sibling(track->stream) : NULL);
++    struct sh_stream *el = track
++        ? sh_stream_dependent_sibling(track->stream) : NULL;
++    // A disc menu may select the base stream before the feature introduces
++    // its dependent layer. Selecting the base earlier cannot select a group
++    // that did not exist yet. Enable the new sibling before its decoder can
++    // read an unselected stream and latch EOF.
++    if (el && track->demuxer && demux_stream_is_selected(track->stream) &&
++        !demux_stream_is_selected(el))
++    {
++        MP_VERBOSE(mpctx, "Selecting newly available video enhancement layer\n");
++        demuxer_select_track(track->demuxer, el, MP_NOPTS_VALUE, true);
++    }
++    mp_output_chain_set_el_stream(mpctx->vo_chain->filter, el);
+ }
+ 
+ void update_lavfi_complex(struct MPContext *mpctx)

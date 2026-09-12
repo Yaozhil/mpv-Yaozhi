@@ -22,7 +22,9 @@
     "build/bluray-menu/patches/0004-hdmv-extended-ig-pid.patch": "fd04667a1cfb6f6f893655426a6c94c9bb8bac1a6b4c7b92a1d4f3161e5369b1",
     "build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch": "4273cc9b4cccf44fc286d67f04dcc4b0e8c7abd2e226fd73ae44690745a4aed8",
     "build/bluray-menu/patches/0006-bluray-title-resync-hdmv-context.patch": "ed2375e9e95140c21bbf36fb4a22c9249c0531de41ad6876d7f6ad68f99ee3d1",
-    "build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch": "26969d733227e55c2f8385958e17ef99227609270246832ba2f66c57c2303aa1"
+    "build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch": "26969d733227e55c2f8385958e17ef99227609270246832ba2f66c57c2303aa1",
+    "build/bluray-menu/patches/0007-select-late-video-enhancement-layer.patch": "87aa097169461a68e1eda7fde7afbf31ff810b0277d38ba135af673b86dcb354",
+    "build/bluray-menu/patches/0008-hdmv-link-terminate-command-list.patch": "6292c669b404d6e3bf02c086c328676475864831724c50493e3cebb4702e9f31"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
