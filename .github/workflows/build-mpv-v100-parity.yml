@@ -924,6 +924,13 @@ jobs:
             --bd-source winbuild/mpv-winbuild-cmake/build64/menu-dv-bd-source \
             --work menu-dv-state-verification
 
+      - name: Verify optional tail tags preserve indexed seeking and required headers
+        if: steps.build.outcome == 'success'
+        run: |
+          python3 build/bluray-menu/tests/verify-mkv-tail-tags.py \
+            --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
+            --work mkv-tail-tags-verification
+
       - name: Preserve dependency cache after a failed build
         if: steps.build.outcome == 'failure'
         uses: actions/cache/save@v5

@@ -1,0 +1,74 @@
+From 5171582e7506ba27bebc662ab172a57dd0e8c4ab Mon Sep 17 00:00:00 2001
+From: Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 19:41:56 +0800
+Subject: [PATCH] demux_mkv: allow skipping optional tail tags on slow proxy
+ streams
+
+---
+ DOCS/man/options.rst |  8 ++++++++
+ demux/demux_mkv.c    | 12 ++++++++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+index f82549f..8d66c83 100644
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -4200,6 +4200,14 @@ Demuxer
+ ``--demuxer-mkv-subtitle-preroll-secs-index=<value>``
+     See ``--demuxer-mkv-subtitle-preroll``.
+ 
++``--demuxer-mkv-read-tail-tags=<yes|no>``
++    Read optional Matroska tags located after the first cluster (default: yes).
++    Setting this to no can avoid a slow seek to the end and back before playback
++    of remote files. Such tail tags (including muxer statistics and any custom
++    titles stored there) are omitted. Tags before the first cluster, tracks,
++    chapters and attachments are still read. Cues remain available on demand
++    for normal indexed seeking; this option does not disable the seek index.
++
+ ``--demuxer-mkv-probe-start-time=<yes|no>``
+     Check the start time of Matroska files (default: yes). This simply reads the
+     first cluster timestamps and assumes it is the start time. Technically, this
+diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
+index daac048..3e98a58 100644
+--- a/demux/demux_mkv.c
++++ b/demux/demux_mkv.c
+@@ -248,6 +248,7 @@ struct demux_mkv_opts {
+     double subtitle_preroll_secs_index;
+     int probe_duration;
+     bool probe_start_time;
++    bool read_tail_tags;
+     bool crop_compat;
+ };
+ 
+@@ -262,6 +263,7 @@ const struct m_sub_options demux_mkv_conf = {
+         {"probe-video-duration", OPT_CHOICE(probe_duration,
+             {"no", 0}, {"yes", 1}, {"full", 2})},
+         {"probe-start-time", OPT_BOOL(probe_start_time)},
++        {"read-tail-tags", OPT_BOOL(read_tail_tags)},
+         {"crop-compat", OPT_BOOL(crop_compat)},
+         {0}
+     },
+@@ -271,6 +273,7 @@ const struct m_sub_options demux_mkv_conf = {
+         .subtitle_preroll_secs = 1.0,
+         .subtitle_preroll_secs_index = 10.0,
+         .probe_start_time = true,
++        .read_tail_tags = true,
+         .crop_compat = true,
+     },
+     .change_flags = UPDATE_DEMUXER,
+@@ -2595,6 +2598,15 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
+             }
+             continue;
+         }
++        // Optional tags (often muxer statistics) must not force a round trip
++        // to the end of a high-latency stream before the first frame. Keep
++        // Cues unparsed so normal seeking can still load the complete index.
++        // Tracks, chapters, attachments and all in-band tags remain intact.
++        if (!mkv_d->opts->read_tail_tags && elem->id == MATROSKA_ID_TAGS) {
++            elem->parsed = true;
++            MP_VERBOSE(demuxer, "Skipping optional tail tags.\n");
++            continue;
++        }
+         only_cue = only_cue < 0 && elem->id == MATROSKA_ID_CUES;
+     }
+ 
