@@ -651,6 +651,7 @@ jobs:
           key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
           restore-keys: |
             mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-
+            mpv-v100-main-ubuntu-gcc64-
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
       - name: Reset cached patched sources before building
