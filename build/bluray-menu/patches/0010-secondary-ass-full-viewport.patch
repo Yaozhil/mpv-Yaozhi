@@ -1,0 +1,100 @@
+From 9601bcc3a433f0224e4fb017718a5fae50e4ca57 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sat, 19 Sep 2026 16:35:29 +0800
+Subject: [PATCH] sub: opt in secondary ASS to full output viewport
+
+---
+ DOCS/man/options.rst |  9 +++++++++
+ options/options.c    |  1 +
+ options/options.h    |  1 +
+ sub/sd_ass.c         | 13 +++++++++++--
+ 4 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/DOCS/man/options.rst b/DOCS/man/options.rst
+index 8d66c83..ded2687 100644
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -2483,6 +2483,15 @@ Audio
+ Subtitles
+ ---------
+ 
++``--secondary-sub-ass-full-viewport=<yes|no>``
++    Map styled ASS in the secondary subtitle slot to the full output viewport,
++    including video margins (default: no). Video pixel aspect and storage size
++    compatibility are bypassed for this output-space track. Primary subtitles,
++    converted text subtitles and ASS event timing are unchanged. This option
++    can be changed at runtime without reloading the subtitle track. Clients
++    using this slot for danmaku must restore the previous setting before
++    yielding the slot to ordinary secondary subtitles.
++
+ .. note::
+ 
+     Changing styling and position does not work with all subtitles. Image-based
+diff --git a/options/options.c b/options/options.c
+index 3287d1c..8b47d5e 100644
+--- a/options/options.c
++++ b/options/options.c
+@@ -388,6 +388,7 @@ const struct m_sub_options mp_subtitle_shared_sub_opts = {
+         {"secondary-sub-scale", OPT_FLOAT(sub_scale[1]), M_RANGE(0, 100)},
+         {"sub-visibility", OPT_BOOL(sub_visibility[0])},
+         {"secondary-sub-visibility", OPT_BOOL(sub_visibility[1])},
++        {"secondary-sub-ass-full-viewport", OPT_BOOL(secondary_ass_full_viewport)},
+         {"sub-ass-override", OPT_CHOICE(ass_style_override[0],
+             {"no", ASS_STYLE_OVERRIDE_NONE},
+             {"yes", ASS_STYLE_OVERRIDE_YES},
+diff --git a/options/options.h b/options/options.h
+index 26a7913..badfd16 100644
+--- a/options/options.h
++++ b/options/options.h
+@@ -143,6 +143,7 @@ struct mp_subtitle_shared_opts {
+     float sub_scale[2];
+     bool sub_visibility[2];
+     int ass_style_override[2];
++    bool secondary_ass_full_viewport;
+ };
+ 
+ struct mp_osd_render_opts {
+diff --git a/sub/sd_ass.c b/sub/sd_ass.c
+index db4d67d..19834fd 100644
+--- a/sub/sd_ass.c
++++ b/sub/sd_ass.c
+@@ -736,6 +736,13 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+     ASS_Renderer *renderer = ctx->ass_renderer;
+     struct sub_bitmaps *res = &(struct sub_bitmaps){0};
+ 
++    // Explicit opt-in for positioned ASS on the secondary subtitle slot.
++    // Keep primary/converted subtitles and the ASS event clock unchanged.
++    bool full_viewport = sd->order == 1 && !converted &&
++                         shared_opts->secondary_ass_full_viewport;
++    if (full_viewport)
++        dim.mt = dim.mb = dim.ml = dim.mr = 0;
++
+     // Always update the osd_res
+     struct mp_osd_res old_osd = ctx->osd;
+     ctx->osd = dim;
+@@ -750,7 +757,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+         goto done;
+ 
+     double scale = dim.display_par;
+-    if (!converted && (!shared_opts->ass_style_override[sd->order] ||
++    if (!full_viewport && !converted && (!shared_opts->ass_style_override[sd->order] ||
+                        opts->ass_use_video_data >= 1))
+     {
+         // Let's factor in video PAR for vsfilter compatibility:
+@@ -762,10 +769,12 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+     }
+     if (!ctx->ass_configured || !osd_res_equals(old_osd, ctx->osd)) {
+         configure_ass(sd, &dim, converted, track);
++        if (full_viewport)
++            MP_VERBOSE(sd, "secondary ASS viewport: full-osd %dx%d\n", dim.w, dim.h);
+         ctx->ass_configured = true;
+     }
+     ass_set_pixel_aspect(renderer, scale);
+-    if (!converted && (!shared_opts->ass_style_override[sd->order] ||
++    if (!full_viewport && !converted && (!shared_opts->ass_style_override[sd->order] ||
+                        opts->ass_use_video_data >= 2))
+     {
+         ass_set_storage_size(renderer, ctx->video_params.w, ctx->video_params.h);
+-- 
+2.54.0.windows.1
+

@@ -42,6 +42,8 @@ shutil.copyfile(root/'build/bluray-menu/patches/0007-select-late-video-enhanceme
                 packages/'mpv-9003-select-late-video-enhancement-layer.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0009-mkv-optional-tail-tags.patch',
                 packages/'mpv-9004-mkv-optional-tail-tags.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0010-secondary-ass-full-viewport.patch',
+                packages/'mpv-9005-secondary-ass-full-viewport.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
