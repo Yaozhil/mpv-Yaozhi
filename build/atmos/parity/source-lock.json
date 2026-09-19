@@ -28,7 +28,7 @@
     "build/bluray-menu/patches/0009-mkv-optional-tail-tags.patch": "c9b5eb6802bd6b4e9526c1683fac07a71d7b12eb956e14f82c5301279608c5c5",
     "build/bluray-menu/patches/0010-secondary-ass-full-viewport.patch": "60d1c47dd2cfd324c4f0b081527c8dabe7d9d3ffda61c31368120b1db038376a",
     "build/bluray-menu/patches/0011-bluray-retain-navigation-head.patch": "e89946cfaf34ba69c42b20a28de78071c552871433e2b6abf44fa6302f254a3d",
-    "build/bluray-menu/patches/0012-still-menu-retain-ig-tail.patch": "7346235e3f9d405486a7c3bfa3fad7eecb0b62bfa1e1ef836978e133ea697cb5"
+    "build/bluray-menu/patches/0012-still-menu-retain-ig-tail.patch": "1ab1023f05714f794fd0e38d323696b2e8f5ffa0124c9a213f28ab25eb740873"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"

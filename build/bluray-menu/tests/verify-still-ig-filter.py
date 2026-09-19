@@ -23,7 +23,7 @@ static void packet(uint8_t *b, unsigned pid, uint64_t pts) {
 }
 static void check(unsigned pid,uint64_t pts,int still,int keep) {
     uint8_t b[6144];packet(b,pid,pts);
-    M2TS_FILTER *p=m2ts_filter_init(54000000,54003752,1,1,1,1);assert(p);
+    M2TS_FILTER *p=m2ts_filter_init(54000000,54003752,pid==0x1011,pid==0x1100,pid==0x1400,pid==0x1200);assert(p);
     m2ts_filter_set_ig_still(p,still);assert(m2ts_filter(p,b)==0);
     unsigned actual=((b[5]&31)<<8)|b[6];assert(actual==(keep?pid:0x1fff));
     m2ts_filter_close(&p);assert(!p);
