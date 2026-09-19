@@ -1,0 +1,81 @@
+From 4f3cd240c348ee862e8bff3ba280a5050a39b6f5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sat, 19 Sep 2026 17:08:24 +0800
+Subject: [PATCH] bluray: retain new clip head across navigation demux reopen
+
+---
+ stream/stream_bluray.c | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 8f78e2c..451fbc7 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -163,6 +163,11 @@ struct bluray_priv_s {
+     uint64_t next_read_pos;          // expected bd_tell() of the next read
+     bool read_pos_known;             // next_read_pos is valid
+     bool resync_owed;                // jump settled, resync seek not acked yet
++    // A read may run LinkPI and return the new clip's only video access unit.
++    // Retain it while demux_disc reopens; dropping it loses still-menu SPS/IDR.
++    unsigned char *jump_head;
++    int jump_head_size, jump_head_offset;
++    uint64_t jump_head_end;
+ 
+     // Disc-driven audio/sub selection, mirrored from BD_EVENT_AUDIO_STREAM
+     // and BD_EVENT_PG_TEXTST{,_STREAM}. The numbers are 1-based libbluray
+@@ -553,6 +558,20 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+     if (resync_owed)
+         return 0;
+ 
++    if (b->jump_head_size > b->jump_head_offset) {
++        if (bd_tell(b->bd) == b->jump_head_end) {
++            int n = MPMIN(len, b->jump_head_size - b->jump_head_offset);
++            memcpy(buf, b->jump_head + b->jump_head_offset, n);
++            b->jump_head_offset += n;
++            b->next_read_pos = b->jump_head_end;
++            b->read_pos_known = true;
++            b->data_delivered = true;
++            return n;
++        }
++        // Another navigation command superseded this buffered position.
++        b->jump_head_size = b->jump_head_offset = 0;
++    }
++
+     int idle_reads = 0;
+     int eof_polls = b->bdj_nav ? BLURAY_BDJ_NAV_EOF_POLLS
+                                : BLURAY_NAV_EOF_POLLS;
+@@ -707,8 +726,8 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+ 
+         if (n > 0) {
+             // A jump event popped by this read can mean the data already
+-            // belongs to the new position. Drop non-contiguous reads and
+-            // drain like any other jump.
++            // belongs to the new position. Keep that head for the reopened
++            // demuxer and drain events without consuming any more bytes.
+             uint64_t pos = bd_tell(b->bd);
+             if (b->read_pos_known && pos - n != b->next_read_pos) {
+                 MP_VERBOSE(s, "read not contiguous (expected %"PRIu64", "
+@@ -720,6 +739,12 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+                     b->discontinuity_id++;
+                 mp_mutex_unlock(&b->overlay_lock);
+                 hopped = true;
++                b->jump_head = talloc_realloc(b, b->jump_head, unsigned char, n);
++                memcpy(b->jump_head, buf, n);
++                b->jump_head_size = n;
++                b->jump_head_offset = 0;
++                b->jump_head_end = pos;
++                MP_VERBOSE(s, "retaining %d bytes at navigation boundary\n", n);
+                 continue;
+             }
+             if (!b->read_pos_known)
+@@ -871,6 +896,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+     }
+     case STREAM_CTRL_SEEK_TO_TIME: {
+         double pts = *((double *) arg);
++        b->jump_head_size = b->jump_head_offset = 0;
+         bd_seek_time(b->bd, BD_TIME_FROM_S(pts));
+         stream_drop_buffers(s);
+         b->read_pos_known = false;
+-- 
+2.54.0.windows.1
+

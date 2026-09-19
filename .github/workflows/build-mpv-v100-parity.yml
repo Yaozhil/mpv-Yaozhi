@@ -928,6 +928,9 @@ jobs:
       - name: Verify optional tail tags preserve indexed seeking and required headers
         if: steps.build.outcome == 'success'
         run: |
+          python3 build/bluray-menu/tests/verify-bluray-jump-head.py \
+            --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
+            --work bluray-jump-head-verification
           python3 build/bluray-menu/tests/verify-mkv-tail-tags.py \
             --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
             --work mkv-tail-tags-verification
