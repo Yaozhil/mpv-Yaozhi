@@ -1,0 +1,56 @@
+--- a/src/libbluray/bluray.c
++++ b/src/libbluray/bluray.c
+@@ -688,6 +688,8 @@
+                                                    (int64_t)st->clip->out_time << 1,
+                                                    stn->num_video, stn->num_audio,
+                                                    stn->num_ig, stn->num_pg);
++                m2ts_filter_set_ig_still(st->m2ts_filter,
++                                        st->clip->still_mode != BLURAY_STILL_NONE);
+ 
+                 _update_clip_psrs(bd, st->clip);
+ 
+--- a/src/libbluray/decoders/m2ts_filter.c
++++ b/src/libbluray/decoders/m2ts_filter.c
+@@ -52,6 +52,7 @@
+     int64_t  out_pts;
+     uint32_t pat_packets; /* how many packets to search for PAT (seeked pat_packets packets before the actual seek point) */
+     uint8_t  pat_seen;
++    uint8_t  ig_still;
+ };
+ 
+ M2TS_FILTER *m2ts_filter_init(int64_t in_pts, int64_t out_pts,
+@@ -90,6 +91,12 @@
+     }
+ 
+     return p;
++}
++
++void m2ts_filter_set_ig_still(M2TS_FILTER *p, int still)
++{
++    if (p)
++        p->ig_still = !!still;
+ }
+ 
+ void m2ts_filter_close(M2TS_FILTER **p)
+@@ -230,7 +237,10 @@
+                        pid, pts, p->in_pts, p->out_pts);
+         }
+     }
+-    if (p->out_pts >= 0) {
++    /* A still picture can end before its menu objects have finished arriving.
++     * Retain IG through the authored clip packet boundary; keep normal IN
++     * filtering and all audio/video/PG OUT filtering unchanged. */
++    if (p->out_pts >= 0 && !(p->ig_still && IS_HDMV_PID_IG(pid))) {
+         /*
+          * Note: we can't compare against in_pts here (after passing it once):
+          * PG / IG streams can have timestamps before in_time (except for composition segments), and those are valid.
+--- a/src/libbluray/decoders/m2ts_filter.h
++++ b/src/libbluray/decoders/m2ts_filter.h
+@@ -35,6 +35,7 @@
+                                          unsigned num_video, unsigned num_audio,
+                                          unsigned num_ig, unsigned num_pg);
+ BD_PRIVATE void         m2ts_filter_close(M2TS_FILTER **);
++BD_PRIVATE void         m2ts_filter_set_ig_still(M2TS_FILTER *, int still);
+ 
+ /*
+  *   Filter aligned unit (mpeg-ts + pes).

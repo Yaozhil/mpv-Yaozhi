@@ -928,6 +928,9 @@ jobs:
       - name: Verify optional tail tags preserve indexed seeking and required headers
         if: steps.build.outcome == 'success'
         run: |
+          python3 build/bluray-menu/tests/verify-still-ig-filter.py \
+            --source winbuild/mpv-winbuild-cmake/build64/still-ig-bd-source \
+            --work artifacts/still-ig-filter-check
           python3 build/bluray-menu/tests/verify-bluray-jump-head.py \
             --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
             --work bluray-jump-head-verification

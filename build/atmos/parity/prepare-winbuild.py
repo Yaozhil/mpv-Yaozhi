@@ -61,6 +61,9 @@ text=text.replace(anchor,anchor+
     '        COMMAND ${EXEC} git apply '+patch+'\n'
     '        COMMAND ${EXEC} git apply --check ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n'
     '        COMMAND ${EXEC} git apply ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9008-hdmv-link-terminate-command-list.patch\n'
+    '        COMMAND ${EXEC} git apply --check ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9012-still-menu-retain-ig-tail.patch\n'
+    '        COMMAND ${EXEC} git apply ${CMAKE_CURRENT_SOURCE_DIR}/libbluray-9012-still-menu-retain-ig-tail.patch\n'
+    '        COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR>/src ${CMAKE_BINARY_DIR}/still-ig-bd-source/src\n'
     '        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/menu-dv-bd-source/src/libbluray/hdmv\n'
     '        COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/src/libbluray/hdmv/hdmv_vm.c ${CMAKE_BINARY_DIR}/menu-dv-bd-source/src/libbluray/hdmv/hdmv_vm.c\n',1)
 bluray.write_text(text)
@@ -85,3 +88,5 @@ vpl.write_text(text)
 shutil.copyfile(here/'libvpl-9000-mingw-secure-crt.patch',
                 packages/'libvpl-9000-mingw-secure-crt.patch')
 print('PARITY_WINBUILD_PREPARED variant='+args.variant)
+
+shutil.copyfile(root/'build/bluray-menu/patches/0012-still-menu-retain-ig-tail.patch', packages/'libbluray-9012-still-menu-retain-ig-tail.patch')
