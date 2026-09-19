@@ -46,6 +46,8 @@ shutil.copyfile(root/'build/bluray-menu/patches/0010-secondary-ass-full-viewport
                 packages/'mpv-9005-secondary-ass-full-viewport.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0011-bluray-retain-navigation-head.patch',
                 packages/'mpv-9006-bluray-retain-navigation-head.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0013-dts-hd-seek-resync.patch',
+                packages/'mpv-9007-dts-hd-seek-resync.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'

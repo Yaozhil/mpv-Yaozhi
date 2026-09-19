@@ -34,8 +34,9 @@ if not args.inspect_existing:
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0009-mkv-optional-tail-tags.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0010-secondary-ass-full-viewport.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0011-bluray-retain-navigation-head.patch'))
+    git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0013-dts-hd-seek-resync.patch'))
     git('am','--3way',str(here/'mpv-9100-omniphony-parity.patch'))
-assert git('rev-list','--count','HEAD').strip()=='25'
+assert git('rev-list','--count','HEAD').strip()=='26'
 assert 'Add current Omniphony renderer and ASIO' in git('log','-1','--format=%s')
 assert not git('status','--porcelain').strip()
 text=(source/'filters/f_swresample.c').read_text(encoding='utf-8')

@@ -1,0 +1,73 @@
+From c34b59b3585e0266bca926e736debb5ab7daddc2 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 07:04:39 +0800
+Subject: [PATCH] ad_spdif: resync orphan DTS-HD extensions after seek
+
+---
+ audio/decode/ad_spdif.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/audio/decode/ad_spdif.c b/audio/decode/ad_spdif.c
+index 0bce4c6..9307a48 100644
+--- a/audio/decode/ad_spdif.c
++++ b/audio/decode/ad_spdif.c
+@@ -39,6 +39,7 @@
+ 
+ #define OUTBUF_SIZE 65536
+ #define TRUEHD_MAJOR_SYNC_WARN_INTERVAL 6000
++#define DTS_STARTUP_SUBSTREAM_LIMIT 32
+ 
+ struct spdifContext {
+     struct mp_log   *log;
+@@ -54,6 +55,7 @@ struct spdifContext {
+     int              codec_profile;
+     int              codec_rate;
+     unsigned int     dropped_startup_packets;
++    unsigned int     dropped_dts_substreams;
+     struct mp_aframe *fmt;
+     int              sstride;
+     struct mp_aframe_pool *pool;
+@@ -112,6 +114,7 @@ static void ad_spdif_reset(struct mp_filter *da)
+ 
+     close_lavf_context(spdif_ctx, false);
+     spdif_ctx->dropped_startup_packets = 0;
++    spdif_ctx->dropped_dts_substreams = 0;
+ }
+ 
+ static bool truehd_has_major_sync(const AVPacket *pkt)
+@@ -381,6 +384,20 @@ static void ad_spdif_process(struct mp_filter *da)
+     mp_set_av_packet(spdif_ctx->avpkt, mpkt, NULL);
+     spdif_ctx->avpkt->pts = spdif_ctx->avpkt->dts = 0;
+     if (!spdif_ctx->lavf_ctx) {
++        // A seek can land on an EXSS packet whose matching DTS core was before
++        // the seek point. libavformat's SPDIF muxer only accepts core+EXSS
++        // packets. Drop these orphan extensions before probing/initializing;
++        // preserve full DTS-HD on the next complete packet. Bound this wait
++        // so a coreless or corrupt stream still reaches normal error handling.
++        if (spdif_ctx->codec_id == AV_CODEC_ID_DTS &&
++            spdif_ctx->avpkt->size >= 9 &&
++            AV_RB32(spdif_ctx->avpkt->data) == 0x64582025 &&
++            spdif_ctx->dropped_dts_substreams < DTS_STARTUP_SUBSTREAM_LIMIT)
++        {
++            spdif_ctx->dropped_dts_substreams++;
++            drop_packet = true;
++            goto done;
++        }
+         // A fresh TrueHD spdif muxer needs a major sync to initialize its
+         // stream parameters, so wait for major sync before initializing.
+         if (spdif_ctx->codec_id == AV_CODEC_ID_TRUEHD &&
+@@ -416,6 +433,11 @@ static void ad_spdif_process(struct mp_filter *da)
+                    spdif_ctx->dropped_startup_packets == 1 ? "" : "s");
+         spdif_ctx->dropped_startup_packets = 0;
+     }
++    if (spdif_ctx->dropped_dts_substreams) {
++        MP_VERBOSE(da, "Skipped %u orphan DTS-HD extensions before core sync\n",
++                   spdif_ctx->dropped_dts_substreams);
++        spdif_ctx->dropped_dts_substreams = 0;
++    }
+ 
+     out = mp_aframe_new_ref(spdif_ctx->fmt);
+     int samples = spdif_ctx->out_buffer_len / spdif_ctx->sstride;
+-- 
+2.54.0.windows.1
+
