@@ -1,5 +1,6 @@
-name: Build Atmos viewport candidate
+name: Build Atmos 0.6.0 viewport candidate
 on:
+  workflow_dispatch:
   push:
     branches: [codex/v100-core-parity-20260907]
     paths:
@@ -15,11 +16,14 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: mgth/Omniphony
-          ref: f9a79721af64ad9c39042d4deded158b568fc598
+          ref: dd5546bbc64e60719dfa367bea0534dc8a3ab34b
       - uses: actions/checkout@v6
         with:
           path: ci-config
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: omniphony-renderer
       - name: Apply viewport patch and locked dependencies
         shell: pwsh
         run: |
@@ -32,7 +36,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git apply ci-config/build/feedback/patches/orender-viewport-safe-area.patch
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item ci-config/build/atmos/parity/orender-Cargo.lock omniphony-renderer/Cargo.lock
       - name: Verify spatial geometry, state and heatmap
         working-directory: omniphony-renderer
         run: cargo test --locked -p orender_engine overlay::tests -- --test-threads=1
@@ -52,7 +55,7 @@ jobs:
             Select-Object Hash,Path | ConvertTo-Json | Set-Content out/SHA256.json
       - uses: actions/upload-artifact@v6
         with:
-          name: orender-v0.5.2-viewport-windows-x86_64
+          name: orender-v0.6.0-viewport-windows-x86_64
           path: out/*
           if-no-files-found: error
           retention-days: 7

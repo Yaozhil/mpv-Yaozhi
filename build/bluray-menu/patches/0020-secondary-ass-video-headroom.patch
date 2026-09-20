@@ -1,0 +1,51 @@
+From 66e698dd0defa7197bb0133093f547872faaa019 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 23:56:40 +0800
+Subject: [PATCH] vo: yield secondary redraws when video exceeds refresh budget
+
+---
+ video/out/vo.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index ddab9bf..c16a9e4 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -852,7 +852,8 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+         // Leave time between low-fps video frames for animated secondary ASS.
+         // This changes queue lead time only, not video presentation timestamps.
+         int64_t lead = in->timing_offset;
+-        if (secondary_rate > 0)
++        if (secondary_rate > 0 && in->secondary_render_cost <
++                MP_TIME_S_TO_NS(0.75 / secondary_rate))
+             lead = MPMIN(lead, MPMAX(MP_TIME_S_TO_NS(0.5 / secondary_rate),
+                 in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
+         next_pts -= lead;
+@@ -1216,15 +1217,21 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         vo_paused = in->paused;
+         bool secondary_eligible = !in->paused && in->hasframe &&
+             in->current_frame && !in->current_frame->still;
++        int64_t secondary_cost = in->secondary_render_cost;
+         mp_mutex_unlock(&in->lock);
+ 
+         double secondary_rate = osd_get_secondary_refresh(vo->osd);
+         if (!working && secondary_eligible && secondary_rate > 0) {
+             int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
+             interval = MPMAX(interval, in->vsync_interval);
+-            int64_t next = in->secondary_last_draw + interval;
+-            redraw |= now >= next;
+-            wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
++            // An expensive video frame needs the normal preparation window.
++            // Yield extra OSD draws until measured render cost recovers; never
++            // trade video presentation for an unattainable subtitle cadence.
++            if (secondary_cost < interval * 0.75) {
++                int64_t next = in->secondary_last_draw + interval;
++                redraw |= now >= next;
++                wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
++            }
+         }
+ 
+         if (send_reset)
+-- 
+2.54.0.windows.1
+
