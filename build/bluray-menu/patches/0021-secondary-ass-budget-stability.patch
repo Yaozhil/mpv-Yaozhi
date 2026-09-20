@@ -1,0 +1,136 @@
+From 5b4eecb6c66a73b08dc28c473e34db86c4ddfe92 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Mon, 21 Sep 2026 00:49:27 +0800
+Subject: [PATCH] vo: reject isolated CPU stalls in secondary ASS budget
+
+---
+ video/out/secondary_ass_budget.h | 39 +++++++++++++++++++++++++
+ video/out/vo.c                   | 50 ++++++++++++++++++++++----------
+ 2 files changed, 73 insertions(+), 16 deletions(-)
+ create mode 100644 video/out/secondary_ass_budget.h
+
+diff --git a/video/out/secondary_ass_budget.h b/video/out/secondary_ass_budget.h
+new file mode 100644
+index 0000000..50f1c1b
+--- /dev/null
++++ b/video/out/secondary_ass_budget.h
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_BUDGET_H
++#define MP_SECONDARY_ASS_BUDGET_H
++
++#include <stdint.h>
++
++// VO-thread-only history of video submission time. One late CPU wakeup or
++// first-use glyph upload must not disable otherwise affordable OSD redraws
++// until the next GPU sample. Two expensive video draws still engage protection.
++struct secondary_ass_budget {
++    int64_t cpu[3];
++    unsigned count, next;
++};
++
++static inline int64_t secondary_ass_budget_sample(struct secondary_ass_budget *b,
++                                                   int64_t cpu, int64_t gpu)
++{
++    b->cpu[b->next] = cpu;
++    b->next = (b->next + 1) % 3;
++    if (b->count < 3)
++        b->count++;
++    int64_t values[3];
++    for (unsigned i = 0; i < b->count; i++)
++        values[i] = b->cpu[i];
++    for (unsigned i = 1; i < b->count; i++) {
++        int64_t value = values[i];
++        unsigned j = i;
++        while (j && values[j - 1] > value) {
++            values[j] = values[j - 1];
++            j--;
++        }
++        values[j] = value;
++    }
++    // Use the upper median during startup rather than assuming unused zeros.
++    int64_t sustained = values[b->count / 2];
++    return sustained > gpu ? sustained : gpu;
++}
++
++#endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index c16a9e4..f0592d8 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -33,6 +33,7 @@
+ #include "options/options.h"
+ #include "misc/bstr.h"
+ #include "vo.h"
++#include "secondary_ass_budget.h"
+ #include "aspect.h"
+ #include "dr_helper.h"
+ #include "input/input.h"
+@@ -161,6 +162,8 @@ struct vo_internal {
+     int64_t secondary_last_draw; // VO thread only
+     int64_t secondary_render_cost;
+     int64_t secondary_cost_update; // VO thread only
++    int64_t secondary_gpu_cost; // VO thread only
++    struct secondary_ass_budget secondary_budget; // VO thread only
+ 
+     int64_t delayed_count;
+     int64_t drop_count;
+@@ -1026,24 +1029,39 @@ static bool render_frame(struct vo *vo)
+ 
+         in->visible = vo->driver->draw_frame(vo, frame);
+ 
+-        int64_t render_cost = mp_time_ns() - in->secondary_last_draw;
+-        // A high-refresh OSD must still leave enough lead time to render the
+-        // video. GPU submission duration alone misses expensive asynchronous
+-        // frames (e.g. 4K on an iGPU), so include the measured fresh GPU passes.
+-        if (osd_get_secondary_refresh(vo->osd) > 0 &&
+-            mp_time_ns() - in->secondary_cost_update >= MP_TIME_S_TO_NS(1)) {
+-            struct voctrl_performance_data *perf =
+-                talloc_zero(NULL, struct voctrl_performance_data);
+-            if (vo->driver->control(vo, VOCTRL_PERFORMANCE_DATA, perf) == VO_TRUE) {
+-                int64_t gpu_cost = 0;
+-                for (int n = 0; n < perf->fresh.count; n++)
+-                    gpu_cost += perf->fresh.perf[n].avg;
+-                render_cost = MPMAX(render_cost, gpu_cost);
++        int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
++        double secondary_rate = osd_get_secondary_refresh(vo->osd);
++        int64_t render_cost = 0;
++        if (secondary_rate > 0) {
++            // Keep GPU work separate from CPU submission stalls. GPU averages
++            // include asynchronous fresh-frame work, essential on slower GPUs.
++            if (mp_time_ns() - in->secondary_cost_update >= MP_TIME_S_TO_NS(1)) {
++                struct voctrl_performance_data *perf =
++                    talloc_zero(NULL, struct voctrl_performance_data);
++                if (vo->driver->control(vo, VOCTRL_PERFORMANCE_DATA, perf) == VO_TRUE) {
++                    in->secondary_gpu_cost = 0;
++                    for (int n = 0; n < perf->fresh.count; n++)
++                        in->secondary_gpu_cost += perf->fresh.perf[n].avg;
++                }
++                talloc_free(perf);
++                in->secondary_cost_update = mp_time_ns();
++            }
++            render_cost = secondary_ass_budget_sample(&in->secondary_budget,
++                                                      cpu_cost, in->secondary_gpu_cost);
++            const char *timing = getenv("MPV_NATIVE_TIMING");
++            int64_t limit = MP_TIME_S_TO_NS(0.75 / secondary_rate);
++            if (timing && strcmp(timing, "1") == 0 &&
++                (cpu_cost >= limit || (render_cost >= limit) !=
++                                      (in->secondary_render_cost >= limit)))
++            {
++                MP_INFO(vo, "native-ass-budget: cpu=%.3fms gpu=%.3fms "
++                        "sustained=%.3fms limit=%.3fms protected=%d\n",
++                        cpu_cost * 1e-6, in->secondary_gpu_cost * 1e-6,
++                        render_cost * 1e-6, limit * 1e-6, render_cost >= limit);
+             }
+-            talloc_free(perf);
+-            in->secondary_cost_update = mp_time_ns();
+         } else {
+-            render_cost = MPMAX(render_cost, in->secondary_render_cost * 0.999);
++            in->secondary_budget = (struct secondary_ass_budget){0};
++            in->secondary_gpu_cost = in->secondary_cost_update = 0;
+         }
+ 
+         stats_time_end(in->stats, "video-draw");
+-- 
+2.54.0.windows.1
+

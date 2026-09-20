@@ -55,6 +55,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0017-secondary-ass-replace.patch
 shutil.copyfile(root/'build/bluray-menu/patches/0018-secondary-ass-idle.patch', packages/'mpv-9012-secondary-ass-idle.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0019-secondary-ass-video-budget.patch', packages/'mpv-9013-secondary-ass-video-budget.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0020-secondary-ass-video-headroom.patch', packages/'mpv-9014-secondary-ass-video-headroom.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0021-secondary-ass-budget-stability.patch', packages/'mpv-9015-secondary-ass-budget-stability.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
