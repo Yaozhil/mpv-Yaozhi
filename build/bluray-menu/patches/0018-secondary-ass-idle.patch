@@ -1,0 +1,47 @@
+From ff7294cf9140e5ed55577d87f2e1729fb8989d7b Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 17:46:50 +0800
+Subject: [PATCH] sub: stop independent redraw while secondary ASS has no
+ visible events
+
+---
+ sub/osd.c       | 3 ++-
+ sub/osd_state.h | 1 +
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/sub/osd.c b/sub/osd.c
+index 35fe694..b339824 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -327,7 +327,7 @@ void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed)
+ double osd_get_secondary_refresh(struct osd_state *osd)
+ {
+     mp_mutex_lock(&osd->lock);
+-    double rate = osd->secondary_rate;
++    double rate = osd->secondary_has_output ? osd->secondary_rate : 0;
+     mp_mutex_unlock(&osd->lock);
+     return rate;
+ }
+@@ -367,6 +367,7 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+         }
+         if (obj->sub && sub_is_secondary_visible(obj->sub))
+             res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
++        osd->secondary_has_output = res && res->num_parts > 0;
+     } else if (obj->type == OSDTYPE_EXTERNAL2 ||
+                obj->type == OSDTYPE_DISC_MENU) {
+         if (obj->image_overlay && obj->image_overlay->format) {
+diff --git a/sub/osd_state.h b/sub/osd_state.h
+index b1347ad..d50537f 100644
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -78,6 +78,7 @@ struct osd_state {
+     double secondary_rate, secondary_speed, secondary_pts;
+     int64_t secondary_wall;
+     bool secondary_clock_valid;
++    bool secondary_has_output;
+ 
+     bool want_redraw;
+     bool want_redraw_notification;
+-- 
+2.54.0.windows.1
+
