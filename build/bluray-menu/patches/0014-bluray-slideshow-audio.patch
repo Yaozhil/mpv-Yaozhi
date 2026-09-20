@@ -1,4 +1,4 @@
-From b36a1c0ab891ee86ecdd1de889d5f1c63f53401f Mon Sep 17 00:00:00 2001
+From 56aab3c84526da82489c18fdea3c1be743a9895c Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <build@localhost>
 Date: Sun, 20 Sep 2026 12:17:25 +0800
 Subject: [PATCH] bluray: play authored type-2 slideshow audio loops during
@@ -8,8 +8,8 @@ Subject: [PATCH] bluray: play authored type-2 slideshow audio loops during
  demux/demux_disc.c        | 124 +++++++++++++++++++++++++++++++++++++-
  stream/bluray_slideshow.h |  69 +++++++++++++++++++++
  stream/stream.h           |  10 +++
- stream/stream_bluray.c    |  89 +++++++++++++++++++++++++++
- 4 files changed, 291 insertions(+), 1 deletion(-)
+ stream/stream_bluray.c    |  92 ++++++++++++++++++++++++++++
+ 4 files changed, 294 insertions(+), 1 deletion(-)
  create mode 100644 stream/bluray_slideshow.h
 
 diff --git a/demux/demux_disc.c b/demux/demux_disc.c
@@ -279,7 +279,7 @@ index 7e76729..8c0abe6 100644
      int type;     // STREAM_AUDIO, STREAM_SUB
      int id;
 diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
-index 451fbc7..ed46998 100644
+index 451fbc7..60279bb 100644
 --- a/stream/stream_bluray.c
 +++ b/stream/stream_bluray.c
 @@ -36,6 +36,7 @@
@@ -298,7 +298,7 @@ index 451fbc7..ed46998 100644
  #include "osdep/io.h"
  #include "sub/osd.h"
  #include "sub/img_convert.h"
-@@ -175,8 +177,87 @@ struct bluray_priv_s {
+@@ -175,8 +177,90 @@ struct bluray_priv_s {
      int audio_stream_num;
      int sub_stream_num;
      bool sub_visible;
@@ -353,8 +353,11 @@ index 451fbc7..ed46998 100644
 +    struct bluray_priv_s *b = s->priv;
 +    // A separate libbluray session prevents file reads from disturbing the
 +    // live HDMV navigator/AACS state. Restrict this to local disc navigation.
-+    if (!b->cfg_device || is_http_url(b->cfg_device)) return NULL;
-+    BLURAY *reader = bd_open(b->cfg_device, NULL);
++    const char *device = b->cfg_device && b->cfg_device[0] ? b->cfg_device
++        : b->opts->bluray_device && b->opts->bluray_device[0]
++            ? b->opts->bluray_device : DEFAULT_OPTICAL_DEVICE;
++    if (!device || is_http_url(device)) return NULL;
++    BLURAY *reader = bd_open(device, NULL);
 +    if (!reader) return NULL;
 +    char path[64];
 +    snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", audio->clip);
@@ -386,7 +389,7 @@ index 451fbc7..ed46998 100644
  static bool is_http_url(const char *device)
  {
      return strncasecmp(device, "http://", 7) == 0 ||
-@@ -830,6 +911,14 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -830,6 +914,14 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
      struct bluray_priv_s *b = s->priv;
  
      switch (cmd) {
