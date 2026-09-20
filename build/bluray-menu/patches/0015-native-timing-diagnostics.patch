@@ -1,0 +1,141 @@
+From 040a85066d43b2e912c5adf404d476bacaaa72ad Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 16:50:53 +0800
+Subject: [PATCH] video: add opt-in native ASS and presentation timing
+ diagnostics
+
+---
+ sub/sd_ass.c            | 19 +++++++++++++++++++
+ video/out/vo_gpu_next.c | 37 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+)
+
+diff --git a/sub/sd_ass.c b/sub/sd_ass.c
+index 19834fd..e5f2243 100644
+--- a/sub/sd_ass.c
++++ b/sub/sd_ass.c
+@@ -40,6 +40,7 @@
+ #include "ass_mp.h"
+ #include "packer.h"
+ #include "sd.h"
++#include "osdep/timer.h"
+ 
+ struct sd_ass_priv {
+     struct ass_library *ass_library;
+@@ -61,6 +62,9 @@ struct sd_ass_priv {
+     struct seen_packet *seen_packets;
+     int num_seen_packets;
+     bool check_animated;
++    bool timing_diagnostics;
++    int64_t timing_start;
++    unsigned timing_render, timing_changed;
+ };
+ 
+ struct seen_packet {
+@@ -304,6 +308,7 @@ static int init(struct sd *sd)
+ {
+     struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
+     sd->priv = ctx;
++    ctx->timing_diagnostics = getenv("MPV_NATIVE_TIMING") != NULL;
+ 
+     // Note: accept "null" as alias for "ass", so EDL delay_open subtitle
+     //       streams work.
+@@ -788,6 +793,20 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+ 
+     int changed;
+     ASS_Image *imgs = ass_render_frame(renderer, track, ts, &changed);
++    if (ctx->timing_diagnostics && sd->order == 1) {
++        int64_t now = mp_time_ns();
++        if (!ctx->timing_start) ctx->timing_start = now;
++        ctx->timing_render++;
++        ctx->timing_changed += changed != 0;
++        double elapsed = (now - ctx->timing_start) / 1e9;
++        if (elapsed >= 5) {
++            MP_INFO(sd, "native-ass-timing: render=%.2f/s changed=%.2f/s "
++                    "pts=%.6f full=%d\n", ctx->timing_render / elapsed,
++                    ctx->timing_changed / elapsed, pts, full_viewport);
++            ctx->timing_render = ctx->timing_changed = 0;
++            ctx->timing_start = now;
++        }
++    }
+     mp_sub_packer_pack_ass(ctx->packer, &imgs, 1, changed, !converted, format, res);
+ 
+ done:
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 2c9f478..d649a89 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -146,6 +146,11 @@ struct priv {
+     bool flush_cache;
+     bool frame_pending;
+     bool paused;
++    bool timing_diagnostics;
++    int64_t timing_start;
++    unsigned timing_draw, timing_redraw, timing_flip, timing_mix;
++    uint64_t timing_frame_id;
++    unsigned timing_video;
+ 
+     pl_options pars;
+     struct m_config_cache *opts_cache;
+@@ -1343,6 +1348,14 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     bool cache_frame = will_redraw || frame->still || p->paused;
+     bool can_interpolate = opts->interpolation && frame->display_synced &&
+                            !frame->still && frame->num_frames > 1 && !p->paused;
++    if (p->timing_diagnostics) {
++        p->timing_draw++;
++        p->timing_redraw += frame->redraw;
++        if (p->timing_frame_id != frame->frame_id) {
++            p->timing_video++;
++            p->timing_frame_id = frame->frame_id;
++        }
++    }
+     double pts_offset = can_interpolate ? frame->ideal_frame_vsync : 0;
+     params.info_callback = info_callback;
+     params.info_priv = vo;
+@@ -1731,6 +1744,28 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+             update_hook_opts_dynamic(p, p->hooks[i], frame->current);
+     }
+ 
++    if (p->timing_diagnostics) {
++        int64_t now = mp_time_ns();
++        if (!p->timing_start) p->timing_start = now;
++        p->timing_mix += mix.num_frames > 1;
++        double elapsed = (now - p->timing_start) / 1e9;
++        if (elapsed >= 5) {
++            MP_INFO(vo, "native-vo-timing: video=%.2f/s draw=%.2f/s redraw=%.2f/s "
++                    "flip=%.2f/s multi=%.2f/s source=%.3f queue-display=%.3f "
++                    "requested-interpolation=%d can-interpolate=%d mixer=%d "
++                    "display-synced=%d still=%d paused=%d pts=%.6f\n",
++                    p->timing_video / elapsed, p->timing_draw / elapsed,
++                    p->timing_redraw / elapsed, p->timing_flip / elapsed,
++                    p->timing_mix / elapsed, pl_queue_estimate_fps(p->queue),
++                    pl_queue_estimate_vps(p->queue), opts->interpolation,
++                    can_interpolate, params.frame_mixer != NULL,
++                    frame->display_synced, frame->still, p->paused, p->last_pts);
++            p->timing_video = p->timing_draw = p->timing_redraw = 0;
++            p->timing_flip = p->timing_mix = 0;
++            p->timing_start = now;
++        }
++    }
++
+     // Render frame
+     stats_time_start(p->stats, "render");
+     bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
+@@ -1786,6 +1821,7 @@ static void flip_page(struct vo *vo)
+     }
+ 
+     sw->fns->swap_buffers(sw);
++    if (p->timing_diagnostics) p->timing_flip++;
+ }
+ 
+ static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
+@@ -2502,6 +2538,7 @@ static void load_hwdec_api(void *ctx, struct hwdec_imgfmt_request *params)
+ static int preinit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
++    p->timing_diagnostics = getenv("MPV_NATIVE_TIMING") != NULL;
+     p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
+     p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
+     p->next_opts = p->next_opts_cache->opts;
+-- 
+2.54.0.windows.1
+
