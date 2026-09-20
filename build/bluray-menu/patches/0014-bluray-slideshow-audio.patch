@@ -1,0 +1,406 @@
+From b36a1c0ab891ee86ecdd1de889d5f1c63f53401f Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 12:17:25 +0800
+Subject: [PATCH] bluray: play authored type-2 slideshow audio loops during
+ still menus
+
+---
+ demux/demux_disc.c        | 124 +++++++++++++++++++++++++++++++++++++-
+ stream/bluray_slideshow.h |  69 +++++++++++++++++++++
+ stream/stream.h           |  10 +++
+ stream/stream_bluray.c    |  89 +++++++++++++++++++++++++++
+ 4 files changed, 291 insertions(+), 1 deletion(-)
+ create mode 100644 stream/bluray_slideshow.h
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index c904b2c..492ca7b 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -124,6 +124,14 @@ struct priv {
+     // Seeks into sparse-video titles land at the preceding chapter start,
+     // where the target's still frame is. Drop audio until this target.
+     double skip_audio_until;
++    struct demuxer *menu_audio;
++    struct stream *menu_audio_stream;
++    struct sh_stream *menu_audio_sh;
++    struct stream_bd_audio menu_audio_info;
++    double menu_audio_origin, menu_audio_pts;
++    uint32_t menu_audio_generation;
++    bool menu_audio_origin_valid;
++    bool menu_audio_failed;
+ };
+ 
+ static void clear_dvd_sub_holds(struct priv *p)
+@@ -892,6 +900,117 @@ static bool deliver_dvd_sub(struct demuxer *demuxer, struct sh_stream *sh,
+     return true;
+ }
+ 
++static void close_menu_audio(struct priv *p)
++{
++    demux_free(p->menu_audio);
++    p->menu_audio = NULL;
++    free_stream(p->menu_audio_stream);
++    p->menu_audio_stream = NULL;
++    p->menu_audio_sh = NULL;
++    p->menu_audio_origin_valid = false;
++}
++
++static void sync_menu_audio(struct demuxer *demuxer)
++{
++    struct priv *p = demuxer->priv;
++    if (!p->is_bd) return;
++    struct stream_bd_audio info = {0};
++    bool have = stream_control(demuxer->stream, STREAM_CTRL_GET_BD_AUDIO, &info) >= 1;
++    bool same = have && info.playlist == p->menu_audio_info.playlist &&
++        info.subpath == p->menu_audio_info.subpath && info.pid == p->menu_audio_info.pid &&
++        !strcmp(info.clip, p->menu_audio_info.clip);
++    if (same && (p->menu_audio || p->menu_audio_failed)) return;
++    bool had_music = p->menu_audio != NULL;
++    close_menu_audio(p);
++    if (had_music && !have) {
++        for (int i = 0; i < p->num_outer_streams; i++)
++            if (p->outer_streams[i]->type == STREAM_VIDEO)
++                demux_set_stream_still_image(demuxer, p->outer_streams[i], false);
++    }
++    p->menu_audio_failed = false;
++    if (!have) { p->menu_audio_info = (struct stream_bd_audio){0}; return; }
++    p->menu_audio_info = info;
++    p->menu_audio_failed = true;
++    if (stream_control(demuxer->stream, STREAM_CTRL_OPEN_BD_AUDIO, &info) < 1)
++        return;
++    p->menu_audio_stream = info.stream;
++    struct demuxer_params params = {
++        .force_format = "+lavf", .external_stream = info.stream,
++        .stream_flags = demuxer->stream_origin, .depth = demuxer->depth + 1,
++    };
++    p->menu_audio = demux_open_url("-", &params, demuxer->cancel, demuxer->global);
++    if (!p->menu_audio) { close_menu_audio(p); return; }
++    for (int i = 0; i < demux_get_num_stream(p->menu_audio); i++) {
++        struct sh_stream *src = demux_get_stream(p->menu_audio, i);
++        bool selected = src->type == STREAM_AUDIO && src->demuxer_id == info.pid;
++        demuxer_select_track(p->menu_audio, src, MP_NOPTS_VALUE, selected);
++        if (!selected) continue;
++        struct sh_stream *outer = find_outer_for_slave(p, src, 0);
++        if (!outer) {
++            outer = demux_alloc_sh_stream(STREAM_AUDIO);
++            outer->demuxer_id = info.pid;
++            outer->default_track = true;
++            adopt_codec_params(outer, src);
++            get_disc_lang(demuxer->stream, outer, false);
++            MP_TARRAY_APPEND(p, p->outer_streams, p->num_outer_streams, outer);
++            demux_add_sh_stream(demuxer, outer);
++        } else {
++            adopt_codec_params(outer, src);
++        }
++        p->menu_audio_sh = outer;
++    }
++    if (!p->menu_audio_sh) { close_menu_audio(p); return; }
++    demux_seek(p->menu_audio, info.in_time, SEEK_HR);
++    for (int i = 0; i < p->num_outer_streams; i++)
++        if (p->outer_streams[i]->type == STREAM_VIDEO)
++            demux_set_stream_still_image(demuxer, p->outer_streams[i], true);
++    p->menu_audio_generation = UINT32_MAX;
++    p->menu_audio_failed = false;
++    MP_VERBOSE(demuxer, "slideshow audio: playlist %d subpath %d clip %s repeat %d\n",
++               info.playlist, info.subpath, info.clip, info.repeat);
++}
++
++static bool read_menu_audio(struct demuxer *demuxer, struct demux_packet **out)
++{
++    struct priv *p = demuxer->priv;
++    if (!p->menu_audio || !p->menu_audio_sh ||
++        !demux_stream_is_selected(p->menu_audio_sh)) return false;
++    if (p->menu_audio_generation != p->last_discontinuity_id) {
++        // Preserve the music cursor across submenu changes, but rebase it to
++        // the newly displayed still's timeline after the player's nav flush.
++        p->menu_audio_generation = p->last_discontinuity_id;
++        p->menu_audio_origin_valid = false;
++        p->menu_audio_pts = p->base_time;
++    }
++    for (int attempt = 0; attempt < 4; attempt++) {
++        struct demux_packet *pkt = demux_read_any_packet(p->menu_audio);
++        if (!pkt || (pkt->pts != MP_NOPTS_VALUE && pkt->pts >= p->menu_audio_info.out_time)) {
++            talloc_free(pkt);
++            if (!p->menu_audio_info.repeat) return false;
++            demux_seek(p->menu_audio, p->menu_audio_info.in_time, SEEK_HR);
++            p->menu_audio_origin_valid = false;
++            continue;
++        }
++        if (pkt->pts == MP_NOPTS_VALUE || pkt->pts < p->menu_audio_info.in_time) {
++            talloc_free(pkt);
++            continue;
++        }
++        if (!p->menu_audio_origin_valid) {
++            p->menu_audio_origin = pkt->pts - p->menu_audio_pts;
++            p->menu_audio_origin_valid = true;
++        }
++        pkt->pts -= p->menu_audio_origin;
++        if (pkt->dts != MP_NOPTS_VALUE) pkt->dts -= p->menu_audio_origin;
++        p->menu_audio_pts = pkt->pts + MPMAX(0, pkt->duration);
++        pkt->stream = p->menu_audio_sh->index;
++        pkt->segmented = true;
++        pkt->codec = p->menu_audio_sh->codec;
++        *out = pkt;
++        return true;
++    }
++    return false;
++}
++
+ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt)
+ {
+     struct priv *p = demuxer->priv;
+@@ -932,6 +1051,8 @@ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt
+         }
+     }
+ 
++    sync_menu_audio(demuxer);
++
+     // Re-deliver a retained menu subpicture.
+     if (menu_active) {
+         for (int i = 0; i < MAX_DVD_SPU_STREAMS; i++) {
+@@ -1000,7 +1121,7 @@ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt
+                 p->eof_log_id = nav2.discontinuity_id;
+                 p->eof_log_still = nav2.still_active;
+             }
+-            return false;
++            return read_menu_audio(demuxer, out_pkt);
+         }
+     }
+ 
+@@ -1273,6 +1394,7 @@ static int d_open(demuxer_t *demuxer, enum demux_check check)
+ static void d_close(demuxer_t *demuxer)
+ {
+     struct priv *p = demuxer->priv;
++    close_menu_audio(p);
+     clear_dvd_sub_holds(p);
+     TA_FREEP(&p->pending_pkt);
+     demux_free(p->slave);
+diff --git a/stream/bluray_slideshow.h b/stream/bluray_slideshow.h
+new file mode 100644
+index 0000000..69e087d
+--- /dev/null
++++ b/stream/bluray_slideshow.h
+@@ -0,0 +1,69 @@
++/* Bounds-checked MPLS type-2 (browsable slideshow audio) metadata.
++ * Keep this independent of libbluray's private, ABI-unstable MPLS structs. */
++#ifndef MP_BLURAY_SLIDESHOW_H
++#define MP_BLURAY_SLIDESHOW_H
++#include <stdbool.h>
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++
++struct bd_slideshow_clip {
++    char clip[6];
++    uint32_t in_time, out_time;
++    bool repeat;
++};
++
++static uint32_t bd_slide_be(const uint8_t *p, int n)
++{
++    uint32_t v = 0;
++    while (n--) v = (v << 8) | *p++;
++    return v;
++}
++
++static bool bd_slideshow_parse(const uint8_t *data, size_t size, int subpath,
++                               struct bd_slideshow_clip *out)
++{
++    if (!data || size < 40 || subpath < 0 || memcmp(data, "MPLS", 4))
++        return false;
++    size_t pos = bd_slide_be(data + 8, 4);
++    if (pos > size || size - pos < 10) return false;
++    size_t len = bd_slide_be(data + pos, 4);
++    if (len < 6 || len > size - pos - 4) return false;
++    size_t end = pos + 4 + len;
++    int count = bd_slide_be(data + pos + 6, 2);
++    int subs = bd_slide_be(data + pos + 8, 2);
++    if (subpath >= subs) return false;
++    pos += 10;
++    for (int i = 0; i < count; i++) {
++        if (end - pos < 2) return false;
++        len = bd_slide_be(data + pos, 2);
++        if (len > end - pos - 2) return false;
++        pos += 2 + len;
++    }
++    for (int i = 0; i <= subpath; i++) {
++        if (end - pos < 4) return false;
++        len = bd_slide_be(data + pos, 4);
++        pos += 4;
++        if (len > end - pos) return false;
++        if (i != subpath) { pos += len; continue; }
++        // The asynchronous audio loop is one clip. Reject unsupported
++        // multi-clip sequences rather than playing an incorrect segment.
++        if (len < 36 || data[pos + 1] != 2 || data[pos + 5] != 1)
++            return false;
++        size_t item_len = bd_slide_be(data + pos + 6, 2);
++        if (item_len < 28 || item_len > len - 8) return false;
++        const uint8_t *item = data + pos + 8;
++        if (memcmp(item + 5, "M2TS", 4) || (item[12] & 1)) return false;
++        for (int j = 0; j < 5; j++)
++            if (item[j] < '0' || item[j] > '9') return false;
++        *out = (struct bd_slideshow_clip){
++            .in_time = bd_slide_be(item + 14, 4),
++            .out_time = bd_slide_be(item + 18, 4),
++            .repeat = (data[pos + 3] & 1) != 0,
++        };
++        memcpy(out->clip, item, 5);
++        return out->out_time > out->in_time;
++    }
++    return false;
++}
++#endif
+diff --git a/stream/stream.h b/stream/stream.h
+index 7e76729..8c0abe6 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -97,6 +97,8 @@ enum stream_ctrl {
+     STREAM_CTRL_NAV_CMD,             // struct stream_nav_cmd*
+     STREAM_CTRL_GET_NAV_STATE,       // struct stream_nav_state*
+     STREAM_CTRL_GET_NAV_OVERLAY,     // struct stream_nav_overlay_req*
++    STREAM_CTRL_GET_BD_AUDIO,        // struct stream_bd_audio* (metadata only)
++    STREAM_CTRL_OPEN_BD_AUDIO,       // struct stream_bd_audio* (owned stream)
+     STREAM_CTRL_GET_STILL,           // struct stream_still_req*
+     STREAM_CTRL_SET_STILL_PAGE,      // int*, force the shown still page
+     STREAM_CTRL_NAV_DRAIN_ENABLE,    // start holding EOF at jump boundaries
+@@ -186,6 +188,14 @@ struct stream_nav_state {
+     int num_angles;     // total angle count (0 if unknown or always 1)
+ };
+ 
++struct stream_bd_audio {
++    int playlist, subpath, pid;
++    char clip[6];
++    double in_time, out_time;
++    bool repeat;
++    struct stream *stream; // caller owns; only OPEN populates this
++};
++
+ struct stream_lang_req {
+     int type;     // STREAM_AUDIO, STREAM_SUB
+     int id;
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 451fbc7..ed46998 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -36,6 +36,7 @@
+ #include <libbluray/keys.h>
+ #include <libbluray/bluray-version.h>
+ #include <libbluray/log_control.h>
++#include <libbluray/filesystem.h>
+ #include <libavutil/common.h>
+ 
+ #include "config.h"
+@@ -48,6 +49,7 @@
+ #include "options/path.h"
+ #include "osdep/threads.h"
+ #include "stream.h"
++#include "bluray_slideshow.h"
+ #include "osdep/io.h"
+ #include "sub/osd.h"
+ #include "sub/img_convert.h"
+@@ -175,8 +177,87 @@ struct bluray_priv_s {
+     int audio_stream_num;
+     int sub_stream_num;
+     bool sub_visible;
++    int slideshow_playlist;
++    uint8_t *slideshow_mpls;
++    size_t slideshow_mpls_size;
+ };
+ 
++static bool is_http_url(const char *device);
++
++static bool get_slideshow_audio(stream_t *s, struct stream_bd_audio *audio)
++{
++    struct bluray_priv_s *b = s->priv;
++    const BLURAY_TITLE_INFO *ti = b->title_info;
++    if (!b->hdmv_mode || !ti || !ti->clip_count ||
++        ti->clips[0].still_mode != BLURAY_STILL_INFINITE ||
++        b->audio_stream_num < 1 ||
++        b->audio_stream_num > ti->clips[0].audio_stream_count)
++        return false;
++    const BLURAY_STREAM_INFO *si =
++        &ti->clips[0].audio_streams[b->audio_stream_num - 1];
++    if (!b->slideshow_mpls || b->slideshow_playlist != b->current_playlist) {
++        TA_FREEP(&b->slideshow_mpls);
++        b->slideshow_mpls_size = 0;
++        b->slideshow_playlist = b->current_playlist;
++        char path[64];
++        snprintf(path, sizeof(path), "BDMV/PLAYLIST/%05d.mpls", b->current_playlist);
++        void *data = NULL;
++        int64_t size = 0;
++        if (bd_read_file(b->bd, path, &data, &size) && size > 0 && size <= (1 << 20)) {
++            b->slideshow_mpls = talloc_memdup(b, data, size);
++            b->slideshow_mpls_size = size;
++        }
++        free(data);
++    }
++    struct bd_slideshow_clip clip;
++    if (!bd_slideshow_parse(b->slideshow_mpls, b->slideshow_mpls_size,
++                            si->subpath_id, &clip))
++        return false;
++    *audio = (struct stream_bd_audio){
++        .playlist = b->current_playlist, .subpath = si->subpath_id,
++        .pid = si->pid, .in_time = clip.in_time / 45000.0,
++        .out_time = clip.out_time / 45000.0, .repeat = clip.repeat,
++    };
++    memcpy(audio->clip, clip.clip, sizeof(audio->clip));
++    return true;
++}
++
++static struct stream *open_slideshow_audio(stream_t *s,
++                                           struct stream_bd_audio *audio)
++{
++    struct bluray_priv_s *b = s->priv;
++    // A separate libbluray session prevents file reads from disturbing the
++    // live HDMV navigator/AACS state. Restrict this to local disc navigation.
++    if (!b->cfg_device || is_http_url(b->cfg_device)) return NULL;
++    BLURAY *reader = bd_open(b->cfg_device, NULL);
++    if (!reader) return NULL;
++    char path[64];
++    snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", audio->clip);
++    BD_FILE_H *file = bd_open_file_dec(reader, path);
++    struct stream *stream = NULL;
++    uint8_t *data = NULL;
++    if (file) {
++        int64_t size = file->seek(file, 0, SEEK_END);
++        // Type-2 menus are short audio loops; reject excessive allocations.
++        if (size > 0 && size <= (128 << 20) && file->seek(file, 0, SEEK_SET) == 0) {
++            data = talloc_array(NULL, uint8_t, size);
++            int64_t offset = 0;
++            while (offset < size && !mp_cancel_test(s->cancel)) {
++                int64_t n = file->read(file, data + offset,
++                                       MPMIN(size - offset, 6144 * 32));
++                if (n <= 0) break;
++                offset += n;
++            }
++            if (offset == size)
++                stream = stream_memory_open(s->global, data, size);
++        }
++        file->close(file);
++    }
++    talloc_free(data);
++    bd_close(reader);
++    return stream;
++}
++
+ static bool is_http_url(const char *device)
+ {
+     return strncasecmp(device, "http://", 7) == 0 ||
+@@ -830,6 +911,14 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+     struct bluray_priv_s *b = s->priv;
+ 
+     switch (cmd) {
++    case STREAM_CTRL_GET_BD_AUDIO:
++        return get_slideshow_audio(s, arg) ? STREAM_OK : STREAM_UNSUPPORTED;
++    case STREAM_CTRL_OPEN_BD_AUDIO: {
++        struct stream_bd_audio *audio = arg;
++        if (!get_slideshow_audio(s, audio)) return STREAM_UNSUPPORTED;
++        audio->stream = open_slideshow_audio(s, audio);
++        return audio->stream ? STREAM_OK : STREAM_ERROR;
++    }
+     case STREAM_CTRL_GET_NUM_CHAPTERS: {
+         mp_mutex_lock(&b->overlay_lock);
+         const BLURAY_TITLE_INFO *ti = b->title_info;
+-- 
+2.54.0.windows.1
+
