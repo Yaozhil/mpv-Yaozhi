@@ -1,0 +1,71 @@
+From a7534fd59f8de9e85a9748c7b6f41333ef48b0dc Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 22:01:48 +0800
+Subject: [PATCH] vo: reserve measured video render budget before scheduling
+ secondary redraws
+
+---
+ video/out/vo.c | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 827ff69..ddab9bf 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -159,6 +159,8 @@ struct vo_internal {
+     int64_t flip_queue_offset; // queue flip events at most this much in advance
+     int64_t timing_offset;     // same (but from options; not VO configured)
+     int64_t secondary_last_draw; // VO thread only
++    int64_t secondary_render_cost;
++    int64_t secondary_cost_update; // VO thread only
+ 
+     int64_t delayed_count;
+     int64_t drop_count;
+@@ -851,7 +853,8 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+         // This changes queue lead time only, not video presentation timestamps.
+         int64_t lead = in->timing_offset;
+         if (secondary_rate > 0)
+-            lead = MPMIN(lead, MP_TIME_S_TO_NS(0.5 / secondary_rate));
++            lead = MPMIN(lead, MPMAX(MP_TIME_S_TO_NS(0.5 / secondary_rate),
++                in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
+         next_pts -= lead;
+         next_pts -= in->flip_queue_offset;
+         int64_t now = mp_time_ns();
+@@ -1022,6 +1025,26 @@ static bool render_frame(struct vo *vo)
+ 
+         in->visible = vo->driver->draw_frame(vo, frame);
+ 
++        int64_t render_cost = mp_time_ns() - in->secondary_last_draw;
++        // A high-refresh OSD must still leave enough lead time to render the
++        // video. GPU submission duration alone misses expensive asynchronous
++        // frames (e.g. 4K on an iGPU), so include the measured fresh GPU passes.
++        if (osd_get_secondary_refresh(vo->osd) > 0 &&
++            mp_time_ns() - in->secondary_cost_update >= MP_TIME_S_TO_NS(1)) {
++            struct voctrl_performance_data *perf =
++                talloc_zero(NULL, struct voctrl_performance_data);
++            if (vo->driver->control(vo, VOCTRL_PERFORMANCE_DATA, perf) == VO_TRUE) {
++                int64_t gpu_cost = 0;
++                for (int n = 0; n < perf->fresh.count; n++)
++                    gpu_cost += perf->fresh.perf[n].avg;
++                render_cost = MPMAX(render_cost, gpu_cost);
++            }
++            talloc_free(perf);
++            in->secondary_cost_update = mp_time_ns();
++        } else {
++            render_cost = MPMAX(render_cost, in->secondary_render_cost * 0.999);
++        }
++
+         stats_time_end(in->stats, "video-draw");
+ 
+         wait_until(vo, target);
+@@ -1044,6 +1067,7 @@ static bool render_frame(struct vo *vo)
+         stats_time_end(in->stats, "video-flip");
+ 
+         mp_mutex_lock(&in->lock);
++        in->secondary_render_cost = render_cost;
+         in->dropped_frame = prev_drop_count < vo->in->drop_count;
+         in->rendering = false;
+ 
+-- 
+2.54.0.windows.1
+

@@ -53,6 +53,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0015-native-timing-diagnostics.p
 shutil.copyfile(root/'build/bluray-menu/patches/0016-secondary-ass-refresh.patch', packages/'mpv-9010-secondary-ass-refresh.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0017-secondary-ass-replace.patch', packages/'mpv-9011-secondary-ass-replace.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0018-secondary-ass-idle.patch', packages/'mpv-9012-secondary-ass-idle.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0019-secondary-ass-video-budget.patch', packages/'mpv-9013-secondary-ass-video-budget.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
