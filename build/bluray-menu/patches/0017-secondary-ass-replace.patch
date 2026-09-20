@@ -1,0 +1,149 @@
+From c63b4e013a1ee76e687cc976517055b073e96af8 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 17:30:17 +0800
+Subject: [PATCH] sub: replace complete secondary ASS in place without decoder
+ churn
+
+---
+ player/command.c | 20 ++++++++++++++++++++
+ sub/dec_sub.h    |  1 +
+ sub/sd_ass.c     | 38 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 59 insertions(+)
+
+diff --git a/player/command.c b/player/command.c
+index 70f4190..b707ef3 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -6239,6 +6239,24 @@ static void cmd_quit(void *p)
+     mp_wakeup_core(mpctx);
+ }
+ 
++static void cmd_secondary_ass_replace(void *p)
++{
++    struct mp_cmd_ctx *cmd = p;
++    struct MPContext *mpctx = cmd->mpctx;
++    struct track *t = mpctx->current_track[1][STREAM_SUB];
++    cmd->success = false;
++    if (!t || !t->is_external || !t->d_sub || t->user_tid != cmd->args[0].v.i)
++        return;
++    bstr data = stream_read_file(cmd->args[1].v.s, NULL, mpctx->global,
++                                 4 * 1024 * 1024);
++    if (data.start) {
++        cmd->success = sub_control(t->d_sub, SD_CTRL_REPLACE_ASS, &data) == CONTROL_OK;
++        talloc_free(data.start);
++    }
++    if (cmd->success)
++        osd_changed(mpctx->osd);
++}
++
+ static void cmd_playlist_next_prev(void *p)
+ {
+     struct mp_cmd_ctx *cmd = p;
+@@ -7743,6 +7761,8 @@ const struct mp_cmd_def mp_cmds[] = {
+     { "video-remove", cmd_track_remove, { {"id", OPT_INT(v.i), OPTDEF_INT(-1)} },
+         .priv = &(const int){STREAM_VIDEO}, },
+ 
++    { "secondary-ass-replace", cmd_secondary_ass_replace,
++        {{"id", OPT_INT(v.i)}, {"filename", OPT_STRING(v.s)}} },
+     { "sub-reload", cmd_track_reload, { {"id", OPT_INT(v.i), OPTDEF_INT(-1)} },
+         .priv = &(const int){STREAM_SUB},
+         .spawn_thread = true,
+diff --git a/sub/dec_sub.h b/sub/dec_sub.h
+index 63832cb..8b590d5 100644
+--- a/sub/dec_sub.h
++++ b/sub/dec_sub.h
+@@ -23,6 +23,7 @@ enum sd_ctrl {
+     SD_CTRL_RESET_SOFT,
+     SD_CTRL_UPDATE_OPTS,
+     SD_CTRL_APPLY_DVDNAV,   // const struct stream_nav_state *
++    SD_CTRL_REPLACE_ASS,    // const bstr *, complete external secondary ASS
+ };
+ 
+ enum sd_text_type {
+diff --git a/sub/sd_ass.c b/sub/sd_ass.c
+index e5f2243..9f1e61d 100644
+--- a/sub/sd_ass.c
++++ b/sub/sd_ass.c
+@@ -65,6 +65,7 @@ struct sd_ass_priv {
+     bool timing_diagnostics;
+     int64_t timing_start;
+     unsigned timing_render, timing_changed;
++    char *replacement_ass;
+ };
+ 
+ struct seen_packet {
+@@ -304,6 +305,33 @@ static void assobjects_destroy(struct sd *sd)
+     ass_library_done(ctx->ass_library);
+ }
+ 
++static bool replace_ass(struct sd *sd, bstr data)
++{
++    struct sd_ass_priv *ctx = sd->priv;
++    if (sd->order != 1 || ctx->is_converted || !data.len ||
++        data.len > 4 * 1024 * 1024 || bstr_find0(data, "[Script Info]") < 0 ||
++        bstr_find0(data, "[Events]") < 0)
++        return false;
++    // libass parses a separate track before changing the visible one. Keep
++    // the renderer and font/glyph caches, and never detach the subtitle slot.
++    ASS_Track *track = ass_read_memory(ctx->ass_library, (char *)data.start,
++                                     data.len, NULL);
++    if (!track || !track->n_styles || track->PlayResX <= 0 || track->PlayResY <= 0) {
++        if (track)
++            ass_free_track(track);
++        return false;
++    }
++    char *text = talloc_strndup(ctx, (char *)data.start, data.len);
++    ass_free_track(ctx->ass_track);
++    ctx->ass_track = track;
++    talloc_free(ctx->replacement_ass);
++    ctx->replacement_ass = text;
++    ctx->ass_configured = false;
++    ctx->num_seen_packets = 0;
++    ctx->clear_once = false;
++    return true;
++}
++
+ static int init(struct sd *sd)
+ {
+     struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
+@@ -459,6 +487,8 @@ static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
+ static void decode(struct sd *sd, struct demux_packet *packet)
+ {
+     struct sd_ass_priv *ctx = sd->priv;
++    if (ctx->replacement_ass)
++        return; // The original demuxer's cached events are now obsolete.
+     ASS_Track *track = ctx->ass_track;
+ 
+     packet->sub_duration = packet->duration;
+@@ -1023,6 +1053,10 @@ static void fill_plaintext(struct sd *sd, double pts)
+ static void reset(struct sd *sd)
+ {
+     struct sd_ass_priv *ctx = sd->priv;
++    if (ctx->replacement_ass) {
++        ctx->clear_once = false;
++        return; // Complete replacement includes its own seekable timeline.
++    }
+     if (sd->opts->sub_clear_on_seek || ctx->clear_once) {
+         ass_flush_events(ctx->ass_track);
+         ctx->num_seen_packets = 0;
+@@ -1086,6 +1120,8 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
+ {
+     struct sd_ass_priv *ctx = sd->priv;
+     switch (cmd) {
++    case SD_CTRL_REPLACE_ASS:
++        return replace_ass(sd, *(bstr *)arg) ? CONTROL_OK : CONTROL_ERROR;
+     case SD_CTRL_SUB_STEP: {
+         double *a = arg;
+         long long ts = floor(a[0] * 1000.0 + 1e-6);
+@@ -1120,6 +1156,8 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
+             reset(sd);
+             assobjects_destroy(sd);
+             assobjects_init(sd);
++            if (ctx->replacement_ass)
++                replace_ass(sd, bstr0(ctx->replacement_ass));
+         }
+         ctx->ass_configured = false; // ass always needs to be reconfigured
+         return CONTROL_OK;
+-- 
+2.54.0.windows.1
+

@@ -1,0 +1,242 @@
+From 7553d2aa750f78a14884ca71c41a460d1686f3fa Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <build@localhost>
+Date: Sun, 20 Sep 2026 17:28:22 +0800
+Subject: [PATCH] sub: opt in to independent secondary ASS redraw and animation
+ clock
+
+---
+ options/options.c |  2 ++
+ options/options.h |  1 +
+ player/playloop.c | 18 ++++++++++++++++++
+ sub/osd.c         | 34 ++++++++++++++++++++++++++++++++++
+ sub/osd.h         |  3 +++
+ sub/osd_state.h   |  4 ++++
+ video/out/vo.c    | 26 +++++++++++++++++++++++++-
+ 7 files changed, 87 insertions(+), 1 deletion(-)
+
+diff --git a/options/options.c b/options/options.c
+index 8b47d5e..e73ebf0 100644
+--- a/options/options.c
++++ b/options/options.c
+@@ -389,6 +389,8 @@ const struct m_sub_options mp_subtitle_shared_sub_opts = {
+         {"sub-visibility", OPT_BOOL(sub_visibility[0])},
+         {"secondary-sub-visibility", OPT_BOOL(sub_visibility[1])},
+         {"secondary-sub-ass-full-viewport", OPT_BOOL(secondary_ass_full_viewport)},
++        {"secondary-sub-ass-refresh-rate", OPT_DOUBLE(secondary_ass_refresh_rate),
++            M_RANGE(0, 240)},
+         {"sub-ass-override", OPT_CHOICE(ass_style_override[0],
+             {"no", ASS_STYLE_OVERRIDE_NONE},
+             {"yes", ASS_STYLE_OVERRIDE_YES},
+diff --git a/options/options.h b/options/options.h
+index badfd16..0fa18de 100644
+--- a/options/options.h
++++ b/options/options.h
+@@ -144,6 +144,7 @@ struct mp_subtitle_shared_opts {
+     bool sub_visibility[2];
+     int ass_style_override[2];
+     bool secondary_ass_full_viewport;
++    double secondary_ass_refresh_rate;
+ };
+ 
+ struct mp_osd_render_opts {
+diff --git a/player/playloop.c b/player/playloop.c
+index e35b2e8..d501918 100644
+--- a/player/playloop.c
++++ b/player/playloop.c
+@@ -35,6 +35,7 @@
+ #include "common/stats.h"
+ #include "demux/demux.h"
+ #include "demux/packet_pool.h"
++#include "demux/stheader.h"
+ #include "filters/f_decoder_wrapper.h"
+ #include "filters/filter_internal.h"
+ #include "input/input.h"
+@@ -1272,6 +1273,21 @@ static void handle_eof(struct MPContext *mpctx)
+     }
+ }
+ 
++static void update_secondary_refresh(struct MPContext *mpctx)
++{
++    struct track *t = mpctx->current_track[1][STREAM_SUB];
++    const char *codec = t && t->stream ? t->stream->codec->codec : NULL;
++    bool enabled = t && t->is_external && t->d_sub && codec &&
++        (!strcmp(codec, "ass") || !strcmp(codec, "ssa")) &&
++        mpctx->opts->subs_shared->sub_visibility[1] &&
++        mpctx->video_status == STATUS_PLAYING && mpctx->restart_complete &&
++        !mpctx->paused && !mpctx->stop_play && mpctx->play_dir > 0 &&
++        !mpctx->hrseek_active;
++    osd_set_secondary_refresh(mpctx->osd, enabled ?
++        mpctx->opts->subs_shared->secondary_ass_refresh_rate : 0,
++        mpctx->video_speed);
++}
++
+ static void handle_clipboard_updates(struct MPContext *mpctx)
+ {
+     if (mp_clipboard_data_changed(mpctx->clipboard))
+@@ -1305,6 +1321,8 @@ void run_playloop(struct MPContext *mpctx)
+ 
+     handle_playback_time(mpctx);
+ 
++    update_secondary_refresh(mpctx);
++
+     handle_dummy_ticks(mpctx);
+ 
+     handle_clipboard_updates(mpctx);
+diff --git a/sub/osd.c b/sub/osd.c
+index 0a073bd..35fe694 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -314,6 +314,33 @@ void osd_resize(struct osd_state *osd, struct mp_osd_res res)
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed)
++{
++    mp_mutex_lock(&osd->lock);
++    if (!rate || !osd->secondary_rate)
++        osd->secondary_clock_valid = false;
++    osd->secondary_rate = rate;
++    osd->secondary_speed = speed;
++    mp_mutex_unlock(&osd->lock);
++}
++
++double osd_get_secondary_refresh(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    double rate = osd->secondary_rate;
++    mp_mutex_unlock(&osd->lock);
++    return rate;
++}
++
++void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall)
++{
++    mp_mutex_lock(&osd->lock);
++    osd->secondary_pts = pts;
++    osd->secondary_wall = wall;
++    osd->secondary_clock_valid = pts != MP_NOPTS_VALUE;
++    mp_mutex_unlock(&osd->lock);
++}
++
+ static struct sub_bitmaps *render_object(struct osd_state *osd,
+                                          struct osd_object *obj,
+                                          struct mp_osd_res osdres, double video_pts,
+@@ -331,6 +358,13 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+         if (obj->sub && sub_is_primary_visible(obj->sub))
+             res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
+     } else if (obj->type == OSDTYPE_SUB2) {
++        if (osd->secondary_rate > 0 && osd->secondary_clock_valid) {
++            // Bound extrapolation if decoding/network stalls before the core
++            // enters its paused-for-cache state. Never change primary subs.
++            double elapsed = (mp_time_ns() - osd->secondary_wall) * 1e-9;
++            video_pts = osd->secondary_pts +
++                MPCLAMP(elapsed, 0, 0.1) * osd->secondary_speed;
++        }
+         if (obj->sub && sub_is_secondary_visible(obj->sub))
+             res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
+     } else if (obj->type == OSDTYPE_EXTERNAL2 ||
+diff --git a/sub/osd.h b/sub/osd.h
+index b62836e..b5e6858 100644
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -210,6 +210,9 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
+ void osd_set_render_subs_in_filter(struct osd_state *osd, bool s);
+ void osd_set_force_video_pts(struct osd_state *osd, double video_pts);
+ double osd_get_force_video_pts(struct osd_state *osd);
++void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed);
++double osd_get_secondary_refresh(struct osd_state *osd);
++void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall);
+ 
+ struct osd_progbar_state {
+     int type;           // <0: disabled, 1-255: symbol, else: no symbol
+diff --git a/sub/osd_state.h b/sub/osd_state.h
+index 57bd565..b1347ad 100644
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -74,6 +74,10 @@ struct osd_state {
+ 
+     bool render_subs_in_filter;
+     _Atomic double force_video_pts;
++    // Opt-in clock for external secondary ASS only; guarded by lock.
++    double secondary_rate, secondary_speed, secondary_pts;
++    int64_t secondary_wall;
++    bool secondary_clock_valid;
+ 
+     bool want_redraw;
+     bool want_redraw_notification;
+diff --git a/video/out/vo.c b/video/out/vo.c
+index f93f6cf..827ff69 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -158,6 +158,7 @@ struct vo_internal {
+ 
+     int64_t flip_queue_offset; // queue flip events at most this much in advance
+     int64_t timing_offset;     // same (but from options; not VO configured)
++    int64_t secondary_last_draw; // VO thread only
+ 
+     int64_t delayed_count;
+     int64_t drop_count;
+@@ -837,6 +838,7 @@ void vo_request_wakeup_on_done(struct vo *vo)
+ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+ {
+     struct vo_internal *in = vo->in;
++    double secondary_rate = osd_get_secondary_refresh(vo->osd);
+     mp_mutex_lock(&in->lock);
+     bool r = vo->config_ok && !in->frame_queued &&
+              (!in->current_frame || in->current_frame->num_vsyncs < 1);
+@@ -845,7 +847,12 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+         // display by disallowing OSD redrawing or VO interaction.
+         // Actually render the frame at earliest the given offset before target
+         // time.
+-        next_pts -= in->timing_offset;
++        // Leave time between low-fps video frames for animated secondary ASS.
++        // This changes queue lead time only, not video presentation timestamps.
++        int64_t lead = in->timing_offset;
++        if (secondary_rate > 0)
++            lead = MPMIN(lead, MP_TIME_S_TO_NS(0.5 / secondary_rate));
++        next_pts -= lead;
+         next_pts -= in->flip_queue_offset;
+         int64_t now = mp_time_ns();
+         if (next_pts > now)
+@@ -1008,6 +1015,11 @@ static bool render_frame(struct vo *vo)
+ 
+         stats_time_start(in->stats, "video-draw");
+ 
++        if (frame->current && !frame->repeat)
++            osd_anchor_secondary_clock(vo->osd, frame->current->pts,
++                frame->display_synced ? now : MPMAX(now, frame->pts));
++        in->secondary_last_draw = mp_time_ns();
++
+         in->visible = vo->driver->draw_frame(vo, frame);
+ 
+         stats_time_end(in->stats, "video-draw");
+@@ -1102,6 +1114,7 @@ static void do_redraw(struct vo *vo)
+     frame->duration = -1;
+     mp_mutex_unlock(&in->lock);
+ 
++    in->secondary_last_draw = mp_time_ns();
+     vo->driver->draw_frame(vo, frame);
+     vo->driver->flip_page(vo);
+ 
+@@ -1177,8 +1190,19 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         in->send_reset = false;
+         bool send_pause = in->paused != vo_paused;
+         vo_paused = in->paused;
++        bool secondary_eligible = !in->paused && in->hasframe &&
++            in->current_frame && !in->current_frame->still;
+         mp_mutex_unlock(&in->lock);
+ 
++        double secondary_rate = osd_get_secondary_refresh(vo->osd);
++        if (!working && secondary_eligible && secondary_rate > 0) {
++            int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
++            interval = MPMAX(interval, in->vsync_interval);
++            int64_t next = in->secondary_last_draw + interval;
++            redraw |= now >= next;
++            wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
++        }
++
+         if (send_reset)
+             vo->driver->control(vo, VOCTRL_RESET, NULL);
+         if (send_pause)
+-- 
+2.54.0.windows.1
+

@@ -31,7 +31,9 @@
     "build/bluray-menu/patches/0012-still-menu-retain-ig-tail.patch": "1ab1023f05714f794fd0e38d323696b2e8f5ffa0124c9a213f28ab25eb740873",
     "build/bluray-menu/patches/0013-dts-hd-seek-resync.patch": "51dc7f6e0ee1b0ca59ee9523f24f5de1ce0f5592b67cbbff78ef76f80ccfe174",
     "build/bluray-menu/patches/0014-bluray-slideshow-audio.patch": "5af7dba3ad18e513cc8ee4b61d4e12e9b3be4381133e12c3607ad3ada9008816",
-    "build/bluray-menu/patches/0015-native-timing-diagnostics.patch": "21f7c584c3f1ebed360c2bfe5014cd102601b448bbc0216cf63f187facc33f4c"
+    "build/bluray-menu/patches/0015-native-timing-diagnostics.patch": "21f7c584c3f1ebed360c2bfe5014cd102601b448bbc0216cf63f187facc33f4c",
+    "build/bluray-menu/patches/0016-secondary-ass-refresh.patch": "f2d9998f5d8780a6586c9d0aed41287624c9ec54a219c529478b837dc261f3de",
+    "build/bluray-menu/patches/0017-secondary-ass-replace.patch": "47d9a51f430114eaf610446ee542e5add28603746bead52de331d65fb2cfe01b"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
