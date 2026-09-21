@@ -1,0 +1,185 @@
+From 7b9987eccba4e673f779b6decd261ce14c893ba3 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Mon, 21 Sep 2026 15:53:27 +0800
+Subject: [PATCH] diagnostics: measure ASS packing, OSD uploads and
+ presentation costs
+
+---
+ sub/sd_ass.c            | 32 ++++++++++++++++++++++++++--
+ video/out/vo_gpu_next.c | 47 ++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 76 insertions(+), 3 deletions(-)
+
+diff --git a/sub/sd_ass.c b/sub/sd_ass.c
+index 9f1e61d..11e75cc 100644
+--- a/sub/sd_ass.c
++++ b/sub/sd_ass.c
+@@ -64,7 +64,8 @@ struct sd_ass_priv {
+     bool check_animated;
+     bool timing_diagnostics;
+     int64_t timing_start;
+-    unsigned timing_render, timing_changed;
++    unsigned timing_render, timing_changed, timing_position, timing_content;
++    int64_t timing_ass_ns, timing_pack_ns, timing_ass_max, timing_pack_max;
+     char *replacement_ass;
+ };
+ 
+@@ -821,8 +822,22 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+     if (no_ass)
+         fill_plaintext(sd, pts);
+ 
++    bool timing = ctx->timing_diagnostics && sd->order == 1;
++    int64_t ass_start = timing ? mp_time_ns() : 0;
+     int changed;
+     ASS_Image *imgs = ass_render_frame(renderer, track, ts, &changed);
++    int64_t pack_start = timing ? mp_time_ns() : 0;
++    mp_sub_packer_pack_ass(ctx->packer, &imgs, 1, changed, !converted, format, res);
++    if (timing) {
++        int64_t ass_ns = pack_start - ass_start;
++        int64_t pack_ns = mp_time_ns() - pack_start;
++        ctx->timing_ass_ns += ass_ns;
++        ctx->timing_pack_ns += pack_ns;
++        ctx->timing_ass_max = MPMAX(ctx->timing_ass_max, ass_ns);
++        ctx->timing_pack_max = MPMAX(ctx->timing_pack_max, pack_ns);
++        ctx->timing_position += changed == 1;
++        ctx->timing_content += changed == 2;
++    }
+     if (ctx->timing_diagnostics && sd->order == 1) {
+         int64_t now = mp_time_ns();
+         if (!ctx->timing_start) ctx->timing_start = now;
+@@ -833,11 +848,24 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+             MP_INFO(sd, "native-ass-timing: render=%.2f/s changed=%.2f/s "
+                     "pts=%.6f full=%d\n", ctx->timing_render / elapsed,
+                     ctx->timing_changed / elapsed, pts, full_viewport);
++            // Content-change hints are not glyph rasterization counts. libass
++            // owns its glyph cache and does not expose those counters here.
++            MP_INFO(sd, "native-ass-cost: position=%.2f/s content=%.2f/s "
++                    "ass-avg=%.3fms ass-max=%.3fms pack-avg=%.3fms "
++                    "pack-max=%.3fms parts=%d atlas=%dx%d\n",
++                    ctx->timing_position / elapsed, ctx->timing_content / elapsed,
++                    ctx->timing_ass_ns * 1e-6 / ctx->timing_render,
++                    ctx->timing_ass_max * 1e-6,
++                    ctx->timing_pack_ns * 1e-6 / ctx->timing_render,
++                    ctx->timing_pack_max * 1e-6, res->num_parts,
++                    res->packed_w, res->packed_h);
++            ctx->timing_position = ctx->timing_content = 0;
++            ctx->timing_ass_ns = ctx->timing_pack_ns = 0;
++            ctx->timing_ass_max = ctx->timing_pack_max = 0;
+             ctx->timing_render = ctx->timing_changed = 0;
+             ctx->timing_start = now;
+         }
+     }
+-    mp_sub_packer_pack_ass(ctx->packer, &imgs, 1, changed, !converted, format, res);
+ 
+ done:
+     // mangle_colors() modifies the color field, so copy the thing _before_.
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index d649a89..21774aa 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -151,6 +151,11 @@ struct priv {
+     unsigned timing_draw, timing_redraw, timing_flip, timing_mix;
+     uint64_t timing_frame_id;
+     unsigned timing_video;
++    unsigned timing_uploads, timing_frame_passes, timing_blend_passes;
++    uint64_t timing_upload_bytes;
++    int64_t timing_upload_ns, timing_present_ns, timing_present_max;
++    int64_t timing_render_ns, timing_render_max;
++    unsigned timing_render_calls;
+ 
+     pl_options pars;
+     struct m_config_cache *opts_cache;
+@@ -337,6 +342,7 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+                                const struct sub_bitmaps *item)
+ {
+     struct priv *p = vo->priv;
++    int64_t start = p->timing_diagnostics ? mp_time_ns() : 0;
+     if (!entry->tex)
+         MP_TARRAY_POP(p->sub_tex, p->num_sub_tex, &entry->tex);
+     bool ok = pl_tex_recreate(p->gpu, &entry->tex, &(struct pl_tex_params) {
+@@ -366,6 +372,12 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+         talloc_free(upload_params.priv);
+         return false;
+     }
++    if (p->timing_diagnostics) {
++        p->timing_uploads++;
++        p->timing_upload_bytes += (uint64_t)item->packed_w * item->packed_h *
++                                 p->osd_fmt[item->format]->texel_size;
++        p->timing_upload_ns += mp_time_ns() - start;
++    }
+     return true;
+ }
+ 
+@@ -1146,6 +1158,10 @@ static void info_callback(void *priv, const struct pl_render_info *info)
+     default: abort();
+     }
+ 
++    if (p->timing_diagnostics) {
++        p->timing_frame_passes += info->stage == PL_RENDER_STAGE_FRAME;
++        p->timing_blend_passes += info->stage == PL_RENDER_STAGE_BLEND;
++    }
+     frame->count = info->index + 1;
+     pl_dispatch_info_move(&frame->info[info->index], info->pass);
+ }
+@@ -1760,6 +1776,22 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+                     pl_queue_estimate_vps(p->queue), opts->interpolation,
+                     can_interpolate, params.frame_mixer != NULL,
+                     frame->display_synced, frame->still, p->paused, p->last_pts);
++            MP_INFO(vo, "native-vo-cost: upload=%.2f/s upload-MiB=%.3f/s "
++                    "upload-cpu=%.3fms/s frame-passes=%.2f/s blend-passes=%.2f/s "
++                    "render-avg=%.3fms render-max=%.3fms "
++                    "present-avg=%.3fms present-max=%.3fms tex-pool=%d\n",
++                    p->timing_uploads / elapsed,
++                    p->timing_upload_bytes / (1048576.0 * elapsed),
++                    p->timing_upload_ns * 1e-6 / elapsed,
++                    p->timing_frame_passes / elapsed, p->timing_blend_passes / elapsed,
++                    p->timing_render_ns * 1e-6 / MPMAX(1, p->timing_render_calls),
++                    p->timing_render_max * 1e-6,
++                    p->timing_present_ns * 1e-6 / MPMAX(1, p->timing_flip),
++                    p->timing_present_max * 1e-6, p->num_sub_tex);
++            p->timing_uploads = p->timing_frame_passes = p->timing_blend_passes = 0;
++            p->timing_upload_bytes = p->timing_upload_ns = 0;
++            p->timing_present_ns = p->timing_present_max = 0;
++            p->timing_render_ns = p->timing_render_max = p->timing_render_calls = 0;
+             p->timing_video = p->timing_draw = p->timing_redraw = 0;
+             p->timing_flip = p->timing_mix = 0;
+             p->timing_start = now;
+@@ -1768,7 +1800,14 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ 
+     // Render frame
+     stats_time_start(p->stats, "render");
++    int64_t render_start = p->timing_diagnostics ? mp_time_ns() : 0;
+     bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
++    if (p->timing_diagnostics) {
++        int64_t ns = mp_time_ns() - render_start;
++        p->timing_render_ns += ns;
++        p->timing_render_max = MPMAX(p->timing_render_max, ns);
++        p->timing_render_calls++;
++    }
+     stats_time_end(p->stats, "render");
+     if (!render_ok) {
+         MP_ERR(vo, "Failed rendering frame!\n");
+@@ -1814,6 +1853,7 @@ static void flip_page(struct vo *vo)
+     struct priv *p = vo->priv;
+     struct ra_swapchain *sw = p->ra_ctx->swapchain;
+ 
++    int64_t start = p->timing_diagnostics ? mp_time_ns() : 0;
+     if (p->frame_pending) {
+         if (!pl_swapchain_submit_frame(p->sw))
+             MP_ERR(vo, "Failed presenting frame!\n");
+@@ -1821,7 +1861,12 @@ static void flip_page(struct vo *vo)
+     }
+ 
+     sw->fns->swap_buffers(sw);
+-    if (p->timing_diagnostics) p->timing_flip++;
++    if (p->timing_diagnostics) {
++        int64_t ns = mp_time_ns() - start;
++        p->timing_present_ns += ns;
++        p->timing_present_max = MPMAX(p->timing_present_max, ns);
++        p->timing_flip++;
++    }
+ }
+ 
+ static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
+-- 
+2.54.0.windows.1
+

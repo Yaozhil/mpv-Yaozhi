@@ -37,7 +37,8 @@
     "build/bluray-menu/patches/0018-secondary-ass-idle.patch": "228e6c44bc4a4ee985f0b1d3eb298654c0c93702ba4d4f7cfd58b939f2b1e4d7",
     "build/bluray-menu/patches/0019-secondary-ass-video-budget.patch": "733ce59e79a3e5b3fb086e0d4c49371e49ff41841535c50e65a2f061be8a4613",
     "build/bluray-menu/patches/0020-secondary-ass-video-headroom.patch": "9305d478ccd1c40973ef99a5dadae3a9c35aa69b18de9ccd5d32b5904eee2d59",
-    "build/bluray-menu/patches/0021-secondary-ass-budget-stability.patch": "d368e666dd367fbbea1445d49327cd8100e33f535fc1140067e4103f80f6c177"
+    "build/bluray-menu/patches/0021-secondary-ass-budget-stability.patch": "d368e666dd367fbbea1445d49327cd8100e33f535fc1140067e4103f80f6c177",
+    "build/bluray-menu/patches/0022-native-presentation-telemetry.patch": "cddf26c758bf9f9ca9bc6e8772ccf91bf470df89a3cffa0c3143718c151bf0c9"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
