@@ -59,6 +59,8 @@ shutil.copyfile(root/'build/bluray-menu/patches/0021-secondary-ass-budget-stabil
 shutil.copyfile(root/'build/bluray-menu/patches/0022-native-presentation-telemetry.patch', packages/'mpv-9016-native-presentation-telemetry.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0023-native-presentation-reuse.patch', packages/'mpv-9017-native-presentation-reuse.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0024-bluray-popup-atomic-overlay.patch', packages/'mpv-9018-bluray-popup-atomic-overlay.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0025-bluray-menu-audio-resume.patch', packages/'mpv-9019-bluray-menu-audio-resume.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0026-bluray-popup-fragment-hold.patch', packages/'mpv-9020-bluray-popup-fragment-hold.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'

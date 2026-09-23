@@ -1,0 +1,140 @@
+From 62a9c6e994987db68f3182026f9f08fd96542eb0 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 23 Sep 2026 10:44:33 +0800
+Subject: [PATCH] bluray: resume menu soundtrack from last audible position
+
+---
+ demux/demux_disc.c     | 24 ++++++++++++++++++++++--
+ player/discnav.c       | 12 ++++++++++++
+ stream/stream.h        |  7 +++++++
+ stream/stream_bluray.c | 24 ++++++++++++++++++++++++
+ 4 files changed, 65 insertions(+), 2 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 492ca7b..12757d2 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -976,8 +976,28 @@ static bool read_menu_audio(struct demuxer *demuxer, struct demux_packet **out)
+     if (!p->menu_audio || !p->menu_audio_sh ||
+         !demux_stream_is_selected(p->menu_audio_sh)) return false;
+     if (p->menu_audio_generation != p->last_discontinuity_id) {
+-        // Preserve the music cursor across submenu changes, but rebase it to
+-        // the newly displayed still's timeline after the player's nav flush.
++        // The player's nav seek discards audio already queued at the device.
++        // Keep the same clip, but rewind the private demuxer by precisely the
++        // lost output lead when we have a valid pre-flush audible position.
++        struct stream_bd_audio_resume resume = {0};
++        bool have_resume = stream_control(demuxer->stream,
++            STREAM_CTRL_GET_BD_AUDIO_RESUME, &resume) >= 1;
++        double lead = p->menu_audio_pts - resume.played_pts;
++        double length = p->menu_audio_info.out_time - p->menu_audio_info.in_time;
++        if (have_resume && resume.discontinuity_id == p->last_discontinuity_id &&
++            p->menu_audio_origin_valid && p->menu_audio_info.repeat &&
++            isfinite(resume.played_pts) && lead >= -0.05 && lead <= 2.0 &&
++            length > 0)
++        {
++            double raw = resume.played_pts + p->menu_audio_origin;
++            raw = p->menu_audio_info.in_time +
++                fmod(fmod(raw - p->menu_audio_info.in_time, length) + length, length);
++            demux_seek(p->menu_audio, raw, SEEK_HR);
++            MP_VERBOSE(demuxer, "slideshow audio resume after disc jump: "
++                       "rewound %.3f s, clip PTS %.3f\n", lead, raw);
++        }
++        // Rebase output packets to the new still's timeline. The source clip
++        // identity and position remain independent of that video PlayItem.
+         p->menu_audio_generation = p->last_discontinuity_id;
+         p->menu_audio_origin_valid = false;
+         p->menu_audio_pts = p->base_time;
+diff --git a/player/discnav.c b/player/discnav.c
+index b910ca1..1662d36 100644
+--- a/player/discnav.c
++++ b/player/discnav.c
+@@ -294,6 +294,18 @@ static void check_async_discontinuity(struct MPContext *mpctx, struct stream *s,
+     double t = 0;
+     if (stream_control(s, STREAM_CTRL_GET_CURRENT_TIME, &t) < 1)
+         t = 0;
++    // A looping type-2 menu soundtrack is read ahead of the audio device.
++    // The regular nav seek flushes that queued audio; give the disc demuxer
++    // the last audible PTS so it can resume the same clip at the right sample
++    // instead of jumping ahead by the discarded queue length.
++    double audible = playing_audio_pts(mpctx);
++    if (audible != MP_NOPTS_VALUE) {
++        struct stream_bd_audio_resume resume = {
++            .discontinuity_id = nav->discontinuity_id,
++            .played_pts = audible,
++        };
++        stream_control(s, STREAM_CTRL_SET_BD_AUDIO_RESUME, &resume);
++    }
+     MP_VERBOSE(s, "disc jumped (id %u), resync seek to %f\n",
+                nav->discontinuity_id, t);
+     queue_seek(mpctx, MPSEEK_ABSOLUTE, t, MPSEEK_KEYFRAME, 0);
+diff --git a/stream/stream.h b/stream/stream.h
+index 8c0abe6..c8ed0c9 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -99,6 +99,8 @@ enum stream_ctrl {
+     STREAM_CTRL_GET_NAV_OVERLAY,     // struct stream_nav_overlay_req*
+     STREAM_CTRL_GET_BD_AUDIO,        // struct stream_bd_audio* (metadata only)
+     STREAM_CTRL_OPEN_BD_AUDIO,       // struct stream_bd_audio* (owned stream)
++    STREAM_CTRL_SET_BD_AUDIO_RESUME, // struct stream_bd_audio_resume* (last audible PTS)
++    STREAM_CTRL_GET_BD_AUDIO_RESUME, // struct stream_bd_audio_resume* (consume once)
+     STREAM_CTRL_GET_STILL,           // struct stream_still_req*
+     STREAM_CTRL_SET_STILL_PAGE,      // int*, force the shown still page
+     STREAM_CTRL_NAV_DRAIN_ENABLE,    // start holding EOF at jump boundaries
+@@ -196,6 +198,11 @@ struct stream_bd_audio {
+     struct stream *stream; // caller owns; only OPEN populates this
+ };
+ 
++struct stream_bd_audio_resume {
++    uint32_t discontinuity_id;
++    double played_pts; // output-timeline PTS actually heard before the nav flush
++};
++
+ struct stream_lang_req {
+     int type;     // STREAM_AUDIO, STREAM_SUB
+     int id;
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 73eab80..c0ceb12 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -185,6 +185,8 @@ struct bluray_priv_s {
+     int slideshow_playlist;
+     uint8_t *slideshow_mpls;
+     size_t slideshow_mpls_size;
++    struct stream_bd_audio_resume menu_audio_resume;
++    bool menu_audio_resume_valid;
+ };
+ 
+ static bool is_http_url(const char *device);
+@@ -941,6 +943,28 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+         audio->stream = open_slideshow_audio(s, audio);
+         return audio->stream ? STREAM_OK : STREAM_ERROR;
+     }
++    case STREAM_CTRL_SET_BD_AUDIO_RESUME: {
++        const struct stream_bd_audio_resume *resume = arg;
++        mp_mutex_lock(&b->overlay_lock);
++        bool valid = b->hdmv_mode && resume &&
++            resume->discontinuity_id == b->discontinuity_id;
++        if (valid) {
++            b->menu_audio_resume = *resume;
++            b->menu_audio_resume_valid = true;
++        }
++        mp_mutex_unlock(&b->overlay_lock);
++        return valid ? STREAM_OK : STREAM_UNSUPPORTED;
++    }
++    case STREAM_CTRL_GET_BD_AUDIO_RESUME: {
++        mp_mutex_lock(&b->overlay_lock);
++        bool valid = b->menu_audio_resume_valid;
++        if (valid) {
++            *(struct stream_bd_audio_resume *)arg = b->menu_audio_resume;
++            b->menu_audio_resume_valid = false;
++        }
++        mp_mutex_unlock(&b->overlay_lock);
++        return valid ? STREAM_OK : STREAM_UNSUPPORTED;
++    }
+     case STREAM_CTRL_GET_NUM_CHAPTERS: {
+         mp_mutex_lock(&b->overlay_lock);
+         const BLURAY_TITLE_INFO *ti = b->title_info;
+-- 
+2.54.0.windows.1
+

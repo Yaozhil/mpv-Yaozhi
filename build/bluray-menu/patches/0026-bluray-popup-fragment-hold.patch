@@ -1,0 +1,98 @@
+From 58c4678d45d152104a0bc9e356c57250bcb6eba6 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 23 Sep 2026 10:50:09 +0800
+Subject: [PATCH] bluray: hold tall popup fragments until complete IG page
+
+---
+ stream/stream_bluray.c | 39 +++++++++++++++++++++++++++++++++++----
+ 1 file changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index c0ceb12..a6fec4e 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -160,7 +160,7 @@ struct bluray_priv_s {
+     mp_mutex overlay_lock;
+     // HDMV popup pages can publish a temporary fragment before the authored
+     // page arrives. Hold that first composition off-screen while video runs.
+-    bool popup_pending, popup_pending_visible;
++    bool popup_pending, popup_pending_visible, popup_fragment;
+     double popup_started, popup_last_flush;
+ 
+     uint32_t nav_change_id;          // bumped on overlay FLUSH/HIDE events
+@@ -356,6 +356,29 @@ static void bd_overlay_flush(struct bluray_priv_s *priv, struct bd_overlay_plane
+     priv->nav_change_id++;
+ }
+ 
++// Some HDMV popups first flush a narrow, full-height edge of their eventual
++// panel. Waiting a fixed 380 ms is not enough: the complete page can arrive
++// much later while an intro clip is still transitioning. This shape check is
++// only used for an explicitly requested popup, never for ordinary IG pages.
++static bool bd_overlay_tall_sliver(const struct bd_overlay_plane *p)
++{
++    if (!p->publish || p->disp_w <= 0 || p->disp_h <= 0)
++        return false;
++    int left = p->w, right = -1, top = p->h, bottom = -1;
++    for (int y = 0; y < p->h; y++) {
++        for (int x = 0; x < p->w; x++) {
++            if (!(p->publish[(size_t)y * p->w + x] & 0xFF000000))
++                continue;
++            left = MPMIN(left, x);
++            right = MPMAX(right, x);
++            top = MPMIN(top, y);
++            bottom = MPMAX(bottom, y);
++        }
++    }
++    return right >= left && (right - left + 1) * 8 < p->disp_w &&
++           (bottom - top + 1) * 3 > p->disp_h;
++}
++
+ static enum pl_color_system bd_overlay_csp(struct bluray_priv_s *priv)
+ {
+     const BLURAY_TITLE_INFO *ti = priv->title_info;
+@@ -480,8 +503,10 @@ static void bd_yuv_overlay_cb(void *handle, const struct bd_overlay_s *ov)
+     case BD_OVERLAY_CLOSE:
+     case BD_OVERLAY_HIDE:
+         bd_overlay_hide(priv, p);
+-        if (priv->popup_pending)
++        if (priv->popup_pending) {
+             priv->popup_pending_visible = false;
++            priv->popup_fragment = true;
++        }
+         break;
+     case BD_OVERLAY_CLEAR:
+         bd_overlay_clear(p);
+@@ -507,6 +532,7 @@ static void bd_yuv_overlay_cb(void *handle, const struct bd_overlay_s *ov)
+         bd_overlay_flush(priv, p);
+         if (priv->popup_pending) {
+             priv->popup_pending_visible = p->visible;
++            priv->popup_fragment = bd_overlay_tall_sliver(p);
+             priv->popup_last_flush = mp_time_sec();
+             p->visible = false;
+         }
+@@ -1165,6 +1191,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+             // the existing page and must never reveal an older composition.
+             b->popup_pending = !b->bdj_nav && !b->ig.visible;
+             b->popup_pending_visible = false;
++            b->popup_fragment = true;
+             b->popup_started = mp_time_sec();
+             b->popup_last_flush = 0;
+             mp_mutex_unlock(&b->overlay_lock);
+@@ -1202,8 +1229,12 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+     case STREAM_CTRL_GET_NAV_STATE: {
+         struct stream_nav_state *st = arg;
+         mp_mutex_lock(&b->overlay_lock);
+-        if (b->popup_pending && mp_time_sec() - b->popup_started >= 0.38 &&
+-            (!b->popup_last_flush || mp_time_sec() - b->popup_last_flush >= 0.02))
++        double popup_elapsed = mp_time_sec() - b->popup_started;
++        bool popup_settled = b->popup_last_flush &&
++            mp_time_sec() - b->popup_last_flush >= 0.02;
++        if (b->popup_pending &&
++            ((popup_settled && !b->popup_fragment && popup_elapsed >= 0.38) ||
++             popup_elapsed >= 2.5))
+         {
+             b->popup_pending = false;
+             if (b->ig.visible != b->popup_pending_visible) {
+-- 
+2.54.0.windows.1
+
