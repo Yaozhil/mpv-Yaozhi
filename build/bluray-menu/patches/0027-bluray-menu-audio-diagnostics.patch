@@ -1,0 +1,43 @@
+From c1da5d6b925028f6dcf51bd4b91d1743e5aa4e66 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 23 Sep 2026 11:30:31 +0800
+Subject: [PATCH] bluray: trace menu soundtrack continuity at disc jumps
+
+---
+ demux/demux_disc.c | 6 ++++++
+ player/discnav.c   | 2 ++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 12757d2..05a517f 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -984,6 +984,12 @@ static bool read_menu_audio(struct demuxer *demuxer, struct demux_packet **out)
+             STREAM_CTRL_GET_BD_AUDIO_RESUME, &resume) >= 1;
+         double lead = p->menu_audio_pts - resume.played_pts;
+         double length = p->menu_audio_info.out_time - p->menu_audio_info.in_time;
++        MP_VERBOSE(demuxer, "slideshow audio jump: id %u saved %u have %d "
++                   "origin %d repeat %d read %.6f played %.6f lead %.6f "
++                   "length %.6f\n", p->last_discontinuity_id,
++                   resume.discontinuity_id, have_resume,
++                   p->menu_audio_origin_valid, p->menu_audio_info.repeat,
++                   p->menu_audio_pts, resume.played_pts, lead, length);
+         if (have_resume && resume.discontinuity_id == p->last_discontinuity_id &&
+             p->menu_audio_origin_valid && p->menu_audio_info.repeat &&
+             isfinite(resume.played_pts) && lead >= -0.05 && lead <= 2.0 &&
+diff --git a/player/discnav.c b/player/discnav.c
+index 1662d36..1261456 100644
+--- a/player/discnav.c
++++ b/player/discnav.c
+@@ -299,6 +299,8 @@ static void check_async_discontinuity(struct MPContext *mpctx, struct stream *s,
+     // the last audible PTS so it can resume the same clip at the right sample
+     // instead of jumping ahead by the discarded queue length.
+     double audible = playing_audio_pts(mpctx);
++    MP_VERBOSE(s, "disc audio before jump: id %u played %.6f\n",
++               nav->discontinuity_id, audible);
+     if (audible != MP_NOPTS_VALUE) {
+         struct stream_bd_audio_resume resume = {
+             .discontinuity_id = nav->discontinuity_id,
+-- 
+2.54.0.windows.1
+

@@ -42,7 +42,8 @@
     "build/bluray-menu/patches/0023-native-presentation-reuse.patch": "96652f7ceffc0ac6e74c5bb8e5ed1b6f52877b7ce078614776a7c5b1ac482865",
     "build/bluray-menu/patches/0024-bluray-popup-atomic-overlay.patch": "39ee4167041d89aedb6a191b4f34e8fa1bc9d478b0665919b9298a4b5607d607",
     "build/bluray-menu/patches/0025-bluray-menu-audio-resume.patch": "72eec7c664f210c46c0bc920cb011cd4e5263ca39b072e4df9d60837920199be",
-    "build/bluray-menu/patches/0026-bluray-popup-fragment-hold.patch": "536c0c931e6909309b34646a5a47c0d8a5183b93974f4d84b349fc73bba79fdb"
+    "build/bluray-menu/patches/0026-bluray-popup-fragment-hold.patch": "536c0c931e6909309b34646a5a47c0d8a5183b93974f4d84b349fc73bba79fdb",
+    "build/bluray-menu/patches/0027-bluray-menu-audio-diagnostics.patch": "7001ebcc9ab3c13112905a2756782ce066640926ff91c980f32dc7b7498df93b"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
