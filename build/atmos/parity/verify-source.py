@@ -49,8 +49,9 @@ if not args.inspect_existing:
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0025-bluray-menu-audio-resume.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0026-bluray-popup-fragment-hold.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0027-bluray-menu-audio-diagnostics.patch'))
+    git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0028-bluray-menu-audio-queue-retain.patch'))
     git('am','--3way',str(here/'mpv-9100-omniphony-parity.patch'))
-assert git('rev-list','--count','HEAD').strip()=='40'
+assert git('rev-list','--count','HEAD').strip()=='41'
 assert 'Add current Omniphony renderer and ASIO' in git('log','-1','--format=%s')
 assert not git('status','--porcelain').strip()
 text=(source/'filters/f_swresample.c').read_text(encoding='utf-8')
@@ -59,7 +60,7 @@ assert 'mp_chmap_to_av_layout(&out_layout, &map_out)' in text
 assert 'VDCTRL_SET_EXTRA_HW_FRAMES' in (source/'filters/f_decoder_wrapper.h').read_text(encoding='utf-8')
 assert 'p->dl->output_latency_samples(p->renderer)' in (source/'audio/decode/ad_orender.c').read_text(encoding='utf-8')
 assert 'visible && !await_video' in (source/'player/discnav.c').read_text(encoding='utf-8')
-result={'result':'PASS','scope':'fresh exact source + 17 main patches + HDMV video-ready, title/context and late-EL fixes + 28-patch renderer delta',
+result={'result':'PASS','scope':'fresh exact source + 17 main patches + HDMV video-ready, title/context, late-EL and menu audio queue fixes + 29-patch renderer delta',
         'source':str(source),'compiled':False}
 (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 print(json.dumps(result))

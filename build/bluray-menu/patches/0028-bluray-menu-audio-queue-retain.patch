@@ -1,0 +1,177 @@
+From b6682cd08d17c0ef4c77e2f6547d6e901a4ad09a Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 23 Sep 2026 13:22:17 +0800
+Subject: [PATCH] bluray: retain queued menu audio across same-page jumps
+
+---
+ demux/demux_disc.c     | 20 +++++++++++---------
+ player/discnav.c       | 41 +++++++++++++++++++++++++++++++++--------
+ stream/stream.h        |  3 +++
+ stream/stream_bluray.c |  2 ++
+ 4 files changed, 49 insertions(+), 17 deletions(-)
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 05a517f..a79da1b 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -976,26 +976,28 @@ static bool read_menu_audio(struct demuxer *demuxer, struct demux_packet **out)
+     if (!p->menu_audio || !p->menu_audio_sh ||
+         !demux_stream_is_selected(p->menu_audio_sh)) return false;
+     if (p->menu_audio_generation != p->last_discontinuity_id) {
+-        // The player's nav seek discards audio already queued at the device.
+-        // Keep the same clip, but rewind the private demuxer by precisely the
+-        // lost output lead when we have a valid pre-flush audible position.
++        // A regular nav seek discards device output; a same-menu page jump
++        // preserves it. Resume the private clip at the audible cursor after a
++        // flush, or at the queued output tail when that audio is still heard.
+         struct stream_bd_audio_resume resume = {0};
+         bool have_resume = stream_control(demuxer->stream,
+             STREAM_CTRL_GET_BD_AUDIO_RESUME, &resume) >= 1;
+-        double lead = p->menu_audio_pts - resume.played_pts;
++        double target_pts = resume.keep_output ? resume.queued_pts : resume.played_pts;
++        double lead = p->menu_audio_pts - target_pts;
+         double length = p->menu_audio_info.out_time - p->menu_audio_info.in_time;
+         MP_VERBOSE(demuxer, "slideshow audio jump: id %u saved %u have %d "
+-                   "origin %d repeat %d read %.6f played %.6f lead %.6f "
+-                   "length %.6f\n", p->last_discontinuity_id,
++                   "origin %d repeat %d read %.6f played %.6f queued %.6f "
++                   "keep %d lead %.6f length %.6f\n", p->last_discontinuity_id,
+                    resume.discontinuity_id, have_resume,
+                    p->menu_audio_origin_valid, p->menu_audio_info.repeat,
+-                   p->menu_audio_pts, resume.played_pts, lead, length);
++                   p->menu_audio_pts, resume.played_pts, resume.queued_pts,
++                   resume.keep_output, lead, length);
+         if (have_resume && resume.discontinuity_id == p->last_discontinuity_id &&
+             p->menu_audio_origin_valid && p->menu_audio_info.repeat &&
+-            isfinite(resume.played_pts) && lead >= -0.05 && lead <= 2.0 &&
++            isfinite(target_pts) && lead >= -0.05 && lead <= 10.0 &&
+             length > 0)
+         {
+-            double raw = resume.played_pts + p->menu_audio_origin;
++            double raw = target_pts + p->menu_audio_origin;
+             raw = p->menu_audio_info.in_time +
+                 fmod(fmod(raw - p->menu_audio_info.in_time, length) + length, length);
+             demux_seek(p->menu_audio, raw, SEEK_HR);
+diff --git a/player/discnav.c b/player/discnav.c
+index 1261456..59980e8 100644
+--- a/player/discnav.c
++++ b/player/discnav.c
+@@ -78,6 +78,12 @@ struct disc_nav_state {
+     // Last menu_active pushed through property-change notification.
+     bool last_menu_active;
+     bool menu_active_seen;
++
++    // Previous stable HDMV still-menu soundtrack. The playlist and selected
++    // audio PID identify the same type-2 background clip across page jumps.
++    bool menu_audio_seen;
++    int menu_audio_playlist;
++    int menu_audio_id;
+ };
+ 
+ static bool is_dvd_sub_track(struct track *t)
+@@ -294,23 +300,37 @@ static void check_async_discontinuity(struct MPContext *mpctx, struct stream *s,
+     double t = 0;
+     if (stream_control(s, STREAM_CTRL_GET_CURRENT_TIME, &t) < 1)
+         t = 0;
+-    // A looping type-2 menu soundtrack is read ahead of the audio device.
+-    // The regular nav seek flushes that queued audio; give the disc demuxer
+-    // the last audible PTS so it can resume the same clip at the right sample
+-    // instead of jumping ahead by the discarded queue length.
++    // Keep output already queued at the device only when this is another page
++    // of the same HDMV still menu and its background audio PID is unchanged.
++    // Ordinary title/track changes retain the normal flush and resync path.
+     double audible = playing_audio_pts(mpctx);
+-    MP_VERBOSE(s, "disc audio before jump: id %u played %.6f\n",
+-               nav->discontinuity_id, audible);
++    double queued = written_audio_pts(mpctx);
++    bool keep_audio = st->menu_audio_seen && nav->hdmv_menu && nav->menu_active &&
++        nav->playlist == st->menu_audio_playlist &&
++        nav->active_audio_id == st->menu_audio_id &&
++        mpctx->ao_chain && mpctx->ao_chain->track &&
++        mpctx->ao_chain->track->stream &&
++        mpctx->ao_chain->track->stream->demuxer_id == nav->active_audio_id &&
++        mpctx->audio_status == STATUS_PLAYING &&
++        audible != MP_NOPTS_VALUE && queued != MP_NOPTS_VALUE &&
++        queued >= audible && queued - audible <= 4.0;
++    MP_VERBOSE(s, "disc audio before jump: id %u played %.6f queued %.6f "
++               "same-menu %d\n", nav->discontinuity_id, audible, queued,
++               keep_audio);
+     if (audible != MP_NOPTS_VALUE) {
+         struct stream_bd_audio_resume resume = {
+             .discontinuity_id = nav->discontinuity_id,
+             .played_pts = audible,
++            .queued_pts = queued,
++            .keep_output = keep_audio,
+         };
+-        stream_control(s, STREAM_CTRL_SET_BD_AUDIO_RESUME, &resume);
++        if (stream_control(s, STREAM_CTRL_SET_BD_AUDIO_RESUME, &resume) < 1)
++            keep_audio = false;
+     }
+     MP_VERBOSE(s, "disc jumped (id %u), resync seek to %f\n",
+                nav->discontinuity_id, t);
+-    queue_seek(mpctx, MPSEEK_ABSOLUTE, t, MPSEEK_KEYFRAME, 0);
++    queue_seek(mpctx, MPSEEK_ABSOLUTE, t, MPSEEK_KEYFRAME,
++               keep_audio ? MPSEEK_FLAG_NOFLUSH : 0);
+ }
+ 
+ static struct track *find_track_by_demuxer_id(struct MPContext *mpctx,
+@@ -509,6 +529,7 @@ void disc_nav_update(struct MPContext *mpctx)
+     }
+ 
+     if (!have) {
++        st->menu_audio_seen = false;
+         if (st->overlay_visible) {
+             osd_set_bitmaps(mpctx->osd, OSDTYPE_DISC_MENU, NULL);
+             mp_input_disable_section(mpctx->input, "discnav");
+@@ -533,6 +554,10 @@ void disc_nav_update(struct MPContext *mpctx)
+     }
+ 
+     check_async_discontinuity(mpctx, s, &nav);
++    st->menu_audio_seen = nav.hdmv_menu && nav.menu_active &&
++        nav.still_active && !nav.no_audio && nav.active_audio_id >= 0;
++    st->menu_audio_playlist = nav.playlist;
++    st->menu_audio_id = nav.active_audio_id;
+     sync_current_edition(mpctx, s, &nav);
+     sync_disc_track_selection(mpctx, s, &nav);
+ 
+diff --git a/stream/stream.h b/stream/stream.h
+index c8ed0c9..b73033d 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -188,6 +188,7 @@ struct stream_nav_state {
+     bool sub_visible;   // disc says subs should be displayed
+     int angle;          // 1-based current angle (0 if unknown)
+     int num_angles;     // total angle count (0 if unknown or always 1)
++    int playlist;       // Blu-ray playlist identity for still-menu continuity
+ };
+ 
+ struct stream_bd_audio {
+@@ -201,6 +202,8 @@ struct stream_bd_audio {
+ struct stream_bd_audio_resume {
+     uint32_t discontinuity_id;
+     double played_pts; // output-timeline PTS actually heard before the nav flush
++    double queued_pts; // tail of audio already written to the output device
++    bool keep_output;  // same looping soundtrack on both sides of the jump
+ };
+ 
+ struct stream_lang_req {
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index a6fec4e..1c1ab26 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -1278,6 +1278,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+                 .sub_visible = b->sub_visible,
+                 .angle = b->current_angle + 1,
+                 .num_angles = ti ? ti->angle_count : 0,
++                .playlist = b->current_playlist,
+             };
+             mp_mutex_unlock(&b->overlay_lock);
+             return STREAM_OK;
+@@ -1301,6 +1302,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+             .sub_visible = b->sub_visible,
+             .angle = b->current_angle + 1,
+             .num_angles = ti ? ti->angle_count : 0,
++            .playlist = b->current_playlist,
+         };
+         mp_mutex_unlock(&b->overlay_lock);
+         return STREAM_OK;

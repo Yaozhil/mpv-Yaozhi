@@ -62,6 +62,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0024-bluray-popup-atomic-overlay
 shutil.copyfile(root/'build/bluray-menu/patches/0025-bluray-menu-audio-resume.patch', packages/'mpv-9019-bluray-menu-audio-resume.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0026-bluray-popup-fragment-hold.patch', packages/'mpv-9020-bluray-popup-fragment-hold.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0027-bluray-menu-audio-diagnostics.patch', packages/'mpv-9021-bluray-menu-audio-diagnostics.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0028-bluray-menu-audio-queue-retain.patch', packages/'mpv-9022-bluray-menu-audio-queue-retain.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
