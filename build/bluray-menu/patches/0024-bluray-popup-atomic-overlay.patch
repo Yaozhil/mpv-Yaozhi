@@ -1,0 +1,116 @@
+From 37c1f55d451f2c5fdb5d8bc672be4efcc56020ac Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 23 Sep 2026 10:23:44 +0800
+Subject: [PATCH] bluray: hold incomplete popup IG composition until page
+ settles
+
+---
+ stream/stream_bluray.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 8900d17..73eab80 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -48,6 +48,7 @@
+ #include "options/options.h"
+ #include "options/path.h"
+ #include "osdep/threads.h"
++#include "osdep/timer.h"
+ #include "stream.h"
+ #include "bluray_slideshow.h"
+ #include "osdep/io.h"
+@@ -157,6 +158,10 @@ struct bluray_priv_s {
+     struct bd_overlay_plane ig;
+     struct bd_overlay_plane pg;
+     mp_mutex overlay_lock;
++    // HDMV popup pages can publish a temporary fragment before the authored
++    // page arrives. Hold that first composition off-screen while video runs.
++    bool popup_pending, popup_pending_visible;
++    double popup_started, popup_last_flush;
+ 
+     uint32_t nav_change_id;          // bumped on overlay FLUSH/HIDE events
+     uint32_t discontinuity_id;       // bumped on actions that may hop (SELECT...)
+@@ -473,6 +478,8 @@ static void bd_yuv_overlay_cb(void *handle, const struct bd_overlay_s *ov)
+     case BD_OVERLAY_CLOSE:
+     case BD_OVERLAY_HIDE:
+         bd_overlay_hide(priv, p);
++        if (priv->popup_pending)
++            priv->popup_pending_visible = false;
+         break;
+     case BD_OVERLAY_CLEAR:
+         bd_overlay_clear(p);
+@@ -496,6 +503,11 @@ static void bd_yuv_overlay_cb(void *handle, const struct bd_overlay_s *ov)
+         break;
+     case BD_OVERLAY_FLUSH:
+         bd_overlay_flush(priv, p);
++        if (priv->popup_pending) {
++            priv->popup_pending_visible = p->visible;
++            priv->popup_last_flush = mp_time_sec();
++            p->visible = false;
++        }
+         break;
+     default:
+         break;
+@@ -553,6 +565,10 @@ static void bd_argb_overlay_cb(void *handle, const BD_ARGB_OVERLAY *ov)
+     struct bd_overlay_plane *p = ov->plane == BD_OVERLAY_IG ? &priv->ig
+                                                             : &priv->pg;
+     mp_mutex_lock(&priv->overlay_lock);
++    // A mixed/BD-J disc may deliver a popup through the ARGB plane instead.
++    // The YUV composition hold does not apply to that path.
++    if (ov->plane == BD_OVERLAY_IG)
++        priv->popup_pending = false;
+     switch (ov->cmd) {
+     case BD_ARGB_OVERLAY_INIT:
+         if (bd_overlay_ensure(priv, p, ov->w, ov->h)) {
+@@ -1114,15 +1130,29 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+         case STREAM_NAV_MENU_ROOT:
+         case STREAM_NAV_MENU_TITLE:
+             // BD doesn't distinguish "title menu", both map to disc root.
++            mp_mutex_lock(&b->overlay_lock);
++            b->popup_pending = false;
++            mp_mutex_unlock(&b->overlay_lock);
+             bd_menu_call(b->bd, -1);
+             break;
+         case STREAM_NAV_MENU_POPUP:
++            mp_mutex_lock(&b->overlay_lock);
++            // Only an opening popup needs the hold. A second press dismisses
++            // the existing page and must never reveal an older composition.
++            b->popup_pending = !b->bdj_nav && !b->ig.visible;
++            b->popup_pending_visible = false;
++            b->popup_started = mp_time_sec();
++            b->popup_last_flush = 0;
++            mp_mutex_unlock(&b->overlay_lock);
+             key = BD_VK_POPUP;
+             break;
+         case STREAM_NAV_PREV_MENU:
+             // No dedicated "previous menu" key; popup-toggle is the closest
+             // equivalent and behaves like "dismiss current menu" on most
+             // discs when already in popup.
++            mp_mutex_lock(&b->overlay_lock);
++            b->popup_pending = false;
++            mp_mutex_unlock(&b->overlay_lock);
+             key = BD_VK_POPUP;
+             break;
+         case STREAM_NAV_MOUSE_MOVE:
+@@ -1147,6 +1177,17 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+     }
+     case STREAM_CTRL_GET_NAV_STATE: {
+         struct stream_nav_state *st = arg;
++        mp_mutex_lock(&b->overlay_lock);
++        if (b->popup_pending && mp_time_sec() - b->popup_started >= 0.38 &&
++            (!b->popup_last_flush || mp_time_sec() - b->popup_last_flush >= 0.02))
++        {
++            b->popup_pending = false;
++            if (b->ig.visible != b->popup_pending_visible) {
++                b->ig.visible = b->popup_pending_visible;
++                b->nav_change_id++;
++            }
++        }
++        mp_mutex_unlock(&b->overlay_lock);
+         int audio_pid = -1;
+         int sub_pid = -1;
+         bool no_audio = false;
+-- 
+2.54.0.windows.1
+
