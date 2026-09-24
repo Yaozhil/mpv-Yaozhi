@@ -6,6 +6,8 @@ Subject: [PATCH] Add current Omniphony renderer and ASIO over the complete main 
 Integrate mgth/mpv-omniphony 6b474e387d30fabec8927880a25075f288d675d3
 patches-master 0001-0028. Preserve the main core's native/unknown channel
 mapping fix instead of overwriting it with the overlapping 9001 patch.
+Match liborender's 48 kHz default when Blu-ray stream probing leaves the
+container sample rate unknown; never send a 0 Hz frame to mpv's audio chain.
 Original source authors and copyright notices are retained in the files.
 Build-only upstream CI additions are excluded.
 ---
@@ -798,7 +800,7 @@ index 0000000..212caa7
 +    struct priv *p = da->priv;
 +    p->log = da->log;
 +    p->codec = codec;
-+    p->sample_rate = codec->samplerate;
++    p->sample_rate = codec->samplerate > 0 ? codec->samplerate : 48000;
 +    p->active_path = PATH_NONE;
 +    p->source_spatial = codec_is_spatial_hint(codec);
 +    /* The hint is provisional: routing follows the *decoded* fact (the

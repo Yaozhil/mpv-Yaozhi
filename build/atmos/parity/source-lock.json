@@ -9,7 +9,7 @@
   "libbluray_commit": "065247e5ef40ccf39857db81e2c1368354a23ef8",
   "patches": {
     "main-core.patch": "75169a4a84a030bca9efb1cca627d8f643b447f81e11eee85e6fbce65c3431aa",
-    "mpv-9100-omniphony-parity.patch": "bf80b91ecf8deaec64a1640ae2f84be7b44d23f54ce99db278bba1dbadb4d273",
+    "mpv-9100-omniphony-parity.patch": "e260b59f67babd3c5a94edd98611b6ea7e37426666fcaaef9ca19a8a232cb207",
     "libvpl-9000-mingw-secure-crt.patch": "02faa37c742529843763c5c7a572e43ab8fcbd0141e49423bc0b200e86c95b16"
   },
   "integration_notes": [
