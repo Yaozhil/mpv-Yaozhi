@@ -1196,6 +1196,9 @@ jobs:
           }
 
           $versionText = (& $mpv --version 2>&1 | ForEach-Object { "$_" }) -join "`n"
+          if ($versionText -notmatch '(?m)^mpv\s+\S+.*\(mpv-Yaozhi\)') {
+            throw "mpv is missing the common mpv-Yaozhi version brand: $versionText"
+          }
           if ($versionText -notmatch 'libavformat\s+62\.13\.102') {
             throw "mpv linked an unexpected libavformat version; expected 62.13.102 for Dolby Vision stream groups:`n$versionText"
           }

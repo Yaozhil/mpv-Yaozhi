@@ -1,0 +1,24 @@
+From da9e7959daa34bdb77542d94f52c012fd62edcbb Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 30 Sep 2026 23:20:18 +0800
+Subject: [PATCH] version: identify both player cores as mpv-Yaozhi
+
+---
+ common/version.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/common/version.c b/common/version.c
+index 228e3ee..3d4dee8 100644
+--- a/common/version.c
++++ b/common/version.c
+@@ -18,6 +18,6 @@
+ #include "common.h"
+ #include "version.h"
+ 
+-const char mpv_version[]  = "mpv " VERSION;
++const char mpv_version[]  = "mpv " VERSION " (mpv-Yaozhi)";
+ const char mpv_builddate[] = BUILDDATE;
+ const char mpv_copyright[] = MPVCOPYRIGHT;
+-- 
+2.54.0.windows.1
+
