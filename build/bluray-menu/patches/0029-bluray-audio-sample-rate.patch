@@ -1,0 +1,257 @@
+From a9612b23016378bb69bb35f6b681d5ba13113521 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 30 Sep 2026 16:23:06 +0800
+Subject: [PATCH] bluray: provide missing audio rates from PlayItem metadata
+
+---
+ demux/demux_disc.c         | 27 +++++++++++++++
+ stream/bluray_audio_rate.h | 71 ++++++++++++++++++++++++++++++++++++++
+ stream/stream.h            |  7 ++++
+ stream/stream_bluray.c     | 37 ++++++++++++++++++++
+ 4 files changed, 142 insertions(+)
+ create mode 100644 stream/bluray_audio_rate.h
+
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index a79da1b..9badefe 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -217,6 +217,29 @@ static void get_disc_lang(struct stream *stream, struct sh_stream *sh, bool dvd)
+         sh->lang = talloc_strdup(sh, req.name);
+ }
+ 
++static void get_bd_audio_rate(struct demuxer *demuxer, struct sh_stream *sh)
++{
++    struct priv *p = demuxer->priv;
++    if (!p->is_bd || sh->type != STREAM_AUDIO || !sh->codec ||
++        sh->codec->samplerate > 0)
++        return;
++
++    // nostreams deliberately avoids deep probing of Blu-ray menu auxiliary
++    // PIDs. Preserve that protection and obtain missing rates from the current
++    // PlayItem instead; spatial decoders need this before creating their DSP.
++    struct stream_bd_audio_rate_req req = {
++        .id = sh->demuxer_id,
++        .codec = sh->codec->codec,
++    };
++    if (stream_control(demuxer->stream, STREAM_CTRL_GET_BD_AUDIO_RATE, &req) ==
++        STREAM_OK && req.samplerate > 0)
++    {
++        sh->codec->samplerate = req.samplerate;
++        MP_VERBOSE(demuxer, "Blu-ray audio id=0x%x rate from PlayItem: %d Hz\n",
++                   sh->demuxer_id, req.samplerate);
++    }
++}
++
+ static void add_dvd_streams(demuxer_t *demuxer)
+ {
+     struct priv *p = demuxer->priv;
+@@ -388,6 +411,7 @@ static void sync_streams(struct demuxer *demuxer)
+                 }
+             }
+             get_disc_lang(demuxer->stream, outer, p->is_dvd);
++            get_bd_audio_rate(demuxer, outer);
+             MP_TARRAY_APPEND(p, p->outer_streams, p->num_outer_streams, outer);
+             demux_add_sh_stream(demuxer, outer);
+         } else if (outer->type != STREAM_SUB && outer->codec && src->codec) {
+@@ -399,6 +423,7 @@ static void sync_streams(struct demuxer *demuxer)
+                 MP_VERBOSE(demuxer, "stream %d (id=0x%x) codec changed: %s -> %s\n",
+                            n, src->demuxer_id, cur_codec, new_codec);
+                 adopt_codec_params(outer, src);
++                get_bd_audio_rate(demuxer, outer);
+             }
+         }
+ 
+@@ -952,10 +977,12 @@ static void sync_menu_audio(struct demuxer *demuxer)
+             outer->default_track = true;
+             adopt_codec_params(outer, src);
+             get_disc_lang(demuxer->stream, outer, false);
++            get_bd_audio_rate(demuxer, outer);
+             MP_TARRAY_APPEND(p, p->outer_streams, p->num_outer_streams, outer);
+             demux_add_sh_stream(demuxer, outer);
+         } else {
+             adopt_codec_params(outer, src);
++            get_bd_audio_rate(demuxer, outer);
+         }
+         p->menu_audio_sh = outer;
+     }
+diff --git a/stream/bluray_audio_rate.h b/stream/bluray_audio_rate.h
+new file mode 100644
+index 0000000..d41eb4a
+--- /dev/null
++++ b/stream/bluray_audio_rate.h
+@@ -0,0 +1,71 @@
++/*
++ * This file is part of mpv and is licensed under the GNU Lesser General
++ * Public License, version 2.1 or later.
++ */
++#ifndef MP_BLURAY_AUDIO_RATE_H
++#define MP_BLURAY_AUDIO_RATE_H
++
++#include <stdbool.h>
++#include <string.h>
++#include <libbluray/bluray.h>
++
++// MPLS rates describe the complete presentation. Combined rates also describe
++// a lower-rate AC-3/DTS compatibility core, so match the demuxed codec first.
++static inline int mp_bluray_audio_sample_rate(int coding_type, int rate,
++                                            const char *codec)
++{
++    if (!codec)
++        return 0;
++
++    bool hd = false;
++    switch (coding_type) {
++    case BLURAY_STREAM_TYPE_AUDIO_LPCM:
++        if (strcmp(codec, "pcm_bluray")) return 0;
++        break;
++    case BLURAY_STREAM_TYPE_AUDIO_AC3:
++        if (strcmp(codec, "ac3")) return 0;
++        break;
++    case BLURAY_STREAM_TYPE_AUDIO_DTS:
++        if (strcmp(codec, "dts")) return 0;
++        break;
++    case BLURAY_STREAM_TYPE_AUDIO_TRUHD:
++        // lavf can expose the interleaved AC-3 companion with the same PID.
++        if (!strcmp(codec, "ac3"))
++            return rate == BLURAY_AUDIO_RATE_48 ||
++                   rate == BLURAY_AUDIO_RATE_96 ||
++                   rate == BLURAY_AUDIO_RATE_192 ||
++                   rate == BLURAY_AUDIO_RATE_96_COMBO ||
++                   rate == BLURAY_AUDIO_RATE_192_COMBO ? 48000 : 0;
++        if (strcmp(codec, "truehd")) return 0;
++        hd = true;
++        break;
++    case BLURAY_STREAM_TYPE_AUDIO_DTSHD:
++    case BLURAY_STREAM_TYPE_AUDIO_DTSHD_MASTER:
++    case BLURAY_STREAM_TYPE_AUDIO_DTSHD_SECONDARY:
++        if (strcmp(codec, "dts")) return 0;
++        hd = true;
++        break;
++    case BLURAY_STREAM_TYPE_AUDIO_AC3PLUS:
++    case BLURAY_STREAM_TYPE_AUDIO_AC3PLUS_SECONDARY:
++        if (strcmp(codec, "eac3")) return 0;
++        break;
++    default:
++        return 0;
++    }
++
++    switch (rate) {
++    case BLURAY_AUDIO_RATE_48:  return 48000;
++    case BLURAY_AUDIO_RATE_96:  return 96000;
++    case BLURAY_AUDIO_RATE_192: return 192000;
++    case BLURAY_AUDIO_RATE_96_COMBO:
++        return hd ? 96000 : 48000;
++    case BLURAY_AUDIO_RATE_192_COMBO:
++        // The core can be either 48 or 96 kHz; do not guess when only the
++        // core was demuxed. The complete TrueHD/DTS-HD presentation is 192 kHz.
++        return hd ? 192000 : 0;
++    default:
++        return 0;
++    }
++}
++
++#endif
+diff --git a/stream/stream.h b/stream/stream.h
+index b73033d..80a8612 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -92,6 +92,7 @@ enum stream_ctrl {
+     STREAM_CTRL_GET_TITLE_LENGTH,    // double* (in: title number, out: len)
+     STREAM_CTRL_GET_TITLE_PLAYLIST,  // double* (in: title number, out: playlist)
+     STREAM_CTRL_GET_LANG,
++    STREAM_CTRL_GET_BD_AUDIO_RATE,   // struct stream_bd_audio_rate_req*
+     STREAM_CTRL_GET_CURRENT_TITLE,
+     STREAM_CTRL_SET_CURRENT_TITLE,
+     STREAM_CTRL_NAV_CMD,             // struct stream_nav_cmd*
+@@ -212,6 +213,12 @@ struct stream_lang_req {
+     char name[50];
+ };
+ 
++struct stream_bd_audio_rate_req {
++    int id;             // input: mpeg-ts PID
++    const char *codec;  // input: demuxed codec, including compatibility cores
++    int samplerate;     // output: presentation rate, 0 when unknown/ambiguous
++};
++
+ struct stream_dvd_info_req {
+     unsigned int palette[16];
+     int num_subs;
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index 1c1ab26..1b4f1b6 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -51,6 +51,7 @@
+ #include "osdep/timer.h"
+ #include "stream.h"
+ #include "bluray_slideshow.h"
++#include "bluray_audio_rate.h"
+ #include "osdep/io.h"
+ #include "sub/osd.h"
+ #include "sub/img_convert.h"
+@@ -136,6 +137,7 @@ struct bluray_priv_s {
+     int current_angle;
+     int current_title;
+     int current_playlist;
++    int current_playitem;
+ 
+     // Cached map from filtered title index (0..num_titles-1) to mpls_id.
+     uint32_t *title_to_playlist;
+@@ -791,6 +793,7 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+                 bd_free_title_info(b->title_info);
+             b->title_info = ti;
+             b->current_playlist = playlist;
++            b->current_playitem = 0;
+             b->current_title = title;
+             if (b->hdmv_mode)
+                 b->discontinuity_id++;
+@@ -826,6 +829,11 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+             mp_mutex_unlock(&b->overlay_lock);
+             break;
+         }
++        case BD_EVENT_PLAYITEM:
++            mp_mutex_lock(&b->overlay_lock);
++            b->current_playitem = ev.param;
++            mp_mutex_unlock(&b->overlay_lock);
++            break;
+         case BD_EVENT_AUDIO_STREAM:
+             mp_mutex_lock(&b->overlay_lock);
+             b->audio_stream_num = ev.param;
+@@ -1119,6 +1127,35 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+         bd_free_title_info(ti);
+         return STREAM_OK;
+     }
++    case STREAM_CTRL_GET_BD_AUDIO_RATE: {
++        struct stream_bd_audio_rate_req *req = arg;
++        req->samplerate = 0;
++        mp_mutex_lock(&b->overlay_lock);
++        const BLURAY_TITLE_INFO *ti = b->title_info;
++        if (ti && b->current_playitem >= 0 &&
++            (uint32_t)b->current_playitem < ti->clip_count)
++        {
++            const BLURAY_CLIP_INFO *clip = &ti->clips[b->current_playitem];
++            const BLURAY_STREAM_INFO *streams[] = {
++                clip->audio_streams, clip->sec_audio_streams,
++            };
++            const int counts[] = {
++                clip->audio_stream_count, clip->sec_audio_stream_count,
++            };
++            for (int group = 0; group < 2 && !req->samplerate; group++) {
++                for (int n = 0; n < counts[group]; n++) {
++                    const BLURAY_STREAM_INFO *si = &streams[group][n];
++                    if (si->pid == req->id) {
++                        req->samplerate = mp_bluray_audio_sample_rate(
++                            si->coding_type, si->rate, req->codec);
++                        break;
++                    }
++                }
++            }
++        }
++        mp_mutex_unlock(&b->overlay_lock);
++        return req->samplerate > 0 ? STREAM_OK : STREAM_UNSUPPORTED;
++    }
+     case STREAM_CTRL_GET_LANG: {
+         int rc = STREAM_ERROR;
+         mp_mutex_lock(&b->overlay_lock);
+-- 
+2.54.0.windows.1
+

@@ -938,6 +938,17 @@ jobs:
             --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
             --work mkv-tail-tags-verification
 
+      - name: Verify Blu-ray audio metadata and independent ASS scheduling
+        if: steps.build.outcome == 'success'
+        run: |
+          source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
+          include_dir=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/include
+          gcc -Wall -Werror -I "$source_dir" -I "$include_dir" build/feedback/tests/test-bluray-audio-rate.c -o audio-rate-test
+          ./audio-rate-test
+          python3 build/feedback/tests/test-bluray-audio-metadata.py --compiler gcc --source "$source_dir" --include "$include_dir" --output artifacts/audio-metadata-test
+          gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-scheduling.c -o ass-scheduling-test
+          ./ass-scheduling-test
+
       - name: Preserve dependency cache after a failed build
         if: steps.build.outcome == 'failure'
         uses: actions/cache/save@v5

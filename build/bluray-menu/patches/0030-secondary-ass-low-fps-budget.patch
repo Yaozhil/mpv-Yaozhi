@@ -1,0 +1,281 @@
+From 3e012428df269789b1c774085720a637e5f00955 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 30 Sep 2026 16:24:37 +0800
+Subject: [PATCH] vo: budget cached ASS redraws against low-fps video deadlines
+
+---
+ video/out/secondary_ass_budget.h |  49 ++++++++++++++
+ video/out/vo.c                   | 112 +++++++++++++++++++++++++++----
+ 2 files changed, 147 insertions(+), 14 deletions(-)
+
+diff --git a/video/out/secondary_ass_budget.h b/video/out/secondary_ass_budget.h
+index 50f1c1b..824ff56 100644
+--- a/video/out/secondary_ass_budget.h
++++ b/video/out/secondary_ass_budget.h
+@@ -3,6 +3,7 @@
+ #define MP_SECONDARY_ASS_BUDGET_H
+ 
+ #include <stdint.h>
++#include <stdbool.h>
+ 
+ // VO-thread-only history of video submission time. One late CPU wakeup or
+ // first-use glyph upload must not disable otherwise affordable OSD redraws
+@@ -36,4 +37,52 @@ static inline int64_t secondary_ass_budget_sample(struct secondary_ass_budget *b
+     return sustained > gpu ? sustained : gpu;
+ }
+ 
++// Low-fps video has time between fresh frames for cheap cached redraws. A fresh
++// frame need not fit inside every subtitle tick; reserve its share of the whole
++// video period and charge only the remaining ticks for cached redraws.
++static inline bool secondary_ass_budget_low_fps(int64_t duration, int64_t interval)
++{
++    return interval > 0 && duration > 2 * interval;
++}
++
++static inline bool secondary_ass_budget_probe_due(int64_t fresh, int64_t duration,
++                                                   int64_t interval, int64_t now,
++                                                   int64_t next_probe)
++{
++    return fresh >= 0 && secondary_ass_budget_low_fps(duration, interval) &&
++           fresh < duration * 0.75 && now >= next_probe;
++}
++
++static inline bool secondary_ass_budget_affordable(int64_t fresh, int64_t redraw,
++                                                    int64_t duration,
++                                                    int64_t interval)
++{
++    if (interval <= 0 || fresh < 0 || redraw < 0)
++        return false;
++    if (!secondary_ass_budget_low_fps(duration, interval))
++        return fresh < interval * 0.75 && redraw < interval * 0.75;
++    if (fresh >= duration * 0.75)
++        return false;
++    // Permit an initial deadline-limited sample instead of waiting forever for
++    // a redraw cost which cannot exist until the first redraw has happened.
++    if (redraw <= 0)
++        return true;
++    double extra = (double)duration / interval - 1;
++    return redraw < interval * 0.75 &&
++           fresh + redraw * extra < duration * 0.75;
++}
++
++static inline bool secondary_ass_budget_before_deadline(int64_t now,
++                                                         int64_t deadline,
++                                                         int64_t fresh,
++                                                         int64_t redraw,
++                                                         int64_t margin)
++{
++    // Compare differences so absolute monotonic timestamps cannot overflow.
++    return fresh >= 0 && redraw >= 0 && margin >= 0 &&
++           deadline > now && deadline - now > fresh &&
++           deadline - now - fresh > redraw &&
++           deadline - now - fresh - redraw > margin;
++}
++
+ #endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index f0592d8..2af615d 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -164,6 +164,13 @@ struct vo_internal {
+     int64_t secondary_cost_update; // VO thread only
+     int64_t secondary_gpu_cost; // VO thread only
+     struct secondary_ass_budget secondary_budget; // VO thread only
++    int64_t secondary_redraw_cost;
++    int64_t secondary_redraw_block_cost;
++    int64_t secondary_next_probe;
++    int64_t secondary_redraw_gpu_cost; // VO thread only
++    int64_t secondary_redraw_cpu_cost; // VO thread only
++    struct secondary_ass_budget secondary_redraw_budget; // VO thread only
++    struct secondary_ass_budget secondary_redraw_block_budget; // VO thread only
+ 
+     int64_t delayed_count;
+     int64_t drop_count;
+@@ -185,6 +192,19 @@ struct vo_internal {
+     struct stats_ctx *stats;
+ };
+ 
++// Called by the VO thread, with in->lock held. Old GPU averages and redraw
++// samples cannot describe a different file, texture size or presentation chain.
++static void reset_secondary_ass_budget(struct vo_internal *in)
++{
++    in->secondary_budget = (struct secondary_ass_budget){0};
++    in->secondary_redraw_budget = (struct secondary_ass_budget){0};
++    in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
++    in->secondary_render_cost = in->secondary_gpu_cost = in->secondary_cost_update = 0;
++    in->secondary_redraw_cost = in->secondary_redraw_block_cost = 0;
++    in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
++    in->secondary_next_probe = 0;
++}
++
+ extern const struct m_sub_options gl_video_conf;
+ 
+ static void forget_frames(struct vo *vo);
+@@ -633,6 +653,7 @@ static void run_reconfig(void *p)
+     talloc_free(in->current_frame);
+     in->current_frame = NULL;
+     forget_frames(vo);
++    reset_secondary_ass_budget(in);
+     reset_vsync_timings(vo);
+     mp_mutex_unlock(&in->lock);
+ 
+@@ -855,13 +876,20 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+         // Leave time between low-fps video frames for animated secondary ASS.
+         // This changes queue lead time only, not video presentation timestamps.
+         int64_t lead = in->timing_offset;
+-        if (secondary_rate > 0 && in->secondary_render_cost <
+-                MP_TIME_S_TO_NS(0.75 / secondary_rate))
++        int64_t now = mp_time_ns();
++        int64_t interval = secondary_rate > 0
++            ? MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->vsync_interval) : 0;
++        int64_t duration = in->current_frame && !in->current_frame->display_synced
++            ? in->current_frame->duration : 0;
++        bool affordable = secondary_ass_budget_affordable(in->secondary_render_cost,
++            in->secondary_redraw_cost, duration, interval);
++        bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
++            duration, interval, now, in->secondary_next_probe);
++        if (secondary_rate > 0 && (affordable || probe))
+             lead = MPMIN(lead, MPMAX(MP_TIME_S_TO_NS(0.5 / secondary_rate),
+                 in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
+         next_pts -= lead;
+         next_pts -= in->flip_queue_offset;
+-        int64_t now = mp_time_ns();
+         if (next_pts > now)
+             r = false;
+         if (!in->wakeup_pts || next_pts < in->wakeup_pts) {
+@@ -1042,6 +1070,9 @@ static bool render_frame(struct vo *vo)
+                     in->secondary_gpu_cost = 0;
+                     for (int n = 0; n < perf->fresh.count; n++)
+                         in->secondary_gpu_cost += perf->fresh.perf[n].avg;
++                    in->secondary_redraw_gpu_cost = 0;
++                    for (int n = 0; n < perf->redraw.count; n++)
++                        in->secondary_redraw_gpu_cost += perf->redraw.perf[n].avg;
+                 }
+                 talloc_free(perf);
+                 in->secondary_cost_update = mp_time_ns();
+@@ -1050,18 +1081,28 @@ static bool render_frame(struct vo *vo)
+                                                       cpu_cost, in->secondary_gpu_cost);
+             const char *timing = getenv("MPV_NATIVE_TIMING");
+             int64_t limit = MP_TIME_S_TO_NS(0.75 / secondary_rate);
++            int64_t interval = MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate),
++                                    in->vsync_interval);
++            bool protected = !secondary_ass_budget_affordable(render_cost,
++                in->secondary_redraw_cost, duration, interval);
++            bool was_protected = !secondary_ass_budget_affordable(in->secondary_render_cost,
++                in->secondary_redraw_cost, duration, interval);
+             if (timing && strcmp(timing, "1") == 0 &&
+-                (cpu_cost >= limit || (render_cost >= limit) !=
+-                                      (in->secondary_render_cost >= limit)))
++                (cpu_cost >= limit || protected != was_protected))
+             {
+                 MP_INFO(vo, "native-ass-budget: cpu=%.3fms gpu=%.3fms "
+-                        "sustained=%.3fms limit=%.3fms protected=%d\n",
++                        "sustained=%.3fms limit=%.3fms protected=%d "
++                        "redraw=%.3fms period=%.3fms\n",
+                         cpu_cost * 1e-6, in->secondary_gpu_cost * 1e-6,
+-                        render_cost * 1e-6, limit * 1e-6, render_cost >= limit);
++                        render_cost * 1e-6, limit * 1e-6, protected,
++                        in->secondary_redraw_cost * 1e-6, duration * 1e-6);
+             }
+         } else {
+             in->secondary_budget = (struct secondary_ass_budget){0};
+             in->secondary_gpu_cost = in->secondary_cost_update = 0;
++            in->secondary_redraw_budget = (struct secondary_ass_budget){0};
++            in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
++            in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
+         }
+ 
+         stats_time_end(in->stats, "video-draw");
+@@ -1087,6 +1128,10 @@ static bool render_frame(struct vo *vo)
+ 
+         mp_mutex_lock(&in->lock);
+         in->secondary_render_cost = render_cost;
++        in->secondary_redraw_cost = MPMAX(in->secondary_redraw_cpu_cost,
++                                         in->secondary_redraw_gpu_cost);
++        if (secondary_rate <= 0)
++            in->secondary_redraw_block_cost = in->secondary_next_probe = 0;
+         in->dropped_frame = prev_drop_count < vo->in->drop_count;
+         in->rendering = false;
+ 
+@@ -1159,7 +1204,23 @@ static void do_redraw(struct vo *vo)
+ 
+     in->secondary_last_draw = mp_time_ns();
+     vo->driver->draw_frame(vo, frame);
++    int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
+     vo->driver->flip_page(vo);
++    // Presentation may wait for vsync. Include that blocking time in deadline
++    // headroom, but do not mistake a mostly idle wait for sustained GPU work.
++    if (!full_redraw && osd_get_secondary_refresh(vo->osd) > 0) {
++        int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
++        in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
++            &in->secondary_redraw_budget, cpu_cost, 0);
++        block_cost = secondary_ass_budget_sample(&in->secondary_redraw_block_budget,
++                                                 block_cost, 0);
++        mp_mutex_lock(&in->lock);
++        in->secondary_redraw_cost = MPMAX(in->secondary_redraw_cpu_cost,
++                                         in->secondary_redraw_gpu_cost);
++        in->secondary_redraw_block_cost = MPMAX(block_cost, in->secondary_redraw_cost);
++        in->secondary_next_probe = mp_time_ns() + MP_TIME_S_TO_NS(1);
++        mp_mutex_unlock(&in->lock);
++    }
+ 
+     if (frame != &dummy && !(vo->driver->caps & VO_CAP_FRAMEOWNER))
+         talloc_free(frame);
+@@ -1236,24 +1297,47 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         bool secondary_eligible = !in->paused && in->hasframe &&
+             in->current_frame && !in->current_frame->still;
+         int64_t secondary_cost = in->secondary_render_cost;
++        int64_t secondary_redraw_cost = in->secondary_redraw_cost;
++        int64_t secondary_block_cost = in->secondary_redraw_block_cost;
++        int64_t secondary_gpu_redraw = in->secondary_redraw_gpu_cost;
++        int64_t secondary_probe = in->secondary_next_probe;
++        int64_t secondary_duration = in->current_frame && !in->current_frame->display_synced
++            ? in->current_frame->duration : 0;
++        int64_t secondary_deadline = get_current_frame_end(vo) - in->flip_queue_offset;
+         mp_mutex_unlock(&in->lock);
+ 
+         double secondary_rate = osd_get_secondary_refresh(vo->osd);
+         if (!working && secondary_eligible && secondary_rate > 0) {
+             int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
+             interval = MPMAX(interval, in->vsync_interval);
+-            // An expensive video frame needs the normal preparation window.
+-            // Yield extra OSD draws until measured render cost recovers; never
+-            // trade video presentation for an unattainable subtitle cadence.
+-            if (secondary_cost < interval * 0.75) {
++            bool low_fps = secondary_ass_budget_low_fps(secondary_duration, interval);
++            bool affordable = secondary_ass_budget_affordable(secondary_cost,
++                secondary_redraw_cost, secondary_duration, interval);
++            // Once per second, allow a bounded recovery sample. A CPU wakeup
++            // stall must not leave an affordable cached redraw disabled forever.
++            bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
++                secondary_duration, interval, now, secondary_probe);
++            if (affordable || probe) {
+                 int64_t next = in->secondary_last_draw + interval;
+-                redraw |= now >= next;
+-                wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
++                int64_t cost = secondary_block_cost > 0 ? secondary_block_cost : interval;
++                if (probe)
++                    cost = MPMAX(secondary_gpu_redraw, MPMIN(cost, interval));
++                bool headroom = !low_fps || secondary_ass_budget_before_deadline(
++                    MPMAX(now, next), secondary_deadline, secondary_cost, cost,
++                    MP_TIME_S_TO_NS(0.002));
++                if (headroom) {
++                    redraw |= now >= next;
++                    wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
++                }
+             }
+         }
+ 
+-        if (send_reset)
++        if (send_reset) {
++            mp_mutex_lock(&in->lock);
++            reset_secondary_ass_budget(in);
++            mp_mutex_unlock(&in->lock);
+             vo->driver->control(vo, VOCTRL_RESET, NULL);
++        }
+         if (send_pause)
+             vo->driver->control(vo, vo_paused ? VOCTRL_PAUSE : VOCTRL_RESUME, NULL);
+         if (wait_until > now && redraw) {
+-- 
+2.54.0.windows.1
+
