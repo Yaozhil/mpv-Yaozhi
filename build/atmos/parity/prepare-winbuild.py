@@ -65,6 +65,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0027-bluray-menu-audio-diagnosti
 shutil.copyfile(root/'build/bluray-menu/patches/0028-bluray-menu-audio-queue-retain.patch', packages/'mpv-9022-bluray-menu-audio-queue-retain.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0029-bluray-audio-sample-rate.patch', packages/'mpv-9023-bluray-audio-sample-rate.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0030-secondary-ass-low-fps-budget.patch', packages/'mpv-9024-secondary-ass-low-fps-budget.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0031-secondary-ass-video-deadline.patch', packages/'mpv-9025-secondary-ass-video-deadline.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'

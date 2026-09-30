@@ -1,0 +1,60 @@
+From dc5832b7de4c95ccedfcd49d6f9dd556462e9eca Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 30 Sep 2026 18:33:51 +0800
+Subject: [PATCH] vo: reserve video deadlines for high-fps ASS redraws
+
+---
+ video/out/secondary_ass_budget.h | 13 +++++++++++++
+ video/out/vo.c                   |  7 +++----
+ 2 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/video/out/secondary_ass_budget.h b/video/out/secondary_ass_budget.h
+index 824ff56..e81c686 100644
+--- a/video/out/secondary_ass_budget.h
++++ b/video/out/secondary_ass_budget.h
+@@ -85,4 +85,17 @@ static inline bool secondary_ass_budget_before_deadline(int64_t now,
+            deadline - now - fresh - redraw > margin;
+ }
+ 
++// A non-display-synced frame has a real wall-clock deadline at every source
++// rate. A cheap GPU redraw can still block in presentation until the next
++// vsync, so high-fps video needs the same fresh+blocking-time reservation.
++// A zero/unknown duration also represents display-synced frames at callers;
++// retain their existing per-tick policy without inventing a source deadline.
++static inline bool secondary_ass_budget_headroom(int64_t duration, int64_t now,
++                                                  int64_t deadline, int64_t fresh,
++                                                  int64_t redraw, int64_t margin)
++{
++    return duration <= 0 || secondary_ass_budget_before_deadline(
++        now, deadline, fresh, redraw, margin);
++}
++
+ #endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 2af615d..72e6c77 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -1310,7 +1310,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         if (!working && secondary_eligible && secondary_rate > 0) {
+             int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
+             interval = MPMAX(interval, in->vsync_interval);
+-            bool low_fps = secondary_ass_budget_low_fps(secondary_duration, interval);
+             bool affordable = secondary_ass_budget_affordable(secondary_cost,
+                 secondary_redraw_cost, secondary_duration, interval);
+             // Once per second, allow a bounded recovery sample. A CPU wakeup
+@@ -1322,9 +1321,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 int64_t cost = secondary_block_cost > 0 ? secondary_block_cost : interval;
+                 if (probe)
+                     cost = MPMAX(secondary_gpu_redraw, MPMIN(cost, interval));
+-                bool headroom = !low_fps || secondary_ass_budget_before_deadline(
+-                    MPMAX(now, next), secondary_deadline, secondary_cost, cost,
+-                    MP_TIME_S_TO_NS(0.002));
++                bool headroom = secondary_ass_budget_headroom(secondary_duration,
++                    MPMAX(now, next), secondary_deadline, secondary_cost,
++                    cost, MP_TIME_S_TO_NS(0.002));
+                 if (headroom) {
+                     redraw |= now >= next;
+                     wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
+-- 
+2.54.0.windows.1
+

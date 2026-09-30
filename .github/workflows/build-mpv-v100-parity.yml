@@ -652,6 +652,7 @@ jobs:
           restore-keys: |
             mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-
             mpv-v100-main-ubuntu-gcc64-
+            mpv-v100-atmos-ubuntu-gcc64-
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
       - name: Reset cached patched sources before building
@@ -952,6 +953,8 @@ jobs:
           python3 build/feedback/tests/test-bluray-audio-metadata.py --compiler gcc --source "$source_dir" --include "$include_dir" --output artifacts/audio-metadata-test
           gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-scheduling.c -o ass-scheduling-test
           ./ass-scheduling-test
+          gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-high-fps.c -o ass-high-fps-test
+          ./ass-high-fps-test
 
       - name: Preserve dependency cache after a failed build
         if: always() && failure() && (steps.build.outcome == 'failure' || steps.build.outcome == 'success')
