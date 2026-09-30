@@ -1,22 +1,24 @@
-From 29483933b42c947eaf2b3d7a5a895317ae815fdd Mon Sep 17 00:00:00 2001
+From 8d712b84937f1760a94c0636f771f48c85fbe487 Mon Sep 17 00:00:00 2001
 From: Codex <codex@localhost>
-Date: Wed, 30 Sep 2026 22:57:28 +0800
+Date: Wed, 30 Sep 2026 23:32:31 +0800
 Subject: [PATCH] player: expose decoded Dolby Vision RPU and enhancement type
  metadata
 
+Read only existing decoded side data and explicit stream relations.
+Keep new RST property definitions on one term line.
 ---
- DOCS/man/input.rst    | 30 ++++++++++++++++++
+ DOCS/man/input.rst    | 27 ++++++++++++++++
  demux/demux_lavf.c    |  4 +++
  demux/demux_mkv.c     |  4 +++
  demux/dovi_split.c    |  4 +++
  demux/stheader.h      |  6 ++++
  player/command.c      | 50 ++++++++++++++++++++++++++++++
  video/dovi_metadata.h | 72 +++++++++++++++++++++++++++++++++++++++++++
- 7 files changed, 170 insertions(+)
+ 7 files changed, 167 insertions(+)
  create mode 100644 video/dovi_metadata.h
 
 diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
-index 8970d5a..679bdf6 100644
+index 8970d5a..8c8ccd3 100644
 --- a/DOCS/man/input.rst
 +++ b/DOCS/man/input.rst
 @@ -3070,6 +3070,19 @@ Property list
@@ -39,20 +41,17 @@ index 8970d5a..679bdf6 100644
      ``video-frame-info/gop-timecode``
          String with the GOP timecode encoded in the frame.
  
-@@ -3705,6 +3718,23 @@ Property list
+@@ -3705,6 +3718,20 @@ Property list
          Dolby Vision profile and level. May not be available if the container
          does not provide this information.
  
-+    ``track-list/N/dolby-vision-config-bl-present``,
-+    ``track-list/N/dolby-vision-config-el-present``,
-+    ``track-list/N/dolby-vision-config-rpu-present``
++    ``track-list/N/dolby-vision-config-bl-present``, ``track-list/N/dolby-vision-config-el-present``, ``track-list/N/dolby-vision-config-rpu-present``
 +        Boolean BL, EL and RPU declarations from this track's Dolby Vision
 +        configuration record. Unavailable when no record is available, even
 +        if an authored stream relation provides a profile. These flags do
 +        not indicate successful decoding, mapping or enhancement composition.
 +
-+    ``track-list/N/dolby-vision-group-bl-present``,
-+    ``track-list/N/dolby-vision-group-el-present``
++    ``track-list/N/dolby-vision-group-bl-present``, ``track-list/N/dolby-vision-group-el-present``
 +        True on a base track with an explicit Dolby Vision enhancement-layer
 +        stream relation. Unavailable otherwise; two ordinary HEVC tracks do
 +        not establish this relation. Includes virtual split enhancement tracks
