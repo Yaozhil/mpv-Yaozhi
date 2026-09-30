@@ -942,7 +942,11 @@ jobs:
         if: steps.build.outcome == 'success'
         run: |
           source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
-          include_dir=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/include
+          # Host gcc must use host libc, while checking the exact libbluray
+          # headers installed for the player. Do not add the Windows sysroot.
+          include_dir=artifacts/audio-host-include
+          mkdir -p "$include_dir"
+          cp -a winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/include/libbluray "$include_dir/"
           gcc -Wall -Werror -I "$source_dir" -I "$include_dir" build/feedback/tests/test-bluray-audio-rate.c -o audio-rate-test
           ./audio-rate-test
           python3 build/feedback/tests/test-bluray-audio-metadata.py --compiler gcc --source "$source_dir" --include "$include_dir" --output artifacts/audio-metadata-test
