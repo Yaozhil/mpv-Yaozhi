@@ -975,14 +975,16 @@ jobs:
           python3 build/dolby-vision/tests/test-dovi-frame-info.py \
             --source "$source_dir" --include "$include_dir" --compiler gcc \
             --output artifacts/dovi-frame-info-test
-          # Resolve libavutil's enabled hardware/system dependencies from the
-          # same target prefix. The codec archive supplies the actual parser.
-          avutil_libs="$(PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --libs --static libavutil)"
+          # Resolve both archives' private codec/hardware dependencies from
+          # the exact target prefix, without picking up host pkg-config files.
+          # VPL and other C++ dependencies also need their static runtime.
+          ffmpeg_libs="$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --libs --static libavcodec libavutil)"
           winbuild/mpv-winbuild-cmake/build64/install/bin/cross-gcc \
-            -std=c11 -O2 -static -Wall -Wextra -Werror \
+            -std=c11 -O2 -static -ffunction-sections -fdata-sections \
+            -Wl,--gc-sections -Wall -Wextra -Werror \
             -I "$source_dir" -I "$prefix/include" -I "$ffmpeg_dir" \
             build/dolby-vision/tests/probe-dovi-rpu.c \
-            -L "$prefix/lib" -lavcodec $avutil_libs -lm \
+            -L "$prefix/lib" $ffmpeg_libs -lstdc++ -lwinpthread -lm \
             -o artifacts/dovi-rpu-probe.exe
           test -f artifacts/dovi-rpu-probe.exe
 
