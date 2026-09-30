@@ -954,7 +954,7 @@ jobs:
           ./ass-scheduling-test
 
       - name: Preserve dependency cache after a failed build
-        if: steps.build.outcome == 'failure'
+        if: always() && failure() && (steps.build.outcome == 'failure' || steps.build.outcome == 'success')
         uses: actions/cache/save@v5
         with:
           path: |

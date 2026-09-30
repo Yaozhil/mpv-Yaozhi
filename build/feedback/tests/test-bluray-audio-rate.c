@@ -1,5 +1,5 @@
 // Compile against the real libbluray header and the production helper:
-// cc -std=c11 -Wall -Wextra -Werror -I MPV_SOURCE -I LIBBLURAY_INCLUDE \
+// cc -std=c11 -Wall -Wextra -Werror -I MPV_SOURCE -I LIBBLURAY_INCLUDE
 //    test-bluray-audio-rate.c -o test-bluray-audio-rate
 #include <stdio.h>
 #include "stream/bluray_audio_rate.h"
