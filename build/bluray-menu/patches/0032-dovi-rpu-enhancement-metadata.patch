@@ -1,0 +1,304 @@
+From 29483933b42c947eaf2b3d7a5a895317ae815fdd Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 30 Sep 2026 22:57:28 +0800
+Subject: [PATCH] player: expose decoded Dolby Vision RPU and enhancement type
+ metadata
+
+---
+ DOCS/man/input.rst    | 30 ++++++++++++++++++
+ demux/demux_lavf.c    |  4 +++
+ demux/demux_mkv.c     |  4 +++
+ demux/dovi_split.c    |  4 +++
+ demux/stheader.h      |  6 ++++
+ player/command.c      | 50 ++++++++++++++++++++++++++++++
+ video/dovi_metadata.h | 72 +++++++++++++++++++++++++++++++++++++++++++
+ 7 files changed, 170 insertions(+)
+ create mode 100644 video/dovi_metadata.h
+
+diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
+index 8970d5a..679bdf6 100644
+--- a/DOCS/man/input.rst
++++ b/DOCS/man/input.rst
+@@ -3070,6 +3070,19 @@ Property list
+     ``video-frame-info/repeat``
+         Whether the frame must be delayed when decoding.
+ 
++    ``video-frame-info/dolby-vision-rpu-present``
++        Whether the current frame carries decoded Dolby Vision RPU metadata
++        or a non-empty raw RPU buffer. Includes its PTS-matched enhancement
++        layer when present. False does not prove the source file lacks RPUs:
++        a decoder or filter can omit side data. This does not report whether
++        the renderer applied the metadata.
++
++    ``video-frame-info/dolby-vision-el-type``
++        ``MEL`` or ``FEL``, identified from valid Profile 7 RPU header and
++        non-linear quantization parameters. Unavailable without sufficient
++        decoded metadata; Profile 7 or an EL track alone does not distinguish
++        these types. Describes the source metadata, not EL composition success.
++
+     ``video-frame-info/gop-timecode``
+         String with the GOP timecode encoded in the frame.
+ 
+@@ -3705,6 +3718,23 @@ Property list
+         Dolby Vision profile and level. May not be available if the container
+         does not provide this information.
+ 
++    ``track-list/N/dolby-vision-config-bl-present``,
++    ``track-list/N/dolby-vision-config-el-present``,
++    ``track-list/N/dolby-vision-config-rpu-present``
++        Boolean BL, EL and RPU declarations from this track's Dolby Vision
++        configuration record. Unavailable when no record is available, even
++        if an authored stream relation provides a profile. These flags do
++        not indicate successful decoding, mapping or enhancement composition.
++
++    ``track-list/N/dolby-vision-group-bl-present``,
++    ``track-list/N/dolby-vision-group-el-present``
++        True on a base track with an explicit Dolby Vision enhancement-layer
++        stream relation. Unavailable otherwise; two ordinary HEVC tracks do
++        not establish this relation. Includes virtual split enhancement tracks
++        and authored disc groups. These describe the overall BL/EL structure,
++        independently of each track's in-band configuration flags, and do not
++        report whether enhancement decoding or composition succeeded.
++
+     ``track-list/N/metadata``,
+         Works like the ``metadata`` property, but it accesses metadata that is
+         set per track/stream instead of global values for the entire file.
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index a466e69..b9483c7 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -813,6 +813,10 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
+             sh->codec->dovi = true;
+             sh->codec->dv_profile = cfg->dv_profile;
+             sh->codec->dv_level = cfg->dv_level;
++            sh->codec->dv_config_present = true;
++            sh->codec->dv_config_bl_present = cfg->bl_present_flag;
++            sh->codec->dv_config_el_present = cfg->el_present_flag;
++            sh->codec->dv_config_rpu_present = cfg->rpu_present_flag;
+             sh->codec->dv_el_present = cfg->bl_present_flag && cfg->el_present_flag;
+         }
+ 
+diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
+index 3e98a58..63ecd81 100644
+--- a/demux/demux_mkv.c
++++ b/demux/demux_mkv.c
+@@ -1838,6 +1838,10 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx)
+         sh_v->dovi = true;
+         sh_v->dv_level = track->dovi_config->dv_level;
+         sh_v->dv_profile = track->dovi_config->dv_profile;
++        sh_v->dv_config_present = true;
++        sh_v->dv_config_bl_present = track->dovi_config->bl_present_flag;
++        sh_v->dv_config_el_present = track->dovi_config->el_present_flag;
++        sh_v->dv_config_rpu_present = track->dovi_config->rpu_present_flag;
+         sh_v->dv_el_present = track->dovi_config->bl_present_flag &&
+                               track->dovi_config->el_present_flag;
+     }
+diff --git a/demux/dovi_split.c b/demux/dovi_split.c
+index 70b744e..76d006d 100644
+--- a/demux/dovi_split.c
++++ b/demux/dovi_split.c
+@@ -111,6 +111,10 @@ struct mp_dovi_split *mp_dovi_split_create(struct demuxer *demuxer,
+         el->codec->dovi = true;
+         el->codec->dv_profile = cfg->dv_profile;
+         el->codec->dv_level = cfg->dv_level;
++        el->codec->dv_config_present = true;
++        el->codec->dv_config_bl_present = cfg->bl_present_flag;
++        el->codec->dv_config_el_present = cfg->el_present_flag;
++        el->codec->dv_config_rpu_present = cfg->rpu_present_flag;
+         el->codec->dv_el_present = cfg->el_present_flag;
+         break;
+     }
+diff --git a/demux/stheader.h b/demux/stheader.h
+index 85806f4..fa83469 100644
+--- a/demux/stheader.h
++++ b/demux/stheader.h
+@@ -176,6 +176,12 @@ struct mp_codec_params {
+     bool dovi;
+     uint8_t dv_profile;
+     uint8_t dv_level;
++    // Raw configuration-record flags. dovi can also come from an authored
++    // BL/EL relation, so keep a separate validity bit for these declarations.
++    bool dv_config_present;
++    bool dv_config_bl_present;
++    bool dv_config_el_present;
++    bool dv_config_rpu_present;
+     bool dv_el_present;     // BL and EL interleaved in this stream (Profile 7)
+     // [Luna] Standalone/virtual Profile 7 enhancement layer.  This is only
+     // set when the stream relation is explicitly declared by the demuxer.
+diff --git a/player/command.c b/player/command.c
+index b707ef3..0f2012c 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -67,6 +67,7 @@
+ #include "osdep/getpid.h"
+ #include "video/out/vo.h"
+ #include "video/csputils.h"
++#include "video/dovi_metadata.h"
+ #include "video/hwdec.h"
+ #include "audio/aframe.h"
+ #include "audio/format.h"
+@@ -2110,6 +2111,13 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
+     }
+ 
+     struct sh_stream *sh = track->stream;
++    struct sh_stream *dv_el = sh && !sh->dependent_track
++                           ? sh_stream_dependent_sibling(sh) : NULL;
++    bool dv_group = sh && sh->type == STREAM_VIDEO && dv_el && dv_el->codec &&
++                    (dv_el->codec->dovi_el_only ||
++                     (dv_el->codec->dv_config_present &&
++                      dv_el->codec->dv_profile == 7 &&
++                      dv_el->codec->dv_config_el_present));
+ 
+     double par = 0.0;
+     if (p.par_h)
+@@ -2201,6 +2209,16 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
+                         .unavailable = !p.dovi},
+         {"dolby-vision-level", SUB_PROP_INT(p.dv_level),
+                         .unavailable = !p.dovi},
++        {"dolby-vision-config-bl-present", SUB_PROP_BOOL(p.dv_config_bl_present),
++                        .unavailable = !p.dv_config_present},
++        {"dolby-vision-config-el-present", SUB_PROP_BOOL(p.dv_config_el_present),
++                        .unavailable = !p.dv_config_present},
++        {"dolby-vision-config-rpu-present", SUB_PROP_BOOL(p.dv_config_rpu_present),
++                        .unavailable = !p.dv_config_present},
++        {"dolby-vision-group-bl-present", SUB_PROP_BOOL(dv_group),
++                        .unavailable = !dv_group},
++        {"dolby-vision-group-el-present", SUB_PROP_BOOL(dv_group),
++                        .unavailable = !dv_group},
+         {"metadata", SUB_PROP_KEYVALUE_LIST(tag_list),
+                         .unavailable = !tags->num_keys},
+         {0}
+@@ -2737,6 +2755,34 @@ static int mp_property_vd_imgparams(void *ctx, struct m_property *prop,
+     return M_PROPERTY_UNAVAILABLE;
+ }
+ 
++// Read only the displayed frame's already decoded side data, including its
++// PTS-matched EL. This reports source metadata, not successful composition.
++static struct mp_dovi_metadata_info read_dovi_frame_info(struct mp_image *frame)
++{
++    struct mp_dovi_metadata_info info = {0};
++    struct mp_image *layers[] = {frame, frame->enhancement_layer};
++    for (size_t i = 0; i < MP_ARRAY_SIZE(layers); i++) {
++        struct mp_image *layer = layers[i];
++        if (!layer)
++            continue;
++        for (int n = 0; n < layer->num_ff_side_data; n++) {
++            struct mp_ff_side_data *sd = &layer->ff_side_data[n];
++            if (!sd->buf)
++                continue;
++            if (sd->type == AV_FRAME_DATA_DOVI_RPU_BUFFER)
++                info.rpu_present |= sd->buf->size > 0;
++            if (sd->type == AV_FRAME_DATA_DOVI_METADATA) {
++                struct mp_dovi_metadata_info parsed =
++                    mp_dovi_metadata_read(sd->buf->data, sd->buf->size);
++                info.rpu_present |= parsed.rpu_present;
++                if (!info.el_type)
++                    info.el_type = parsed.el_type;
++            }
++        }
++    }
++    return info;
++}
++
+ static int mp_property_video_frame_info(void *ctx, struct m_property *prop,
+                                         int action, void *arg)
+ {
+@@ -2758,6 +2804,7 @@ static int mp_property_video_frame_info(void *ctx, struct m_property *prop,
+ 
+     char gop_tc[AV_TIMECODE_STR_SIZE] = {0};
+     char s12m_tc[AV_TIMECODE_STR_SIZE] = {0};
++    struct mp_dovi_metadata_info dovi = read_dovi_frame_info(f);
+     for (int n = 0; n < f->num_ff_side_data; n++) {
+ 
+         struct mp_ff_side_data *mpsd = &f->ff_side_data[n];
+@@ -2792,6 +2839,9 @@ static int mp_property_video_frame_info(void *ctx, struct m_property *prop,
+         {"interlaced",      SUB_PROP_BOOL(!!(f->fields & MP_IMGFIELD_INTERLACED))},
+         {"tff",             SUB_PROP_BOOL(!!(f->fields & MP_IMGFIELD_TOP_FIRST))},
+         {"repeat",          SUB_PROP_BOOL(!!(f->fields & MP_IMGFIELD_REPEAT_FIRST))},
++        {"dolby-vision-rpu-present", SUB_PROP_BOOL(dovi.rpu_present)},
++        {"dolby-vision-el-type", SUB_PROP_STR(dovi.el_type),
++                                .unavailable = !dovi.el_type},
+         {"gop-timecode",    SUB_PROP_STR(gop_tc), .unavailable = gop_tc[0] == '\0'},
+         {"smpte-timecode",  SUB_PROP_STR(s12m_tc), .unavailable = s12m_tc[0] == '\0'},
+         {"estimated-smpte-timecode", SUB_PROP_STR(approx_smpte), .unavailable = approx_smpte[0] == '\0'},
+diff --git a/video/dovi_metadata.h b/video/dovi_metadata.h
+new file mode 100644
+index 0000000..9dd18b0
+--- /dev/null
++++ b/video/dovi_metadata.h
+@@ -0,0 +1,72 @@
++/* Read-only identification of decoded Dolby Vision RPU metadata. */
++#ifndef MP_DOVI_METADATA_H
++#define MP_DOVI_METADATA_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include <libavutil/dovi_meta.h>
++
++struct mp_dovi_metadata_info {
++    bool rpu_present;
++    const char *el_type;
++};
++
++static inline bool mp_dovi_metadata_range(size_t offset, size_t length,
++                                          size_t size, size_t alignment)
++{
++    return offset >= sizeof(AVDOVIMetadata) && offset <= size &&
++           length <= size - offset && offset % alignment == 0;
++}
++
++// Side data describes the source RPU, not whether the renderer applies it.
++// Use the same Profile 7 header constraints as FFmpeg's profile inference.
++// MEL has neutral NLQ parameters in all three components (dovi_tool's
++// RpuDataNlq::is_mel); disable_residual_flag alone does not distinguish it.
++static inline struct mp_dovi_metadata_info
++mp_dovi_metadata_read(const void *data, size_t size)
++{
++    struct mp_dovi_metadata_info info = {0};
++    if (!data || size < sizeof(AVDOVIMetadata))
++        return info;
++
++    const AVDOVIMetadata *metadata = data;
++    if (!mp_dovi_metadata_range(metadata->header_offset,
++                               sizeof(AVDOVIRpuDataHeader), size,
++                               offsetof(struct { char c; AVDOVIRpuDataHeader v; }, v)))
++        return info;
++
++    const AVDOVIRpuDataHeader *header = av_dovi_get_header(metadata);
++    if (header->rpu_type != 2)
++        return info;
++    info.rpu_present = true;
++
++    if (header->vdr_rpu_profile != 1 || header->vdr_bit_depth != 12 ||
++        !header->el_spatial_resampling_filter_flag ||
++        header->disable_residual_flag || (header->rpu_format & 0x700) ||
++        header->coef_log2_denom < 13 || header->coef_log2_denom > 32 ||
++        !mp_dovi_metadata_range(metadata->mapping_offset,
++                                sizeof(AVDOVIDataMapping), size,
++                                offsetof(struct { char c; AVDOVIDataMapping v; }, v)))
++        return info;
++
++    const AVDOVIDataMapping *mapping = av_dovi_get_mapping(metadata);
++    if (mapping->nlq_method_idc != AV_DOVI_NLQ_LINEAR_DZ)
++        return info;
++
++    bool mel = true;
++    // FFmpeg combines each coefficient's integer/fractional parts into a
++    // fixed-point value, including originally floating-point coefficients.
++    uint64_t one = UINT64_C(1) << header->coef_log2_denom;
++    for (int c = 0; c < 3; c++) {
++        const AVDOVINLQParams *nlq = &mapping->nlq[c];
++        mel &= nlq->nlq_offset == 0 && nlq->vdr_in_max == one &&
++               nlq->linear_deadzone_slope == 0 &&
++               nlq->linear_deadzone_threshold == 0;
++    }
++    info.el_type = mel ? "MEL" : "FEL";
++    return info;
++}
++
++#endif
+-- 
+2.54.0.windows.1
+

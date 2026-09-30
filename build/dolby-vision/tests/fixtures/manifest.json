@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/quietvoid/dovi_tool",
+  "commit": "614c816b6446dcd1dbaf433403d499a6026fbb5a",
+  "fixtures": {
+    "fel_orig.bin": {
+      "git_blob": "a7926febb39043d938ebc49dce0a4c043b5b32f0",
+      "sha256": "b2b27714b7279c4e24d1a795cb6f95d3ad06745db96d360698ee0932184117a0",
+      "bytes": 384,
+      "expected_el_type": "FEL"
+    },
+    "mel_orig.bin": {
+      "git_blob": "09b8963ddaee4e2c5554b9682987a72278edf53c",
+      "sha256": "cabda945d36cd4c3eca9c2df05cf387562e648e3250be28632c9b2991f2ec60b",
+      "bytes": 183,
+      "expected_el_type": "MEL"
+    },
+    "fel_to_mel.bin": {
+      "git_blob": "1bcacd9465f59d57ce3a46b93574a8e40a1c5abe",
+      "sha256": "96382414538ad2b2460d27b232a3bda0c82067e9bd99e0211ebdb482cd44e531",
+      "bytes": 386,
+      "expected_el_type": "MEL"
+    },
+    "mel_rpu.bin": {
+      "git_blob": "4fd84cdc5ff5f75280328b540cda4d530b0836a6",
+      "sha256": "60601a248ac3437a7399f922f58eb6061a791d2d749ec6c9be1464814012b46f",
+      "bytes": 203,
+      "expected_el_type": "MEL"
+    }
+  }
+}

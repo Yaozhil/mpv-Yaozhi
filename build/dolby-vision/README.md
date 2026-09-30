@@ -65,3 +65,10 @@ enhancement-layer HEVC configuration to the splitter.
   packages a verifier for single-track, dual-track file, and optional Blu-ray
   ISO FEL regression samples. The dual-track gates require mpv's `[el_pair]`
   filter output and Profile 7 metadata on the selectable base-layer track.
+
+- Common player patch `0032-dovi-rpu-enhancement-metadata.patch` exposes
+  actual frame RPU presence and P7 MEL/FEL identity from decoded RPU/NLQ side
+  data, plus independent per-track configuration and explicit group flags.
+  It changes identification only. Tiny upstream RPU fixtures are parsed by
+  the exact player FFmpeg libraries in both Windows variant jobs; see
+  `tests/README.md` for evidence scope and property semantics.

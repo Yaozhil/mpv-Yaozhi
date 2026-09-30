@@ -47,7 +47,8 @@
     "build/bluray-menu/patches/0028-bluray-menu-audio-queue-retain.patch": "5a245609cbd43cb9444e28123ccd70b1b8e6f6ba69ca64e5a740f1673c4d6f46",
     "build/bluray-menu/patches/0029-bluray-audio-sample-rate.patch": "5d234f9c72d7264a4a7bf15359cfc737bdd5c2f38a951c4d6339868c7468a772",
     "build/bluray-menu/patches/0030-secondary-ass-low-fps-budget.patch": "523b4bbb9f85b66e511e2a4a1a5987f2bdc9cf9c4d56f19bf11071d3cf816ff7",
-    "build/bluray-menu/patches/0031-secondary-ass-video-deadline.patch": "c213b37f875cf22e12415270426a20c31e5ddd39410266dfa608b2f0969993f1"
+    "build/bluray-menu/patches/0031-secondary-ass-video-deadline.patch": "c213b37f875cf22e12415270426a20c31e5ddd39410266dfa608b2f0969993f1",
+    "build/bluray-menu/patches/0032-dovi-rpu-enhancement-metadata.patch": "58be86305274691a5c4219b3d5a2193715a544071c6f61a69e53a643a8278069"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"

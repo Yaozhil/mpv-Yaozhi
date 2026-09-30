@@ -956,6 +956,36 @@ jobs:
           gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-high-fps.c -o ass-high-fps-test
           ./ass-high-fps-test
 
+      - name: Verify decoded Dolby Vision metadata and build real RPU parser probe
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
+          ffmpeg_dir=winbuild/mpv-winbuild-cmake/src_packages/ffmpeg
+          prefix=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32
+          include_dir=artifacts/dovi-host-include
+          mkdir -p "$include_dir"
+          # Keep host libc headers; only the exact installed libavutil subtree
+          # is needed to compile the read-only identification helper.
+          cp -a "$prefix/include/libavutil" "$include_dir/"
+          gcc -Wall -Wextra -Werror -I "$source_dir" -I "$include_dir" \
+            build/dolby-vision/tests/test-dovi-metadata.c -o dovi-metadata-test
+          ./dovi-metadata-test
+          python3 build/dolby-vision/tests/test-dovi-frame-info.py \
+            --source "$source_dir" --include "$include_dir" --compiler gcc \
+            --output artifacts/dovi-frame-info-test
+          # Resolve libavutil's enabled hardware/system dependencies from the
+          # same target prefix. The codec archive supplies the actual parser.
+          avutil_libs="$(PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --libs --static libavutil)"
+          winbuild/mpv-winbuild-cmake/build64/install/bin/cross-gcc \
+            -std=c11 -O2 -static -Wall -Wextra -Werror \
+            -I "$source_dir" -I "$prefix/include" -I "$ffmpeg_dir" \
+            build/dolby-vision/tests/probe-dovi-rpu.c \
+            -L "$prefix/lib" -lavcodec $avutil_libs -lm \
+            -o artifacts/dovi-rpu-probe.exe
+          test -f artifacts/dovi-rpu-probe.exe
+
       - name: Preserve dependency cache after a failed build
         if: always() && failure() && (steps.build.outcome == 'failure' || steps.build.outcome == 'success')
         uses: actions/cache/save@v5
@@ -1015,6 +1045,9 @@ jobs:
           grep -Fq 'SDL Audio' artifact-check/mpv.strings
           grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
           grep -Fq 'hdr-vivid' artifact-check/mpv.strings
+          grep -Fq 'dolby-vision-rpu-present' artifact-check/mpv.strings
+          grep -Fq 'dolby-vision-el-type' artifact-check/mpv.strings
+          grep -Fq 'dolby-vision-config-rpu-present' artifact-check/mpv.strings
           grep -Fq 'SystemMediaTransportControls' artifact-check/mpv.strings
           # The authored Blu-ray pairing path is runtime-only and its MP_VERBOSE
           # text may be removed by the Windows release linker. Source
@@ -1038,6 +1071,9 @@ jobs:
           cp "$archive" artifact/
           cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
           cp build/dolby-vision/verify-fel.ps1 artifact/
+          cp artifacts/dovi-rpu-probe.exe artifact/
+          cp build/dolby-vision/tests/verify-dovi-rpu.py artifact/
+          cp -a build/dolby-vision/tests/fixtures artifact/dovi-rpu-fixtures
           cp build/bluray-menu/tests/verify-hdmv-context.py artifact/
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
@@ -1071,6 +1107,9 @@ jobs:
               verify-stage2.ps1 \
               verify-spatial-layouts.ps1 \
               verify-fel.ps1 \
+              dovi-rpu-probe.exe \
+              verify-dovi-rpu.py \
+              dovi-rpu-fixtures/* \
               verify-hdmv-context.py \
               > SHA256SUMS.txt
           )
@@ -1221,6 +1260,14 @@ jobs:
             --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
             --mpv $mpv --work (Join-Path $artifact "hdmv-context-validation")
           if ($LASTEXITCODE -ne 0) { throw 'HDMV missing-registration audio regression' }
+
+          python (Join-Path $artifact "verify-dovi-rpu.py") `
+            --probe (Join-Path $artifact "dovi-rpu-probe.exe") `
+            --fixtures (Join-Path $artifact "dovi-rpu-fixtures") `
+            --output (Join-Path $artifact "dovi-rpu-verification") `
+            --variant "${{ matrix.variant }}" `
+            --commit "${{ github.event.pull_request.head.sha || github.sha }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Actual FFmpeg MEL/FEL RPU parsing regression' }
 
           & (Join-Path $artifact "verify-fel.ps1") `
             -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
