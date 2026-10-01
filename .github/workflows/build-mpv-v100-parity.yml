@@ -988,8 +988,8 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" -I "$source_dir/sub" \
             build/feedback/tests/verify-secondary-ass-presentation.c -lm -o ass-presentation-test
           ./ass-presentation-test | tee artifacts/secondary-ass-presentation.txt
-          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" \
-            build/feedback/tests/verify-secondary-ass-physical.c -o ass-physical-test
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" -I "$source_dir/sub" \
+            build/feedback/tests/verify-secondary-ass-physical.c -lm -o ass-physical-test
           ./ass-physical-test
 
       - name: Verify decoded Dolby Vision metadata and build real RPU parser probe
