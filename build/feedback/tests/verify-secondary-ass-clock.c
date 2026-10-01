@@ -194,6 +194,35 @@ static void gap_and_explicit_rates(void)
     }
 }
 
+static void display_feedback_noise(void)
+{
+    const int64_t origin = INT64_C(4000000000000000);
+    struct secondary_ass_clock clock = {0};
+    struct secondary_ass_sampler sampler = {0};
+    secondary_ass_clock_set_speed(&clock, 1, origin);
+    double last = 0;
+    for (unsigned n = 0; n < 10000; n++) {
+        double noise = n ? ((int)(n % 7) - 3) * 0.001 : 0;
+        int64_t wall = origin + ns(n / 144.0 + noise);
+        double before = clock.valid ? secondary_ass_clock_sample(&clock, wall) : 0;
+        bool reset = secondary_ass_clock_anchor(&clock, n / 144.0, wall, true);
+        if (reset)
+            secondary_ass_sampler_reset(&sampler);
+        else
+            check(absval(secondary_ass_clock_sample(&clock, wall) - before) < 1e-12);
+        bool changed = secondary_ass_sampler_update(&sampler, &clock, 72, wall, ns(1.0 / 144));
+        int64_t expected = sampler.origin_wall + ns((sampler.tick + 1) / 72.0);
+        check(absval((double)secondary_ass_sampler_next_wall(&sampler) - expected) < 2);
+        if (changed) {
+            if (n) {
+                check(sampler.pts > last);
+                check(absval(sampler.pts - last - 1.0 / 72) < 0.00015);
+            }
+            last = sampler.pts;
+        }
+    }
+}
+
 int main(void)
 {
     const double hz[] = {60, 120, 144, 165, 240, 360};
@@ -217,6 +246,7 @@ int main(void)
     double low10 = ppm(20, 10, 1);
     lifecycle();
     gap_and_explicit_rates();
+    display_feedback_noise();
     printf("],\"ppm_600s_final_error_ms\":{\"20\":%.9f,\"2000\":%.9f,\"negative2000_2x\":%.9f,\"fps1\":%.9f,\"fps6\":%.9f,\"fps10\":%.9f},\"checks\":%u,\"failures\":%u,\"status\":\"%s\"}\n",
            drift20 * 1000, drift2000 * 1000, drift_negative * 1000,
            low1 * 1000, low6 * 1000, low10 * 1000, checks, failures,

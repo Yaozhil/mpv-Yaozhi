@@ -1,4 +1,4 @@
-From 85c3863fed6b70d06685951f6eff375c8af759d8 Mon Sep 17 00:00:00 2001
+From 192e9f70244419db5a4cc62bcc5be86faac2b7b0 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -6,14 +6,14 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
 ---
  options/options.c                      |   2 +-
  player/playloop.c                      |   2 +-
- sub/osd.c                              |  92 +++++++++++++--
- sub/osd.h                              |  10 +-
+ sub/osd.c                              | 101 +++++++++++++--
+ sub/osd.h                              |  11 +-
  sub/osd_state.h                        |  10 +-
  sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 157 +++++++++++++++++++++++++
+ sub/secondary_ass_clock.h              | 168 +++++++++++++++++++++++++
  video/out/secondary_ass_presentation.h |  70 +++++++++++
- video/out/vo.c                         |  83 ++++++++++++-
- 9 files changed, 406 insertions(+), 25 deletions(-)
+ video/out/vo.c                         |  97 ++++++++++++--
+ 9 files changed, 439 insertions(+), 27 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_presentation.h
 
@@ -44,7 +44,7 @@ index d501918..2020ce4 100644
  
  static void handle_clipboard_updates(struct MPContext *mpctx)
 diff --git a/sub/osd.c b/sub/osd.c
-index 92a5326..6163d24 100644
+index 92a5326..4dabc5e 100644
 --- a/sub/osd.c
 +++ b/sub/osd.c
 @@ -18,6 +18,7 @@
@@ -102,28 +102,37 @@ index 92a5326..6163d24 100644
      mp_mutex_unlock(&osd->lock);
  }
  
-@@ -332,12 +349,47 @@ double osd_get_secondary_refresh(struct osd_state *osd)
+@@ -332,12 +349,56 @@ double osd_get_secondary_refresh(struct osd_state *osd)
      return rate;
  }
  
 -void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall)
 +double osd_get_secondary_clock_rate(struct osd_state *osd)
- {
++{
 +    // A quiet/static section needs no extra redraws, but the next moving event
 +    // still needs an accurate timeline. Do not tie clock validity to output.
-     mp_mutex_lock(&osd->lock);
--    osd->secondary_pts = pts;
--    osd->secondary_wall = wall;
--    osd->secondary_clock_valid = pts != MP_NOPTS_VALUE;
++    mp_mutex_lock(&osd->lock);
 +    double rate = osd->secondary_rate;
 +    mp_mutex_unlock(&osd->lock);
 +    return rate;
 +}
 +
-+void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
-+                                bool display_synced)
++int64_t osd_get_secondary_next_sample_time(struct osd_state *osd)
 +{
 +    mp_mutex_lock(&osd->lock);
++    int64_t next = osd->secondary_rate > 0
++        ? secondary_ass_sampler_next_wall(&osd->secondary_sampler) : 0;
++    mp_mutex_unlock(&osd->lock);
++    return next;
++}
++
++void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
++                                bool display_synced)
+ {
+     mp_mutex_lock(&osd->lock);
+-    osd->secondary_pts = pts;
+-    osd->secondary_wall = wall;
+-    osd->secondary_clock_valid = pts != MP_NOPTS_VALUE;
 +    if (pts == MP_NOPTS_VALUE) {
 +        secondary_ass_clock_reset(&osd->secondary_clock);
 +        secondary_ass_sampler_reset(&osd->secondary_sampler);
@@ -154,7 +163,7 @@ index 92a5326..6163d24 100644
      mp_mutex_unlock(&osd->lock);
  }
  
-@@ -358,12 +410,26 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+@@ -358,12 +419,26 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
          if (obj->sub && sub_is_primary_visible(obj->sub))
              res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
      } else if (obj->type == OSDTYPE_SUB2) {
@@ -188,10 +197,10 @@ index 92a5326..6163d24 100644
          if (obj->sub && sub_is_secondary_visible(obj->sub))
              res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
 diff --git a/sub/osd.h b/sub/osd.h
-index 37e6f7a..6ba4730 100644
+index 37e6f7a..0070fff 100644
 --- a/sub/osd.h
 +++ b/sub/osd.h
-@@ -214,9 +214,15 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
+@@ -214,9 +214,16 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
  void osd_set_render_subs_in_filter(struct osd_state *osd, bool s);
  void osd_set_force_video_pts(struct osd_state *osd, double video_pts);
  double osd_get_force_video_pts(struct osd_state *osd);
@@ -201,6 +210,7 @@ index 37e6f7a..6ba4730 100644
  double osd_get_secondary_refresh(struct osd_state *osd);
 -void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall);
 +double osd_get_secondary_clock_rate(struct osd_state *osd);
++int64_t osd_get_secondary_next_sample_time(struct osd_state *osd);
 +void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
 +                                bool display_synced);
 +void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
@@ -269,10 +279,10 @@ index 1ec17c8..fd7552d 100644
          fill_plaintext(sd, pts);
 diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
 new file mode 100644
-index 0000000..d931ff8
+index 0000000..9280d00
 --- /dev/null
 +++ b/sub/secondary_ass_clock.h
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,168 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_CLOCK_H
 +#define MP_SECONDARY_ASS_CLOCK_H
@@ -359,18 +369,19 @@ index 0000000..d931ff8
 +
 +    bool reset = !clock->valid || clock->display_synced != display_synced ||
 +                 !isfinite(projected) || error >= 0.250 || error <= -0.250;
-+    if (reset || display_synced)
++    if (reset)
 +    {
-+        // The display authority is already corrected by ideal_frame_vsync and
-+        // paired with THIS presentation target. It contains no source/vsync
-+        // rounding error to filter; repeats have their own ideal time as well.
++        // Both media authorities are paired with their wall-clock target.
++        // Display feedback can still jitter even after ideal_frame_vsync
++        // removes source-frame quantization. Never copy that phase noise into
++        // the animation's position on each display repeat.
 +        // Explicit lifecycle resets take precedence over the discontinuity
 +        // safeguard, including seeks smaller than 250ms.
 +        clock->pts = pts;
 +        clock->wall = wall;
 +        clock->phase_rate = 0;
 +    } else {
-+        // Audio authority may jitter slightly between source-frame deadlines.
++        // Audio deadlines and display feedback may both jitter slightly.
 +        // Discipline phase over one second instead of jumping position at
 +        // every source frame. Limit relative rate adjustment to +/-0.5% so a
 +        // late frame cannot visibly accelerate/decelerate the animation.
@@ -384,6 +395,16 @@ index 0000000..d931ff8
 +    clock->valid = true;
 +    clock->display_synced = display_synced;
 +    return reset;
++}
++
++static inline int64_t secondary_ass_sampler_next_wall(const struct secondary_ass_sampler *sampler)
++{
++    if (!sampler->valid || !isfinite(sampler->rate) || sampler->rate <= 0)
++        return 0;
++    double offset = ((double)sampler->tick + 1) * (1e9 / sampler->rate);
++    if (offset >= (double)INT64_MAX - sampler->origin_wall)
++        return 0;
++    return sampler->origin_wall + (int64_t)(offset + 0.5);
 +}
 +
 +static inline bool secondary_ass_sampler_update(struct secondary_ass_sampler *sampler,
@@ -507,7 +528,7 @@ index 0000000..da3afd7
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..89d9724 100644
+index 72e6c77..d37cb07 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,7 @@
@@ -543,7 +564,22 @@ index 72e6c77..89d9724 100644
  }
  
  extern const struct m_sub_options gl_video_conf;
-@@ -1050,10 +1055,33 @@ static bool render_frame(struct vo *vo)
+@@ -885,9 +890,12 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+             in->secondary_redraw_cost, duration, interval);
+         bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
+             duration, interval, now, in->secondary_next_probe);
+-        if (secondary_rate > 0 && (affordable || probe))
+-            lead = MPMIN(lead, MPMAX(MP_TIME_S_TO_NS(0.5 / secondary_rate),
++        if (secondary_rate > 0 && (affordable || probe)) {
++            int64_t minimum = secondary_ass_budget_low_fps(duration, interval)
++                ? MP_TIME_S_TO_NS(0.002) : MP_TIME_S_TO_NS(0.5 / secondary_rate);
++            lead = MPMIN(lead, MPMAX(minimum,
+                 in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
++        }
+         next_pts -= lead;
+         next_pts -= in->flip_queue_offset;
+         if (next_pts > now)
+@@ -1050,10 +1058,33 @@ static bool render_frame(struct vo *vo)
  
          stats_time_start(in->stats, "video-draw");
  
@@ -580,7 +616,7 @@ index 72e6c77..89d9724 100644
  
          in->visible = vo->driver->draw_frame(vo, frame);
  
-@@ -1120,6 +1148,17 @@ static bool render_frame(struct vo *vo)
+@@ -1120,6 +1151,17 @@ static bool render_frame(struct vo *vo)
          if (vo->driver->get_vsync)
              vo->driver->get_vsync(vo, &vsync);
  
@@ -598,7 +634,7 @@ index 72e6c77..89d9724 100644
          // Make up some crap if presentation feedback is missing.
          if (vsync.last_queue_display_time <= 0)
              vsync.last_queue_display_time = mp_time_ns();
-@@ -1202,13 +1241,43 @@ static void do_redraw(struct vo *vo)
+@@ -1202,13 +1244,43 @@ static void do_redraw(struct vo *vo)
      frame->duration = -1;
      mp_mutex_unlock(&in->lock);
  
@@ -643,7 +679,7 @@ index 72e6c77..89d9724 100644
          int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
          in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
              &in->secondary_redraw_budget, cpu_cost, 0);
-@@ -1252,6 +1321,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1252,6 +1324,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          goto done;
  
      read_opts(vo);
@@ -652,17 +688,24 @@ index 72e6c77..89d9724 100644
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1317,7 +1388,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1317,7 +1391,15 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
                  secondary_duration, interval, now, secondary_probe);
              if (affordable || probe) {
 -                int64_t next = in->secondary_last_draw + interval;
 +                int64_t next = secondary_ass_next_draw(
 +                    &in->secondary_presentation, in->secondary_last_draw, interval);
++                // Prepare the NEXT actual ASS sample before its display slot.
++                // A wall-clock timer initialized at an unrelated fresh draw
++                // can otherwise lose one tick each time source-frame queueing
++                // blocks the VO near a low-fps video's next deadline.
++                int64_t sample_time = osd_get_secondary_next_sample_time(vo->osd);
++                if (sample_time > 0)
++                    next = sample_time - (int64_t)in->vsync_interval;
                  int64_t cost = secondary_block_cost > 0 ? secondary_block_cost : interval;
                  if (probe)
                      cost = MPMAX(secondary_gpu_redraw, MPMIN(cost, interval));
-@@ -1442,6 +1514,7 @@ void vo_seek_reset(struct vo *vo)
+@@ -1442,6 +1524,7 @@ void vo_seek_reset(struct vo *vo)
      in->send_reset = true;
      wakeup_locked(vo);
      mp_mutex_unlock(&in->lock);
