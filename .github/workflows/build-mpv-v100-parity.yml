@@ -985,7 +985,7 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/sub" \
             build/feedback/tests/verify-secondary-ass-clock.c -lm -o ass-clock-test
           ./ass-clock-test | tee artifacts/secondary-ass-clock.json
-          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" \
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" -I "$source_dir/sub" \
             build/feedback/tests/verify-secondary-ass-presentation.c -lm -o ass-presentation-test
           ./ass-presentation-test | tee artifacts/secondary-ass-presentation.txt
 

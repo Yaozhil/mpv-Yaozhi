@@ -1,4 +1,4 @@
-From 192e9f70244419db5a4cc62bcc5be86faac2b7b0 Mon Sep 17 00:00:00 2001
+From cf52d4966c4bbfc1a6636564c3aa56d21627b9f5 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -11,9 +11,9 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
  sub/osd_state.h                        |  10 +-
  sub/sd_ass.c                           |   5 +
  sub/secondary_ass_clock.h              | 168 +++++++++++++++++++++++++
- video/out/secondary_ass_presentation.h |  70 +++++++++++
+ video/out/secondary_ass_presentation.h |  83 ++++++++++++
  video/out/vo.c                         |  97 ++++++++++++--
- 9 files changed, 439 insertions(+), 27 deletions(-)
+ 9 files changed, 452 insertions(+), 27 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_presentation.h
 
@@ -453,10 +453,10 @@ index 0000000..9280d00
 +#endif
 diff --git a/video/out/secondary_ass_presentation.h b/video/out/secondary_ass_presentation.h
 new file mode 100644
-index 0000000..da3afd7
+index 0000000..4d5a21d
 --- /dev/null
 +++ b/video/out/secondary_ass_presentation.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,83 @@
 +#ifndef MP_SECONDARY_ASS_PRESENTATION_H
 +#define MP_SECONDARY_ASS_PRESENTATION_H
 +
@@ -504,6 +504,19 @@ index 0000000..da3afd7
 +    p->last_display = displayed > 0 ? displayed : p->last_target;
 +}
 +
++static inline int64_t secondary_ass_sample_prepare_time(
++    int64_t sample_wall, int64_t vsync_interval)
++{
++    if (sample_wall <= 0 || vsync_interval <= 0)
++        return 0;
++    // Match the sampler's half-vsync selection boundary. Preparing a full
++    // vsync early can submit the previous sample and consume the only redraw
++    // before a source-frame deadline. Cross the boundary by one ns to avoid
++    // integer/nearest-grid rounding selecting the previous tick.
++    int64_t lead = vsync_interval / 2;
++    return sample_wall - lead + (lead > 0);
++}
++
 +static inline int64_t secondary_ass_next_draw(
 +    struct secondary_ass_presentation *p, int64_t now, int64_t interval)
 +{
@@ -528,7 +541,7 @@ index 0000000..da3afd7
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..d37cb07 100644
+index 72e6c77..d7d8c82 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,7 @@
@@ -695,13 +708,13 @@ index 72e6c77..d37cb07 100644
 -                int64_t next = in->secondary_last_draw + interval;
 +                int64_t next = secondary_ass_next_draw(
 +                    &in->secondary_presentation, in->secondary_last_draw, interval);
-+                // Prepare the NEXT actual ASS sample before its display slot.
-+                // A wall-clock timer initialized at an unrelated fresh draw
-+                // can otherwise lose one tick each time source-frame queueing
-+                // blocks the VO near a low-fps video's next deadline.
++                // Prepare the next ASS sample at its selection boundary,
++                // keeping the sampler and presentation timer on one grid.
 +                int64_t sample_time = osd_get_secondary_next_sample_time(vo->osd);
-+                if (sample_time > 0)
-+                    next = sample_time - (int64_t)in->vsync_interval;
++                int64_t sample_prepare = secondary_ass_sample_prepare_time(
++                    sample_time, (int64_t)in->vsync_interval);
++                if (sample_prepare > 0)
++                    next = sample_prepare;
                  int64_t cost = secondary_block_cost > 0 ? secondary_block_cost : interval;
                  if (probe)
                      cost = MPMAX(secondary_gpu_redraw, MPMIN(cost, interval));

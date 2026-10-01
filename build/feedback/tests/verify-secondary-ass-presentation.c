@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "secondary_ass_presentation.h"
+#include "secondary_ass_clock.h"
 
 int main(void)
 {
@@ -31,6 +32,26 @@ int main(void)
         next = secondary_ass_predict_present(&p, now, step);
         assert(next > now && next-now <= step);
         int64_t draw_step = step*(int)ceil(rates[r]/120.5);
+        double sample_rate = rates[r]/ceil(rates[r]/120.5);
+        struct secondary_ass_clock clock = {.speed=1};
+        struct secondary_ass_sampler sampler = {0};
+        secondary_ass_clock_anchor(&clock, 0, 1000000000, false);
+        assert(secondary_ass_sampler_update(&sampler, &clock, sample_rate,
+                                           1000000000, step));
+        struct secondary_ass_presentation scheduled = {0};
+        scheduled.last_display = scheduled.last_target = 1000000000;
+        // Bind the VO timer to the actual production sampler: waking at the
+        // due boundary must select every tick, even before the next vblank.
+        for (int tick = 1; tick <= 500; tick++) {
+            int64_t sample = secondary_ass_sampler_next_wall(&sampler);
+            int64_t prepare = secondary_ass_sample_prepare_time(sample, step);
+            int64_t present = secondary_ass_predict_present(&scheduled, prepare, step);
+            assert(present >= prepare);
+            assert(secondary_ass_sampler_update(&sampler, &clock, sample_rate,
+                                                present, step));
+            assert(sampler.tick == (uint64_t)tick);
+            secondary_ass_present_feedback(&scheduled, present);
+        }
         struct secondary_ass_presentation q = {0};
         int64_t deadline = secondary_ass_next_draw(&q, now, draw_step);
         secondary_ass_consume_draw(&q, now+draw_step/3); // fresh source arrives
@@ -47,6 +68,25 @@ int main(void)
     secondary_ass_present_feedback(&p,first);
     int64_t next=secondary_ass_predict_present(&p,1005000000,4166666);
     assert(next==1009166666); // switch to another display, discard old lattice
+    // The observed 25fps/audio failure: a cached draw at 3.640s repeated tick
+    // 247, then fresh video skipped 248. Replay both sides of that boundary.
+    struct secondary_ass_clock clock = {.valid=true, .speed=1};
+    struct secondary_ass_sampler sampler = {
+        .valid=true, .rate=71.9996125, .tick=247,
+        .origin_wall=202670182, .sample_wall=3633244200,
+    };
+    assert(!secondary_ass_sampler_update(&sampler, &clock, sampler.rate,
+                                        3640726881, 6944481));
+    int64_t due=secondary_ass_sampler_next_wall(&sampler);
+    struct secondary_ass_presentation q = {
+        .last_display=3633782400, .last_target=3633786281,
+    };
+    int64_t prepare=secondary_ass_sample_prepare_time(due,6944481);
+    next=secondary_ass_predict_present(&q,prepare,6944481);
+    assert(secondary_ass_sampler_update(&sampler,&clock,sampler.rate,next,6944481));
+    assert(sampler.tick==248);
+    assert(secondary_ass_sample_prepare_time(0,6944481)==0);
+    assert(secondary_ass_sample_prepare_time(123,0)==0);
     printf("PRESENTATION_PASS displays=%d frames_per_display=500 lifecycle=stale,missing,stall,source,rate-change\n",combinations);
     return 0;
 }
