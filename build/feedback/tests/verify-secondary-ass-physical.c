@@ -47,7 +47,9 @@ int main(void)
     secondary_ass_physical_feedback(&p, 1090000000, 1000000, 12);
     assert(p.delay_count==0); // late prediction cannot become fake zero delay
     secondary_ass_physical_feedback(&p, 1200000000, 2000000, 13);
-    assert(p.delay_count==0 && !p.last_base); // monitor change clears queue history
+    assert(p.delay_count==0 && p.last_base); // one interval cannot imply a mode change
+    secondary_ass_physical_reset(&p); // explicit lifecycle epoch clears history
+    assert(!p.last_base && !p.delay_count);
     checks += 4;
 
     // Successful Present IDs survive temporarily zero historical statistics.
@@ -135,6 +137,86 @@ int main(void)
         checks += 3;
     }
     checks += 8;
-    printf("secondary physical display phase: PASS (%u checks)\n", checks);
+    // Ten-minute fixed-mode runs use the production observation and sampler
+    // paths. Counts wrap and occasionally omit one refresh; timestamps jitter
+    // enough to exceed the rejected instantaneous 1% period-reset rule.
+    // These are deterministic models, never evidence of physical displays.
+    int long_rates[] = {60, 120, 144, 165};
+    for (unsigned r = 0; r < sizeof(long_rates)/sizeof(long_rates[0]); r++) {
+        int hz = long_rates[r], divisor = hz > 120 ? 2 : 1;
+        int64_t seed = 1000000000 / hz;
+        int64_t actual_t = (int64_t)(seed * (1.0 - 114e-6));
+        const int64_t start = INT64_C(4000000000000000);
+        p = (struct secondary_ass_physical){0};
+        struct secondary_ass_clock media = {0};
+        struct secondary_ass_sampler sampler = {0};
+        secondary_ass_clock_set_speed(&media, 1, start);
+        assert(secondary_ass_clock_anchor(&media, 0, start, false));
+        uint32_t raw = UINT32_MAX - 100;
+        int64_t origin_slot = 0;
+        uint64_t previous_tick = 0;
+        double previous_pts = 0;
+        for (unsigned n = 0; n <= (unsigned)hz * 600; n++) {
+            if (n && n % 1039)
+                raw++;
+            int64_t noise = n % 17 == 0 ? 80000 : (n % 2 ? 30000 : -30000);
+            int64_t observed = start + (int64_t)n * actual_t + noise;
+            secondary_ass_physical_update_observed(&p, false, 0,
+                (struct secondary_ass_physical_point){0}, observed, observed,
+                raw, raw, n + 1, seed);
+            assert(p.epoch == 1 && p.phase_slot == INT64_C(4294967296) + n);
+            if (!n)
+                origin_slot = p.phase_slot;
+            assert(p.phase == observed && p.interval > 0);
+            if (n > (unsigned)hz * 5)
+                assert(p.interval > actual_t - 5000 && p.interval < actual_t + 5000);
+            bool changed = secondary_ass_sampler_update_physical(&sampler,
+                &media, (double)hz / divisor, observed, p.phase_slot,
+                p.phase, p.phase_slot, p.interval, p.epoch);
+            assert(changed == (n % divisor == 0));
+            assert(sampler.origin_slot == origin_slot && sampler.divisor == divisor);
+            assert(sampler.tick == n / divisor && sampler.tick >= previous_tick);
+            assert(secondary_ass_sampler_next_slot(&sampler) ==
+                origin_slot + ((int64_t)n / divisor + 1) * divisor);
+            if (changed) {
+                if (n)
+                    assert(sampler.pts > previous_pts);
+                // No accumulated 114ppm wall oscillator error over 600s.
+                double ideal = (double)((int64_t)n * actual_t) * 1e-9;
+                assert(fabs(sampler.pts - ideal) <= 0.000081);
+                previous_pts = sampler.pts;
+            } else {
+                assert(sampler.pts == previous_pts);
+            }
+            previous_tick = sampler.tick;
+            int64_t saved_phase = p.phase, saved_slot = p.phase_slot;
+            unsigned saved_samples = p.delay_count;
+            secondary_ass_physical_update_observed(&p, false, 0,
+                (struct secondary_ass_physical_point){0}, observed, observed,
+                raw, raw, n + 1, seed);
+            assert(p.phase == saved_phase && p.phase_slot == saved_slot &&
+                   p.delay_count == saved_samples); // one history ID is immutable
+            checks += 10;
+        }
+        // Refining the period by .1ms cannot turn an occupied slot into a new
+        // opportunity, unlike comparing floating wall timestamps.
+        struct secondary_ass_physical_point first = secondary_ass_physical_predict_point(
+            &p, p.phase + actual_t / 2);
+        secondary_ass_physical_submit_point(&p, 2000000, first);
+        p.phase += 100000;
+        struct secondary_ass_physical_point second = secondary_ass_physical_predict_point(
+            &p, p.phase + actual_t / 2);
+        assert(second.slot > first.slot);
+        int64_t submit = secondary_ass_physical_submit_time(&p, second.wall);
+        assert(submit > second.wall - (p.delay + 1) * p.interval);
+        assert(submit < second.wall - p.delay * p.interval);
+        assert(secondary_ass_physical_render_slot_time(&p, second.wall, 200000) ==
+               submit - 200000);
+        uint64_t epoch = p.epoch;
+        secondary_ass_physical_reset(&p);
+        assert(p.epoch == epoch + 1 && !p.phase && !p.last_base_slot && !p.delay_count);
+        checks += 5;
+    }
+    printf("secondary physical display phase: PASS (%u checks; modeled 60/120/144/165Hz x 600s)\n", checks);
     return 0;
 }

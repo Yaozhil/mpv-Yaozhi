@@ -1,4 +1,4 @@
-From be652ae333df49b76a4179a849a30538c1eee22f Mon Sep 17 00:00:00 2001
+From afd4f75e9c666e26eb2c8078776e644de4f36c45 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -6,17 +6,17 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
 ---
  options/options.c                      |   2 +-
  player/playloop.c                      |   2 +-
- sub/osd.c                              | 126 +++++++++++--
- sub/osd.h                              |  13 +-
- sub/osd_state.h                        |  12 +-
+ sub/osd.c                              | 157 +++++++-
+ sub/osd.h                              |  17 +-
+ sub/osd_state.h                        |  14 +-
  sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 186 ++++++++++++++++++
- video/out/d3d11/context.c              |  78 +++++++-
- video/out/secondary_ass_physical.h     | 178 ++++++++++++++++++
- video/out/secondary_ass_presentation.h |  83 ++++++++
- video/out/vo.c                         | 251 +++++++++++++++++++++++--
- video/out/vo.h                         |   8 +
- 12 files changed, 908 insertions(+), 36 deletions(-)
+ sub/secondary_ass_clock.h              | 281 +++++++++++++++
+ video/out/d3d11/context.c              |  89 ++++-
+ video/out/secondary_ass_physical.h     | 477 +++++++++++++++++++++++++
+ video/out/secondary_ass_presentation.h |  83 +++++
+ video/out/vo.c                         | 317 +++++++++++++++-
+ video/out/vo.h                         |  10 +
+ 12 files changed, 1418 insertions(+), 36 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -48,7 +48,7 @@ index d501918..2020ce4 100644
  
  static void handle_clipboard_updates(struct MPContext *mpctx)
 diff --git a/sub/osd.c b/sub/osd.c
-index 92a5326..89c74df 100644
+index 92a5326..703422a 100644
 --- a/sub/osd.c
 +++ b/sub/osd.c
 @@ -18,6 +18,7 @@
@@ -106,29 +106,38 @@ index 92a5326..89c74df 100644
      mp_mutex_unlock(&osd->lock);
  }
  
-@@ -332,12 +349,74 @@ double osd_get_secondary_refresh(struct osd_state *osd)
+@@ -332,12 +349,103 @@ double osd_get_secondary_refresh(struct osd_state *osd)
      return rate;
  }
  
 -void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall)
 +double osd_get_secondary_clock_rate(struct osd_state *osd)
-+{
+ {
 +    // A quiet/static section needs no extra redraws, but the next moving event
 +    // still needs an accurate timeline. Do not tie clock validity to output.
-+    mp_mutex_lock(&osd->lock);
+     mp_mutex_lock(&osd->lock);
+-    osd->secondary_pts = pts;
+-    osd->secondary_wall = wall;
+-    osd->secondary_clock_valid = pts != MP_NOPTS_VALUE;
 +    double rate = osd->secondary_rate;
 +    mp_mutex_unlock(&osd->lock);
 +    return rate;
 +}
 +
 +int64_t osd_get_secondary_next_sample_time(struct osd_state *osd)
- {
-     mp_mutex_lock(&osd->lock);
--    osd->secondary_pts = pts;
--    osd->secondary_wall = wall;
--    osd->secondary_clock_valid = pts != MP_NOPTS_VALUE;
++{
++    mp_mutex_lock(&osd->lock);
 +    int64_t next = osd->secondary_rate > 0
 +        ? secondary_ass_sampler_next_wall(&osd->secondary_sampler) : 0;
++    mp_mutex_unlock(&osd->lock);
++    return next;
++}
++
++int64_t osd_get_secondary_physical_next_sample_slot(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    int64_t next = osd->secondary_rate > 0 && osd->secondary_physical_phase
++        ? secondary_ass_sampler_next_slot(&osd->secondary_sampler) : 0;
 +    mp_mutex_unlock(&osd->lock);
 +    return next;
 +}
@@ -168,9 +177,28 @@ index 92a5326..89c74df 100644
 +    if (physical_phase != osd->secondary_physical_phase)
 +        secondary_ass_sampler_reset(&osd->secondary_sampler);
 +    osd->secondary_physical_phase = physical_phase;
++    osd->secondary_physical_epoch = 0;
 +    osd->secondary_present_wall = wall > 0 ? wall : 0;
 +    osd->secondary_submit_wall = submit_wall > 0 ? submit_wall : 0;
 +    osd->secondary_vsync_interval = vsync_interval > 0 ? vsync_interval : 0;
++    mp_mutex_unlock(&osd->lock);
++}
++
++void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
++    int64_t target_wall, int64_t target_slot, int64_t phase_wall,
++    int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall)
++{
++    mp_mutex_lock(&osd->lock);
++    if (!osd->secondary_physical_phase || osd->secondary_physical_epoch != epoch)
++        secondary_ass_sampler_reset(&osd->secondary_sampler);
++    osd->secondary_physical_phase = true;
++    osd->secondary_physical_epoch = epoch;
++    osd->secondary_target_slot = target_slot;
++    osd->secondary_phase_wall = phase_wall;
++    osd->secondary_phase_slot = phase_slot;
++    osd->secondary_present_wall = target_wall;
++    osd->secondary_submit_wall = submit_wall;
++    osd->secondary_vsync_interval = interval;
 +    mp_mutex_unlock(&osd->lock);
 +}
 +
@@ -182,10 +210,11 @@ index 92a5326..89c74df 100644
 +    osd->secondary_present_wall = 0;
 +    osd->secondary_submit_wall = 0;
 +    osd->secondary_physical_phase = false;
++    osd->secondary_physical_epoch = 0;
      mp_mutex_unlock(&osd->lock);
  }
  
-@@ -358,12 +437,33 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+@@ -358,12 +466,35 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
          if (obj->sub && sub_is_primary_visible(obj->sub))
              res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
      } else if (obj->type == OSDTYPE_SUB2) {
@@ -199,9 +228,11 @@ index 92a5326..89c74df 100644
 +            int64_t sample_wall = osd->secondary_present_wall > 0
 +                ? osd->secondary_present_wall : mp_time_ns();
 +            bool changed = osd->secondary_physical_phase
-+                ? secondary_ass_sampler_update(&osd->secondary_sampler,
++                ? secondary_ass_sampler_update_physical(&osd->secondary_sampler,
 +                    &osd->secondary_clock, osd->secondary_rate, sample_wall,
-+                    osd->secondary_vsync_interval)
++                    osd->secondary_target_slot, osd->secondary_phase_wall,
++                    osd->secondary_phase_slot, osd->secondary_vsync_interval,
++                    osd->secondary_physical_epoch)
 +                : secondary_ass_sampler_update_at_draw(&osd->secondary_sampler,
 +                &osd->secondary_clock, osd->secondary_rate, sample_wall,
 +                osd->secondary_vsync_interval,
@@ -226,10 +257,10 @@ index 92a5326..89c74df 100644
          if (obj->sub && sub_is_secondary_visible(obj->sub))
              res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
 diff --git a/sub/osd.h b/sub/osd.h
-index 37e6f7a..dc1ba43 100644
+index 37e6f7a..888cc1c 100644
 --- a/sub/osd.h
 +++ b/sub/osd.h
-@@ -214,9 +214,18 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
+@@ -214,9 +214,22 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
  void osd_set_render_subs_in_filter(struct osd_state *osd, bool s);
  void osd_set_force_video_pts(struct osd_state *osd, double video_pts);
  double osd_get_force_video_pts(struct osd_state *osd);
@@ -241,6 +272,10 @@ index 37e6f7a..dc1ba43 100644
 +double osd_get_secondary_clock_rate(struct osd_state *osd);
 +int64_t osd_get_secondary_next_sample_time(struct osd_state *osd);
 +int64_t osd_get_secondary_physical_next_sample_time(struct osd_state *osd);
++int64_t osd_get_secondary_physical_next_sample_slot(struct osd_state *osd);
++void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
++    int64_t target_wall, int64_t target_slot, int64_t phase_wall,
++    int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall);
 +void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
 +                                bool display_synced);
 +void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
@@ -251,7 +286,7 @@ index 37e6f7a..dc1ba43 100644
  struct osd_progbar_state {
      int type;           // <0: disabled, 1-255: symbol, else: no symbol
 diff --git a/sub/osd_state.h b/sub/osd_state.h
-index d50537f..4d0ab86 100644
+index d50537f..81627d1 100644
 --- a/sub/osd_state.h
 +++ b/sub/osd_state.h
 @@ -5,6 +5,7 @@
@@ -262,7 +297,7 @@ index d50537f..4d0ab86 100644
  
  enum mp_osdtype {
      OSDTYPE_SUB,
-@@ -75,9 +76,14 @@ struct osd_state {
+@@ -75,9 +76,16 @@ struct osd_state {
      bool render_subs_in_filter;
      _Atomic double force_video_pts;
      // Opt-in clock for external secondary ASS only; guarded by lock.
@@ -276,6 +311,8 @@ index d50537f..4d0ab86 100644
 +    int64_t secondary_submit_wall;
 +    int64_t secondary_vsync_interval;
 +    bool secondary_physical_phase;
++    int64_t secondary_target_slot, secondary_phase_slot, secondary_phase_wall;
++    uint64_t secondary_physical_epoch;
 +    bool secondary_clock_trace;
      bool secondary_has_output;
  
@@ -312,10 +349,10 @@ index 1ec17c8..fd7552d 100644
          fill_plaintext(sd, pts);
 diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
 new file mode 100644
-index 0000000..90b4822
+index 0000000..bc36b6e
 --- /dev/null
 +++ b/sub/secondary_ass_clock.h
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,281 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_CLOCK_H
 +#define MP_SECONDARY_ASS_CLOCK_H
@@ -345,6 +382,10 @@ index 0000000..90b4822
 +    int64_t origin_wall;
 +    int64_t sample_wall;
 +    uint64_t tick;
++    bool physical_slots;
++    uint64_t epoch;
++    int64_t origin_slot, divisor;
++    int64_t phase_wall, phase_slot, physical_interval;
 +};
 +
 +static inline void secondary_ass_sampler_reset(struct secondary_ass_sampler *sampler)
@@ -430,14 +471,105 @@ index 0000000..90b4822
 +    return reset;
 +}
 +
++static inline int64_t secondary_ass_sampler_slot_wall(
++    const struct secondary_ass_sampler *s, int64_t slot)
++{
++    if (s->phase_wall <= 0 || s->phase_slot <= 0 || slot <= 0 ||
++        s->physical_interval <= 0)
++        return 0;
++    int64_t delta = slot - s->phase_slot;
++    if ((delta >= 0 && delta > (INT64_MAX - s->phase_wall) / s->physical_interval) ||
++        (delta < 0 && -delta > (s->phase_wall - 1) / s->physical_interval))
++        return 0;
++    return s->phase_wall + delta * s->physical_interval;
++}
++
++static inline int64_t secondary_ass_sampler_next_slot(
++    const struct secondary_ass_sampler *s)
++{
++    if (!s->valid || !s->physical_slots || s->divisor <= 0 || s->origin_slot <= 0 ||
++        s->tick >= (uint64_t)((INT64_MAX - s->origin_slot) / s->divisor))
++        return 0;
++    return s->origin_slot + (int64_t)(s->tick + 1) * s->divisor;
++}
++
 +static inline int64_t secondary_ass_sampler_next_wall(const struct secondary_ass_sampler *sampler)
 +{
 +    if (!sampler->valid || !isfinite(sampler->rate) || sampler->rate <= 0)
 +        return 0;
++    if (sampler->physical_slots)
++        return secondary_ass_sampler_slot_wall(sampler,
++            secondary_ass_sampler_next_slot(sampler));
 +    double offset = ((double)sampler->tick + 1) * (1e9 / sampler->rate);
 +    if (offset >= (double)INT64_MAX - sampler->origin_wall)
 +        return 0;
 +    return sampler->origin_wall + (int64_t)(offset + 0.5);
++}
++
++static inline bool secondary_ass_sampler_update(struct secondary_ass_sampler *sampler,
++    const struct secondary_ass_clock *clock, double rate, int64_t present_wall,
++    int64_t vsync_interval);
++
++// A divided display cadence is identified by refresh slots, not by a second
++// nominal wall-time oscillator. Period refinement changes only the local
++// slot-to-wall projection; it never replays all elapsed ticks at a new rate.
++static inline bool secondary_ass_sampler_update_physical(
++    struct secondary_ass_sampler *s, const struct secondary_ass_clock *clock,
++    double rate, int64_t present_wall, int64_t target_slot,
++    int64_t phase_wall, int64_t phase_slot, int64_t interval, uint64_t epoch)
++{
++    if (!clock->valid || !isfinite(rate) || rate <= 0 || target_slot <= 0 ||
++        phase_wall <= 0 || phase_slot <= 0 || interval <= 0 || !epoch) {
++        secondary_ass_sampler_reset(s);
++        return false;
++    }
++    bool initialize = !s->valid || s->rate != rate || s->epoch != epoch;
++    if (initialize) {
++        double ratio = 1e9 / rate / interval;
++        if (!isfinite(ratio) || ratio < 0.5 || ratio >= (double)INT64_MAX)
++            return false;
++        int64_t divisor = (int64_t)(ratio + 0.5);
++        // This is eligibility for an integer divisor, not a pacing tolerance.
++        // Arbitrary manual rates retain the existing wall-clock sampler.
++        if (divisor < 1 || fabs(rate * interval * 1e-9 * divisor - 1) > 0.005) {
++            if (s->physical_slots)
++                secondary_ass_sampler_reset(s);
++            bool changed = secondary_ass_sampler_update(s, clock, rate,
++                                                       present_wall, interval);
++            s->epoch = epoch;
++            return changed;
++        }
++        *s = (struct secondary_ass_sampler){
++            .valid = true, .physical_slots = true, .rate = rate, .epoch = epoch,
++            .divisor = divisor, .origin_slot = target_slot,
++            .origin_wall = present_wall, .sample_wall = present_wall,
++            .pts = secondary_ass_clock_sample(clock, present_wall),
++        };
++    }
++    if (!s->physical_slots)
++        return secondary_ass_sampler_update(s, clock, rate, present_wall, interval);
++    s->phase_wall = phase_wall;
++    s->phase_slot = phase_slot;
++    s->physical_interval = interval;
++    if (initialize)
++        return true;
++    if (target_slot < s->origin_slot)
++        return false;
++    uint64_t tick = (uint64_t)((target_slot - s->origin_slot) / s->divisor);
++    if (tick <= s->tick && !s->force)
++        return false;
++    if (tick > s->tick)
++        s->tick = tick;
++    if (s->tick > (uint64_t)((INT64_MAX - s->origin_slot) / s->divisor))
++        return false;
++    int64_t sample_slot = s->origin_slot + (int64_t)s->tick * s->divisor;
++    int64_t wall = s->force ? present_wall : secondary_ass_sampler_slot_wall(s, sample_slot);
++    if (wall <= 0)
++        return false;
++    s->sample_wall = wall;
++    s->pts = secondary_ass_clock_sample(clock, wall);
++    s->force = false;
++    return true;
 +}
 +
 +static inline bool secondary_ass_sampler_update(struct secondary_ass_sampler *sampler,
@@ -503,7 +635,7 @@ index 0000000..90b4822
 +
 +#endif
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index fc8802e..e3f384d 100644
+index fc8802e..da65e2a 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -15,6 +15,10 @@
@@ -597,7 +729,7 @@ index fc8802e..e3f384d 100644
  
      // Detecting skipped vsyncs is possible but not supported yet
      info->skipped_vsyncs = -1;
-@@ -345,17 +377,29 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -345,17 +377,40 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      p->last_sync_refresh_count = stats.SyncRefreshCount;
  
      // Get the elapsed time passed between the above vsyncs
@@ -607,6 +739,17 @@ index fc8802e..e3f384d 100644
          sqt_passed = stats.SyncQPCTime.QuadPart - p->last_sync_qpc_time;
      p->last_sync_qpc_time = stats.SyncQPCTime.QuadPart;
  
++    if (stats.SyncQPCTime.QuadPart && stats.SyncRefreshCount && stats.PresentCount) {
++        // Independent raw observation for the secondary clock. Primary video
++        // synchronization retains its existing one-step estimator below.
++        info->secondary_sync_qpc_ns = qpc_to_ns(sw, stats.SyncQPCTime.QuadPart);
++        info->secondary_sync_time = mp_time_ns() +
++            info->secondary_sync_qpc_ns - qpc_ns_now(sw);
++        info->secondary_sync_refresh_count = stats.SyncRefreshCount;
++        info->secondary_present_refresh_count = stats.PresentRefreshCount;
++        info->secondary_present_id = stats.PresentCount;
++    }
++
      // If any vsyncs have passed, estimate the physical frame rate
 -    if (src_passed && sqt_passed)
 +    if (src_passed && sqt_passed > 0)
@@ -629,7 +772,7 @@ index fc8802e..e3f384d 100644
      // If the physical frame rate is known and the other members of
      // DXGI_FRAME_STATISTICS are non-0, estimate the timing of the next frame
      if (p->vsync_duration_qpc && stats.PresentCount &&
-@@ -381,6 +425,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -381,6 +436,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
                  (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
          }
      }
@@ -658,7 +801,7 @@ index fc8802e..e3f384d 100644
  }
  
  static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
-@@ -507,6 +573,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -507,6 +584,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
      struct priv *p = ctx->priv = talloc_zero(ctx, struct priv);
      p->opts_cache = m_config_cache_alloc(ctx, ctx->global, &d3d11_conf);
      p->opts = p->opts_cache->opts;
@@ -669,10 +812,10 @@ index fc8802e..e3f384d 100644
      p->vo_opts = p->vo_opts_cache->opts;
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
 new file mode 100644
-index 0000000..8fc4114
+index 0000000..4c3beb0
 --- /dev/null
 +++ b/video/out/secondary_ass_physical.h
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,477 @@
 +#ifndef MP_SECONDARY_ASS_PHYSICAL_H
 +#define MP_SECONDARY_ASS_PHYSICAL_H
 +
@@ -685,15 +828,178 @@ index 0000000..8fc4114
 +// the driver's prediction used by the primary video synchronization clock.
 +struct secondary_ass_physical {
 +    int64_t phase, interval, last_base;
++    uint64_t epoch;
++    bool epoch_exhausted;
++    int64_t phase_slot, last_base_slot;
++    int64_t sync_slot, sync_qpc_ns;
++    uint32_t sync_count;
++    bool sync_segment_consistent;
++    int64_t measure_qpc_ns;
++    uint32_t measure_count;
++    int64_t periods[5];
++    unsigned period_count, period_next;
 +    uint64_t historical_id;
 +    int delay, delay_samples[3], delay_count, delay_next;
-+    struct { uint64_t id; int64_t base; } submitted[32];
++    struct { uint64_t id; int64_t base, base_slot, target_slot; } submitted[32];
 +    unsigned next;
++};
++
++struct secondary_ass_physical_point {
++    int64_t slot, wall;
 +};
 +
 +static inline void secondary_ass_physical_reset(struct secondary_ass_physical *p)
 +{
++    uint64_t epoch = p->epoch;
 +    *p = (struct secondary_ass_physical){0};
++    // Never reuse an epoch after wrapping. In that unreachable lifetime the
++    // physical path stays unavailable instead of reviving an old OSD grid.
++    p->epoch = epoch < UINT64_MAX ? epoch + 1 : UINT64_MAX;
++    p->epoch_exhausted = epoch == UINT64_MAX;
++}
++
++static inline bool secondary_ass_physical_interval_valid(int64_t interval)
++{
++    return interval > 0 && interval <= INT64_MAX / 8;
++}
++
++static inline struct secondary_ass_physical_point
++secondary_ass_physical_point_at(const struct secondary_ass_physical *p,
++                               int64_t slot)
++{
++    struct secondary_ass_physical_point none = {0};
++    if (p->epoch_exhausted || p->phase <= 0 || p->phase_slot <= 0 ||
++        slot <= 0 || !secondary_ass_physical_interval_valid(p->interval))
++        return none;
++    int64_t delta = slot - p->phase_slot;
++    int64_t wall;
++    if (delta >= 0) {
++        if (delta > (INT64_MAX - p->phase) / p->interval)
++            return none;
++        wall = p->phase + delta * p->interval;
++    } else {
++        if (-delta > (p->phase - 1) / p->interval)
++            return none;
++        wall = p->phase + delta * p->interval;
++    }
++    return (struct secondary_ass_physical_point){slot, wall};
++}
++
++static inline struct secondary_ass_physical_point
++secondary_ass_physical_predict_point(const struct secondary_ass_physical *p,
++                                    int64_t ready)
++{
++    struct secondary_ass_physical_point none = {0};
++    if (p->phase <= 0 || ready < p->phase || p->phase_slot <= 0 ||
++        !secondary_ass_physical_interval_valid(p->interval) ||
++        p->delay < 0 || p->delay > 4)
++        return none;
++    int64_t steps = (ready - p->phase) / p->interval + 1;
++    if (steps > INT64_MAX - p->phase_slot)
++        return none;
++    int64_t base = p->phase_slot + steps;
++    if (base <= p->last_base_slot) {
++        if (p->last_base_slot == INT64_MAX)
++            return none;
++        base = p->last_base_slot + 1;
++    }
++    if (base > INT64_MAX - p->delay)
++        return none;
++    return secondary_ass_physical_point_at(p, base + p->delay);
++}
++
++static inline void secondary_ass_physical_measure_anchor(
++    struct secondary_ass_physical *p, int64_t qpc_ns, uint32_t count)
++{
++    p->measure_qpc_ns = qpc_ns;
++    p->measure_count = count;
++}
++
++// QPC and raw refresh counts are independent observations. A missing raw
++// count invalidates a period-measurement segment, not the submission queue.
++// Logical slots advance from checked QPC differences in a fixed-mode epoch.
++static inline bool secondary_ass_physical_observe(
++    struct secondary_ass_physical *p, int64_t qpc_ns, uint32_t count,
++    int64_t seed_interval)
++{
++    if (p->epoch_exhausted || qpc_ns <= 0)
++        return false;
++    if (!p->epoch)
++        p->epoch = 1;
++    if (!p->interval) {
++        if (!secondary_ass_physical_interval_valid(seed_interval))
++            return false;
++        p->interval = seed_interval;
++    }
++    if (!p->sync_qpc_ns) {
++        p->sync_qpc_ns = qpc_ns;
++        p->sync_count = count;
++        // Leave room for a historical Present before the first Sync sample.
++        p->sync_slot = INT64_C(4294967296);
++        p->sync_segment_consistent = true;
++        secondary_ass_physical_measure_anchor(p, qpc_ns, count);
++        return true;
++    }
++    if (qpc_ns == p->sync_qpc_ns && count == p->sync_count)
++        return true;
++    if (qpc_ns <= p->sync_qpc_ns)
++        return false;
++    int64_t elapsed = qpc_ns - p->sync_qpc_ns;
++    if (elapsed > INT64_MAX - p->interval / 2)
++        return false;
++    int64_t steps = (elapsed + p->interval / 2) / p->interval;
++    if (steps <= 0 || steps > INT64_MAX - p->sync_slot ||
++        steps > INT64_MAX / p->interval)
++        return false;
++    int64_t residual = elapsed - steps * p->interval;
++    // An ambiguous non-integer gap cannot establish a fixed physical lattice.
++    // Keep the queue, but make predictions unavailable until valid feedback.
++    if (residual > p->interval / 4 || residual < -p->interval / 4) {
++        p->phase = p->phase_slot = 0;
++        p->measure_qpc_ns = 0;
++        return false;
++    }
++    uint32_t passed = count - p->sync_count;
++    bool consistent = passed < UINT32_C(0x80000000) &&
++                      (uint64_t)steps == passed;
++    p->sync_slot += steps;
++    p->sync_qpc_ns = qpc_ns;
++    p->sync_count = count;
++    p->sync_segment_consistent = consistent;
++    if (!consistent || !p->measure_qpc_ns) {
++        secondary_ass_physical_measure_anchor(p, qpc_ns, count);
++        return true;
++    }
++    int64_t window = qpc_ns - p->measure_qpc_ns;
++    if (window < INT64_C(500000000))
++        return true;
++    uint32_t refreshes = count - p->measure_count;
++    secondary_ass_physical_measure_anchor(p, qpc_ns, count);
++    if (!refreshes || refreshes >= UINT32_C(0x80000000))
++        return true;
++    int64_t measured = window / refreshes;
++    if (!secondary_ass_physical_interval_valid(measured))
++        return true;
++    p->periods[p->period_next] = measured;
++    p->period_next = (p->period_next + 1) % 5;
++    if (p->period_count < 5)
++        p->period_count++;
++    if (p->period_count < 3)
++        return true;
++    int64_t values[5];
++    for (unsigned n = 0; n < p->period_count; n++)
++        values[n] = p->periods[n];
++    for (unsigned n = 1; n < p->period_count; n++) {
++        int64_t value = values[n];
++        unsigned k = n;
++        while (k && values[k - 1] > value) {
++            values[k] = values[k - 1];
++            k--;
++        }
++        values[k] = value;
++    }
++    p->interval = values[p->period_count / 2];
++    return true;
 +}
 +
 +static inline int64_t secondary_ass_physical_slot(int64_t phase,
@@ -708,31 +1014,35 @@ index 0000000..8fc4114
 +    return phase + steps * interval;
 +}
 +
-+static inline void secondary_ass_physical_feedback(
-+    struct secondary_ass_physical *p, int64_t actual, int64_t interval,
++static inline void secondary_ass_physical_feedback_point(
++    struct secondary_ass_physical *p, struct secondary_ass_physical_point actual,
 +    uint64_t historical_id)
 +{
-+    if (actual <= 0 || interval <= 0 || !historical_id)
++    if (p->epoch_exhausted || actual.wall <= 0 || actual.slot <= 0 ||
++        !historical_id || historical_id == p->historical_id)
 +        return;
-+    if (p->interval && (interval > p->interval + p->interval / 100 ||
-+                       interval < p->interval - p->interval / 100))
-+        secondary_ass_physical_reset(p);
-+    p->phase = actual;
-+    p->interval = interval;
-+    if (historical_id == p->historical_id)
-+        return;
++    p->phase = actual.wall;
++    p->phase_slot = actual.slot;
 +    p->historical_id = historical_id;
 +    for (unsigned n = 0; n < 32; n++) {
-+        if (p->submitted[n].id != historical_id || p->submitted[n].base <= 0)
++        if (p->submitted[n].id != historical_id)
 +            continue;
-+        int64_t delta = actual - p->submitted[n].base;
-+        if (delta < -interval / 2 || delta > 4 * interval + interval / 2)
-+            break;
-+        int delay = (int)((delta + interval / 2) / interval);
++        int64_t delta;
++        if (p->submitted[n].base_slot > 0) {
++            delta = actual.slot - p->submitted[n].base_slot;
++        } else {
++            // Legacy adapters have no slot identity. Keep their historical
++            // wall-offset learner; the observed path always has base_slot.
++            int64_t elapsed = actual.wall - p->submitted[n].base;
++            if (elapsed < -p->interval / 2 || elapsed > 4 * p->interval + p->interval / 2)
++                break;
++            delta = (elapsed + p->interval / 2) / p->interval;
++        }
 +        // Delay is a learned submission pipeline offset, never a guessed
 +        // fixed extra vsync. Ignore disjoint/overloaded history outliers.
-+        if (delay < 0 || delay > 4)
++        if (delta < 0 || delta > 4)
 +            break;
++        int delay = (int)delta;
 +        p->delay_samples[p->delay_next] = delay;
 +        p->delay_next = (p->delay_next + 1) % 3;
 +        if (p->delay_count < 3)
@@ -753,9 +1063,42 @@ index 0000000..8fc4114
 +    }
 +}
 +
++// Compatibility for callers without raw clock/count pairs. This interface is
++// deliberately not the physical-period estimator used by the observed path.
++static inline void secondary_ass_physical_feedback(
++    struct secondary_ass_physical *p, int64_t actual, int64_t interval,
++    uint64_t historical_id)
++{
++    if (actual <= 0 || !secondary_ass_physical_interval_valid(interval) ||
++        !historical_id || p->epoch_exhausted ||
++        historical_id == p->historical_id)
++        return;
++    int64_t slot = p->phase_slot > 0 ? p->phase_slot : INT64_C(4294967296);
++    if (p->phase > 0 && p->interval > 0) {
++        int64_t delta = actual - p->phase;
++        int64_t steps = delta / p->interval;
++        int64_t remainder = delta % p->interval;
++        if (remainder >= p->interval / 2)
++            steps++;
++        if (remainder <= -p->interval / 2)
++            steps--;
++        if ((steps > 0 && slot > INT64_MAX - steps) ||
++            (steps < 0 && slot <= -steps))
++            return;
++        slot += steps;
++    }
++    if (!p->epoch)
++        p->epoch = 1;
++    p->interval = interval;
++    secondary_ass_physical_feedback_point(p,
++        (struct secondary_ass_physical_point){slot, actual}, historical_id);
++}
++
 +static inline int64_t secondary_ass_physical_predict(
 +    struct secondary_ass_physical *p, int64_t ready)
 +{
++    if (p->phase_slot > 0)
++        return secondary_ass_physical_predict_point(p, ready).wall;
 +    int64_t base = secondary_ass_physical_slot(p->phase, p->interval, ready);
 +    if (!base)
 +        return 0;
@@ -770,11 +1113,50 @@ index 0000000..8fc4114
 +    return base + p->delay * p->interval;
 +}
 +
++static inline void secondary_ass_physical_submit_point(
++    struct secondary_ass_physical *p, uint64_t id,
++    struct secondary_ass_physical_point intended)
++{
++    if (p->epoch_exhausted || !id || intended.wall <= 0 ||
++        intended.slot <= p->delay || p->delay < 0 || p->delay > 4 ||
++        !secondary_ass_physical_interval_valid(p->interval) ||
++        intended.wall <= p->delay * p->interval)
++        return;
++    if (p->submitted[(p->next + 31) % 32].id == id)
++        return;
++    int64_t base_slot = intended.slot - p->delay;
++    int64_t base = intended.wall - p->delay * p->interval;
++    p->submitted[p->next].id = id;
++    p->submitted[p->next].base = base;
++    p->submitted[p->next].base_slot = base_slot;
++    p->submitted[p->next].target_slot = intended.slot;
++    p->next = (p->next + 1) % 32;
++    if (base_slot > p->last_base_slot) {
++        p->last_base_slot = base_slot;
++        p->last_base = base;
++    }
++}
++
 +static inline void secondary_ass_physical_submit(
 +    struct secondary_ass_physical *p, uint64_t id, int64_t intended)
 +{
 +    if (!p->phase || !id || intended <= 0)
 +        return;
++    if (p->phase_slot > 0 && p->interval > 0) {
++        int64_t delta = intended - p->phase;
++        int64_t steps = delta / p->interval;
++        int64_t remainder = delta % p->interval;
++        if (remainder >= p->interval / 2)
++            steps++;
++        if (remainder <= -p->interval / 2)
++            steps--;
++        if ((steps > 0 && p->phase_slot > INT64_MAX - steps) ||
++            (steps < 0 && p->phase_slot <= -steps))
++            return;
++        secondary_ass_physical_submit_point(p, id,
++            (struct secondary_ass_physical_point){p->phase_slot + steps, intended});
++        return;
++    }
 +    if (p->submitted[(p->next + 31) % 32].id == id)
 +        return;
 +    int64_t base = intended - p->delay * p->interval;
@@ -806,6 +1188,30 @@ index 0000000..8fc4114
 +    return sample - p->delay * p->interval - lead;
 +}
 +
++static inline int64_t secondary_ass_physical_submit_time(
++    const struct secondary_ass_physical *p, int64_t sample)
++{
++    if (!p->phase || !secondary_ass_physical_interval_valid(p->interval) ||
++        p->delay < 0 || p->delay > 4 || sample <= (p->delay + 1) * p->interval)
++        return 0;
++    // Present(sync=1) may target only the next scanout after its base cycle.
++    // Submit just inside that cycle, leaving GPU/flip completion headroom.
++    // Half-cycle submission left <0.15 ms in the recorded missed scanouts.
++    int64_t guard = p->interval / 4;
++    if (guard > 1000000)
++        guard = 1000000;
++    return sample - (p->delay + 1) * p->interval + guard;
++}
++
++static inline int64_t secondary_ass_physical_render_slot_time(
++    const struct secondary_ass_physical *p, int64_t sample, int64_t cost)
++{
++    int64_t submit = secondary_ass_physical_submit_time(p, sample);
++    if (submit <= 0 || cost < 0 || cost > submit)
++        return 0;
++    return submit - cost;
++}
++
 +// The queued video's actual submission opportunity bounds this cached draw.
 +// Execute a successful decision directly; another deadline calculation must
 +// not leave both the queued video and its earlier cached slot unserviced.
@@ -825,7 +1231,7 @@ index 0000000..8fc4114
 +    if (ready < fresh_pts)
 +        ready = fresh_pts;
 +    int64_t slot = secondary_ass_physical_predict(p, ready);
-+    int64_t prepare = secondary_ass_physical_render_time(p, sample, redraw_cost);
++    int64_t prepare = secondary_ass_physical_render_slot_time(p, sample, redraw_cost);
 +    if (prepare < earliest_redraw)
 +        prepare = earliest_redraw;
 +    if (slot <= 0 || prepare <= 0 || sample >= slot - p->interval / 2 ||
@@ -848,6 +1254,42 @@ index 0000000..8fc4114
 +    // contain zeroes. Its ID is independent of historical feedback validity.
 +    secondary_ass_physical_submit(p, submitted_id, intended);
 +    secondary_ass_physical_feedback(p, actual, interval, historical_id);
++}
++
++static inline void secondary_ass_physical_update_observed(
++    struct secondary_ass_physical *p, bool invalid, uint64_t submitted_id,
++    struct secondary_ass_physical_point intended, int64_t sync_qpc_ns,
++    int64_t sync_wall, uint32_t sync_count, uint32_t present_count,
++    uint64_t historical_id, int64_t seed_interval)
++{
++    if (invalid) {
++        secondary_ass_physical_reset(p);
++        return;
++    }
++    // Registration uses the exact slot selected before this feedback. A later
++    // period refinement cannot reinterpret a successful Present's identity.
++    secondary_ass_physical_submit_point(p, submitted_id, intended);
++    if (sync_wall <= 0 || !secondary_ass_physical_observe(
++            p, sync_qpc_ns, sync_count, seed_interval) || !historical_id)
++        return;
++    uint32_t raw_offset = present_count - sync_count;
++    int64_t offset = raw_offset <= INT32_MAX ? raw_offset :
++                    -(int64_t)(UINT32_MAX - raw_offset) - 1;
++    // Cross-gap extrapolation is ambiguous when a raw refresh count was lost.
++    // A same-count Sync/Present pair is still an identified exact timestamp.
++    if (offset < -32 || offset > 32 ||
++        (offset && !p->sync_segment_consistent) ||
++        (offset > 0 && p->sync_slot > INT64_MAX - offset) ||
++        (offset < 0 && p->sync_slot <= -offset))
++        return;
++    int64_t adjustment = offset * p->interval;
++    if ((adjustment > 0 && sync_wall > INT64_MAX - adjustment) ||
++        (adjustment < 0 && sync_wall <= -adjustment))
++        return;
++    secondary_ass_physical_feedback_point(p,
++        (struct secondary_ass_physical_point){p->sync_slot + offset,
++                                             sync_wall + adjustment},
++        historical_id);
 +}
 +
 +#endif
@@ -941,7 +1383,7 @@ index 0000000..4d5a21d
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..6ebb80d 100644
+index 72e6c77..09c5981 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,8 @@
@@ -977,7 +1419,7 @@ index 72e6c77..6ebb80d 100644
      in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
      in->secondary_next_probe = 0;
 +    in->secondary_presentation = (struct secondary_ass_presentation){0};
-+    in->secondary_physical = (struct secondary_ass_physical){0};
++    secondary_ass_physical_reset(&in->secondary_physical);
  }
  
  extern const struct m_sub_options gl_video_conf;
@@ -987,7 +1429,16 @@ index 72e6c77..6ebb80d 100644
  static MP_THREAD_VOID vo_thread(void *ptr);
  
  static bool get_desc(struct m_obj_desc *dst, int index)
-@@ -885,9 +895,11 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+@@ -573,6 +583,8 @@ static void update_display_fps(struct vo *vo)
+ 
+         mp_mutex_lock(&in->lock);
+ 
++        if (in->reported_display_fps != fps)
++            secondary_ass_physical_reset(&in->secondary_physical);
+         in->reported_display_fps = fps;
+     }
+ 
+@@ -885,9 +897,13 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
              in->secondary_redraw_cost, duration, interval);
          bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
              duration, interval, now, in->secondary_next_probe);
@@ -995,13 +1446,15 @@ index 72e6c77..6ebb80d 100644
 -            lead = MPMIN(lead, MPMAX(MP_TIME_S_TO_NS(0.5 / secondary_rate),
 +        if (secondary_rate > 0 && (affordable || probe)) {
 +            int64_t minimum = MP_TIME_S_TO_NS(0.002);
++            if (in->reported_display_fps > 0)
++                minimum += MP_TIME_S_TO_NS(1.0 / in->reported_display_fps);
 +            lead = MPMIN(lead, MPMAX(minimum,
                  in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
 +        }
          next_pts -= lead;
          next_pts -= in->flip_queue_offset;
          if (next_pts > now)
-@@ -951,7 +963,20 @@ static void wait_until(struct vo *vo, int64_t target)
+@@ -951,12 +967,88 @@ static void wait_until(struct vo *vo, int64_t target)
      while (target > mp_time_ns()) {
          if (in->queued_events & VO_EVENT_LIVE_RESIZING)
              break;
@@ -1023,12 +1476,80 @@ index 72e6c77..6ebb80d 100644
              break;
      }
      mp_mutex_unlock(&in->lock);
-@@ -965,8 +990,49 @@ static bool render_frame(struct vo *vo)
+ }
+ 
++static struct secondary_ass_physical_point secondary_next_sample(struct vo *vo)
++{
++    struct secondary_ass_physical *p = &vo->in->secondary_physical;
++    int64_t slot = osd_get_secondary_physical_next_sample_slot(vo->osd);
++    if (slot > 0)
++        return secondary_ass_physical_point_at(p, slot);
++    // An arbitrary manual cadence can still use the wall-time fallback. Map
++    // its opportunity to an actual slot before checking queue occupancy.
++    int64_t wall = osd_get_secondary_physical_next_sample_time(vo->osd);
++    if (wall <= 0 || !p->phase || !p->interval)
++        return (struct secondary_ass_physical_point){0};
++    int64_t delta = wall - p->phase;
++    int64_t steps = delta / p->interval;
++    int64_t rest = delta % p->interval;
++    if (rest >= p->interval / 2)
++        steps++;
++    if (rest <= -p->interval / 2)
++        steps--;
++    if ((steps > 0 && p->phase_slot > INT64_MAX - steps) ||
++        (steps < 0 && p->phase_slot <= -steps))
++        return (struct secondary_ass_physical_point){0};
++    return secondary_ass_physical_point_at(p, p->phase_slot + steps);
++}
++
++static void secondary_physical_feedback(struct vo *vo,
++    const struct vo_vsync_info *vsync, struct secondary_ass_physical_point intended)
++{
++    struct vo_internal *in = vo->in;
++    int64_t seed = in->reported_display_fps > 0
++        ? MP_TIME_S_TO_NS(1.0 / in->reported_display_fps) : vsync->vsync_duration;
++    secondary_ass_physical_update_observed(&in->secondary_physical,
++        vsync->secondary_phase_reset, vsync->secondary_submit_id, intended,
++        vsync->secondary_sync_qpc_ns, vsync->secondary_sync_time,
++        vsync->secondary_sync_refresh_count, vsync->secondary_present_refresh_count,
++        vsync->secondary_present_id, seed);
++    if (in->secondary_trace && in->secondary_physical.historical_id ==
++            vsync->secondary_present_id) {
++        struct secondary_ass_physical *p = &in->secondary_physical;
++        for (unsigned n = 0; n < 32; n++) {
++            if (p->submitted[n].id != vsync->secondary_present_id ||
++                p->submitted[n].target_slot <= 0)
++                continue;
++            MP_INFO(vo, "native-ass-physical: id=%"PRIu64" target_slot=%"PRId64
++                " actual_slot=%"PRId64" late_slots=%"PRId64" epoch=%"PRIu64"\n",
++                vsync->secondary_present_id, p->submitted[n].target_slot,
++                p->phase_slot, p->phase_slot - p->submitted[n].target_slot, p->epoch);
++            break;
++        }
++    }
++}
++
++static void secondary_set_presentation(struct vo *vo,
++    struct secondary_ass_physical_point point, int64_t fallback,
++    int64_t interval, int64_t submit)
++{
++    struct secondary_ass_physical *p = &vo->in->secondary_physical;
++    if (point.slot > 0 && point.wall > 0)
++        osd_set_secondary_physical_presentation_time(vo->osd, point.wall, point.slot,
++            p->phase, p->phase_slot, p->interval, p->epoch, submit);
++    else
++        osd_set_secondary_presentation_time(vo->osd, fallback, interval, submit, false);
++}
++
+ static bool render_frame(struct vo *vo)
+ {
+     struct vo_internal *in = vo->in;
+@@ -965,8 +1057,49 @@ static bool render_frame(struct vo *vo)
  
      update_display_fps(vo);
  
 +    double native_rate = osd_get_secondary_refresh(vo->osd);
-+    int64_t native_sample = osd_get_secondary_physical_next_sample_time(vo->osd);
++    int64_t native_sample = secondary_next_sample(vo).wall;
 +
      mp_mutex_lock(&in->lock);
  
@@ -1073,7 +1594,7 @@ index 72e6c77..6ebb80d 100644
      if (in->frame_queued) {
          talloc_free(in->current_frame);
          in->current_frame = in->frame_queued;
-@@ -1050,10 +1116,54 @@ static bool render_frame(struct vo *vo)
+@@ -1050,10 +1183,55 @@ static bool render_frame(struct vo *vo)
  
          stats_time_start(in->stats, "video-draw");
  
@@ -1089,6 +1610,7 @@ index 72e6c77..6ebb80d 100644
 +        int64_t presentation_time = clock_rate > 0 ?
 +            secondary_ass_predict_present(&in->secondary_presentation,
 +                                           present_ready, display_interval) : 0;
++        struct secondary_ass_physical_point physical_point = {0};
 +        bool physical_phase = clock_rate > 0 && !frame->display_synced &&
 +            in->secondary_physical.phase && native_rate > 0 &&
 +            duration >= in->secondary_physical.interval &&
@@ -1099,17 +1621,17 @@ index 72e6c77..6ebb80d 100644
 +            display_interval = in->secondary_physical.interval;
 +            present_ready = MPMAX(present_ready,
 +                                 mp_time_ns() + in->secondary_render_cost);
-+            presentation_time = secondary_ass_physical_predict(
++            physical_point = secondary_ass_physical_predict_point(
 +                &in->secondary_physical, present_ready);
++            presentation_time = physical_point.wall;
 +            // Preserve media PTS and the selected scanout slot; submit inside
 +            // that slot's safe window after preparing the image ahead of it.
-+            target = secondary_ass_physical_prepare(&in->secondary_physical,
++            target = secondary_ass_physical_submit_time(&in->secondary_physical,
 +                                                    presentation_time);
 +            present_ready = target;
 +        }
-+        osd_set_secondary_presentation_time(vo->osd, presentation_time,
-+                                             display_interval, present_ready,
-+                                             physical_phase);
++        secondary_set_presentation(vo, physical_point, presentation_time,
++                                   display_interval, present_ready);
 +        if (clock_rate > 0 && frame->current &&
 +            (frame->display_synced || !frame->repeat)) {
 +            double media_pts = frame->current->pts +
@@ -1131,16 +1653,12 @@ index 72e6c77..6ebb80d 100644
  
          in->visible = vo->driver->draw_frame(vo, frame);
  
-@@ -1120,6 +1230,23 @@ static bool render_frame(struct vo *vo)
+@@ -1120,6 +1298,19 @@ static bool render_frame(struct vo *vo)
          if (vo->driver->get_vsync)
              vo->driver->get_vsync(vo, &vsync);
  
 +        if (clock_rate > 0) {
-+            secondary_ass_physical_update(&in->secondary_physical,
-+                vsync.secondary_phase_reset, vsync.secondary_submit_id,
-+                physical_phase ? presentation_time : 0,
-+                vsync.secondary_display_time, vsync.vsync_duration,
-+                vsync.secondary_present_id);
++            secondary_physical_feedback(vo, &vsync, physical_point);
 +            secondary_ass_present_feedback(&in->secondary_presentation,
 +                                           vsync.last_queue_display_time);
 +            if (in->secondary_trace)
@@ -1149,13 +1667,13 @@ index 72e6c77..6ebb80d 100644
 +                        vsync.last_queue_display_time);
 +        } else {
 +            in->secondary_presentation = (struct secondary_ass_presentation){0};
-+            in->secondary_physical = (struct secondary_ass_physical){0};
++            secondary_ass_physical_reset(&in->secondary_physical);
 +        }
 +
          // Make up some crap if presentation feedback is missing.
          if (vsync.last_queue_display_time <= 0)
              vsync.last_queue_display_time = mp_time_ns();
-@@ -1173,7 +1300,7 @@ done:
+@@ -1173,7 +1364,7 @@ done:
      return more_frames;
  }
  
@@ -1164,7 +1682,7 @@ index 72e6c77..6ebb80d 100644
  {
      struct vo_internal *in = vo->in;
  
-@@ -1181,6 +1308,18 @@ static void do_redraw(struct vo *vo)
+@@ -1181,6 +1372,18 @@ static void do_redraw(struct vo *vo)
          return;
  
      mp_mutex_lock(&in->lock);
@@ -1183,7 +1701,7 @@ index 72e6c77..6ebb80d 100644
      in->request_redraw = false;
  
      if (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) {
-@@ -1200,15 +1339,73 @@ static void do_redraw(struct vo *vo)
+@@ -1200,15 +1403,75 @@ static void do_redraw(struct vo *vo)
      frame->still = true;
      frame->pts = 0;
      frame->duration = -1;
@@ -1197,6 +1715,7 @@ index 72e6c77..6ebb80d 100644
 +    int64_t presentation_time = clock_rate > 0 ?
 +        secondary_ass_predict_present(&in->secondary_presentation,
 +                                       mp_time_ns(), display_interval) : 0;
++    struct secondary_ass_physical_point physical_point = {0};
 +    bool physical_phase = clock_rate > 0 && !frame->display_synced &&
 +        in->secondary_physical.phase && secondary_rate > 0 &&
 +        video_duration >= in->secondary_physical.interval &&
@@ -1205,17 +1724,22 @@ index 72e6c77..6ebb80d 100644
 +            MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval));
 +    if (physical_phase) {
 +        display_interval = in->secondary_physical.interval;
-+        presentation_time = secondary_ass_physical_predict(&in->secondary_physical,
++        physical_point = secondary_ass_physical_predict_point(&in->secondary_physical,
 +            mp_time_ns() + in->secondary_redraw_cost);
-+        int64_t sample = osd_get_secondary_physical_next_sample_time(vo->osd);
-+        int64_t prepare = secondary_ass_physical_render_time(
++        presentation_time = physical_point.wall;
++        struct secondary_ass_physical_point next_sample = secondary_next_sample(vo);
++        int64_t sample = next_sample.wall;
++        int64_t prepare = secondary_ass_physical_render_slot_time(
 +            &in->secondary_physical, sample, in->secondary_redraw_cost);
 +        if (sample > 0 && prepare <= mp_time_ns() + display_interval / 4 &&
-+            sample >= presentation_time - display_interval / 2)
++            next_sample.slot >= physical_point.slot)
++        {
 +            presentation_time = sample;
++            physical_point = next_sample;
++        }
 +    }
-+    osd_set_secondary_presentation_time(vo->osd, presentation_time,
-+                                         display_interval, mp_time_ns(), physical_phase);
++    secondary_set_presentation(vo, physical_point, presentation_time,
++                               display_interval, mp_time_ns());
 +    if (in->secondary_trace && presentation_time > 0)
 +        MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=0 ds=%d "
 +                "target_ns=%"PRId64" interval_ns=%"PRId64
@@ -1229,7 +1753,7 @@ index 72e6c77..6ebb80d 100644
      vo->driver->draw_frame(vo, frame);
      int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
 +    if (physical_phase)
-+        wait_until(vo, secondary_ass_physical_prepare(&in->secondary_physical,
++        wait_until(vo, secondary_ass_physical_submit_time(&in->secondary_physical,
 +                                                       presentation_time));
      vo->driver->flip_page(vo);
 +    if (clock_rate > 0) {
@@ -1239,11 +1763,7 @@ index 72e6c77..6ebb80d 100644
 +        };
 +        if (vo->driver->get_vsync)
 +            vo->driver->get_vsync(vo, &vsync);
-+        secondary_ass_physical_update(&in->secondary_physical,
-+            vsync.secondary_phase_reset, vsync.secondary_submit_id,
-+            physical_phase ? presentation_time : 0,
-+            vsync.secondary_display_time, vsync.vsync_duration,
-+            vsync.secondary_present_id);
++        secondary_physical_feedback(vo, &vsync, physical_point);
 +        secondary_ass_present_feedback(&in->secondary_presentation,
 +                                       vsync.last_queue_display_time);
 +        if (in->secondary_trace)
@@ -1258,7 +1778,7 @@ index 72e6c77..6ebb80d 100644
          int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
          in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
              &in->secondary_redraw_budget, cpu_cost, 0);
-@@ -1252,6 +1449,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1252,6 +1515,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          goto done;
  
      read_opts(vo);
@@ -1267,7 +1787,7 @@ index 72e6c77..6ebb80d 100644
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1309,7 +1508,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1309,7 +1574,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
          if (!working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
@@ -1278,7 +1798,7 @@ index 72e6c77..6ebb80d 100644
              bool affordable = secondary_ass_budget_affordable(secondary_cost,
                  secondary_redraw_cost, secondary_duration, interval);
              // Once per second, allow a bounded recovery sample. A CPU wakeup
-@@ -1317,13 +1518,40 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1317,13 +1584,40 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
                  secondary_duration, interval, now, secondary_probe);
              if (affordable || probe) {
@@ -1293,8 +1813,8 @@ index 72e6c77..6ebb80d 100644
 +                if (secondary_duration >= in->secondary_physical.interval &&
 +                    in->secondary_physical.phase)
 +                {
-+                    sample_time = osd_get_secondary_physical_next_sample_time(vo->osd);
-+                    sample_prepare = secondary_ass_physical_render_time(
++                    sample_time = secondary_next_sample(vo).wall;
++                    sample_prepare = secondary_ass_physical_render_slot_time(
 +                        &in->secondary_physical, sample_time, secondary_redraw_cost);
 +                }
 +                if (sample_prepare > 0)
@@ -1320,7 +1840,7 @@ index 72e6c77..6ebb80d 100644
                  if (headroom) {
                      redraw |= now >= next;
                      wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
-@@ -1345,7 +1573,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1345,7 +1639,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              // Some windowing platforms break if we submit frames too fast.
              if (vo->previous_redraw_time + max_interval <= now) {
                  vo->driver->control(vo, VOCTRL_REDRAW, NULL);
@@ -1329,7 +1849,7 @@ index 72e6c77..6ebb80d 100644
                  vo->previous_redraw_time = now;
              } else {
                  wait_vo(vo, now + max_interval);
-@@ -1442,6 +1670,7 @@ void vo_seek_reset(struct vo *vo)
+@@ -1442,6 +1736,7 @@ void vo_seek_reset(struct vo *vo)
      in->send_reset = true;
      wakeup_locked(vo);
      mp_mutex_unlock(&in->lock);
@@ -1338,16 +1858,18 @@ index 72e6c77..6ebb80d 100644
  
  // Whether at least 1 frame was queued or rendered since last seek or reconfig.
 diff --git a/video/out/vo.h b/video/out/vo.h
-index f24918d..5cd95bc 100644
+index f24918d..a3d1d9e 100644
 --- a/video/out/vo.h
 +++ b/video/out/vo.h
-@@ -294,6 +294,14 @@ struct vo_vsync_info {
+@@ -294,6 +294,16 @@ struct vo_vsync_info {
      // This implies the latency of the output.
      int64_t last_queue_display_time;
  
 +    // Historical native-ASS phase, identified by a real displayed Present.
 +    // Separate from the future queue guess used by primary video sync.
 +    int64_t secondary_display_time;
++    int64_t secondary_sync_qpc_ns, secondary_sync_time;
++    uint32_t secondary_sync_refresh_count, secondary_present_refresh_count;
 +    uint64_t secondary_present_id;
 +    uint64_t secondary_submit_id;
 +    // Explicit invalidity resets phase/history; temporary zero statistics do not.
