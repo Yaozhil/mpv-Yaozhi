@@ -1,9 +1,15 @@
+package.path = 'portable_config/scripts/uosc_danmaku/?.lua;' .. package.path
+
 local state = {
     width = 1920,
     height = 1080,
     fullscreen = true,
     dpi = 1,
-    secondary_sid = false,
+    secondary_sid = 'no',
+    secondary_visibility = 'yes',
+    secondary_ass_override = 'strip',
+    track_adds = 0,
+    track_removes = 0,
     dimensions = {w = 1920, h = 1080, ml = 0, mr = 0, mt = 138, mb = 138},
 }
 
@@ -28,14 +34,21 @@ function mp.create_osd_overlay()
     return overlay
 end
 
-function mp.add_timeout(timeout, callback)
-    local timer = {timeout = timeout, callback = callback, kill = function() end, resume = function() end}
+function mp.add_timeout(timeout, callback, disabled)
+    local timer = {
+        timeout = timeout,
+        callback = callback,
+        enabled = not disabled,
+        kill = function(self) self.enabled = false end,
+        resume = function(self) self.enabled = true end,
+        is_enabled = function(self) return self.enabled end,
+    }
     timers[#timers + 1] = timer
     return timer
 end
 
 function mp.add_periodic_timer()
-    return {kill = function() end, resume = function() end}
+    return {kill = function() end, resume = function() end, is_enabled = function() return false end}
 end
 
 function mp.observe_property(name, _, callback)
@@ -45,6 +58,8 @@ end
 function mp.get_osd_size()
     return state.width, state.height
 end
+
+function mp.get_time() return 1 end
 
 function mp.get_property_number(name, default)
     if name == 'display-hidpi-scale' then return state.dpi end
@@ -56,19 +71,37 @@ function mp.get_property_native(name, default)
     if name == 'fullscreen' then return state.fullscreen end
     if name == 'osd-dimensions' then return state.dimensions end
     if name == 'secondary-sid' then return state.secondary_sid end
+    if name == 'secondary-sub-visibility' then return state.secondary_visibility end
+    if name == 'secondary-sub-ass-override' then return state.secondary_ass_override end
     if name == 'vf' then return {} end
     if name == 'track-list' then
-        if state.track_added then return {{type = 'sub', title = 'uosc_danmaku', id = 7}} end
+        if state.track_added then
+            return {{type = 'sub', title = 'uosc_danmaku', id = 7,
+                external = true, ['external-filename'] = state.track_path}}
+        end
         return {}
     end
     return default
 end
 
-function mp.get_property(_, default) return default end
+function mp.get_property(name, default) return mp.get_property_native(name, default) end
+function mp.set_property_native(name, value)
+    if name == 'secondary-sid' then state.secondary_sid = value end
+    if name == 'secondary-sub-visibility' then state.secondary_visibility = value end
+    if name == 'secondary-sub-ass-override' then state.secondary_ass_override = value end
+end
+mp.set_property = mp.set_property_native
 function mp.command_native() return 'build/uosc-danmaku/tests' end
-function mp.commandv(command)
-    if command == 'sub-add' then state.track_added = true end
-    if command == 'sub-remove' then state.track_added = false end
+function mp.commandv(command, value)
+    if command == 'sub-add' then
+        state.track_added = true
+        state.track_path = value
+        state.track_adds = state.track_adds + 1
+    end
+    if command == 'sub-remove' then
+        state.track_added = false
+        state.track_removes = state.track_removes + 1
+    end
 end
 
 setmetatable(mp, {__index = function() return function() end end})
@@ -195,7 +228,12 @@ COMMENTS = {{
 ENABLED = true
 expect_overlay_mode('large blackbar displayarea 0.11', true)
 assert(overlays[1].data:find('\\pos', 1, true), 'overlay event was not positioned from OSD top')
-assert(overlays[1].data:find('\\fs30', 1, true), '16:9 overlay changed the configured font size')
+-- This is the existing production canvas scale, before the clock/cadence fix.
+-- Keep the baseline visible here; changing font policy is outside this fix.
+local canvas = get_danmaku_canvas('overlay')
+assert(math.abs(canvas.font_size - (30 - 2 * 1920 / 1080)) < 1e-9,
+    'existing overlay canvas font scale changed')
+assert(overlays[1].data:find('\\fs26', 1, true), 'overlay prefix differs from the existing canvas scale')
 
 options.displayarea = 0.2
 expect_overlay_mode('large blackbar displayarea 0.20', true)
@@ -219,15 +257,31 @@ expect_overlay_mode('no blackbar keeps native ASS', false)
 state.fullscreen = false
 timers[1].callback()
 assert(state.track_added == true, 'leaving fullscreen did not restore native ASS track')
-assert(overlays[1].data == '' and overlays[2].data == '', 'overlay was not cleared in native mode')
+for _, overlay in ipairs({overlays[1], overlays[2]}) do
+    assert(not overlay.data:find('overlay lane probe', 1, true),
+        'native mode left comments visible in an overlay')
+    assert(overlay.data == '' or overlay.data:find('\\alpha&HFF&', 1, true),
+        'native mode left a visible warm overlay')
+end
 print('PASS leaving fullscreen restored native ASS mode')
 
 state.fullscreen = true
 set_geometry(1920, 1080, 138, 138)
 timers[1].callback()
-assert(state.track_added == false, 'entering fullscreen did not unload native ASS track')
+assert(state.track_added == true, 'fullscreen fallback detached the parked native ASS track')
+assert(state.secondary_visibility == 'no', 'fullscreen fallback did not hide the parked track')
 assert(overlays[1].data:find('overlay lane probe', 1, true), 'entering fullscreen did not restore overlay')
 print('PASS entering fullscreen restored blackbar overlay')
 
+local adds, removes = state.track_adds, state.track_removes
+state.fullscreen = false
+timers[1].callback()
+assert(state.track_added and state.secondary_visibility == 'yes',
+    'leaving fullscreen did not resume the parked native ASS track')
+assert(state.track_adds == adds and state.track_removes == removes,
+    'fullscreen handoff reloaded the native ASS track')
+print('PASS fullscreen handoff resumes the same external track')
+
+hide_danmaku_func()
 os.remove('build/uosc-danmaku/tests/uosc-danmaku-1.ass')
 print('all blackbar layout tests passed')

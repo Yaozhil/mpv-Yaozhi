@@ -8,6 +8,10 @@ on:
       - .github/workflows/build-mpv-v100-parity.yml
       - build/atmos/**
       - build/bluray-menu/patches/**
+      - build/feedback/tests/verify-secondary-ass-*.c
+      - build/feedback/tests/verify-danmaku-*.lua
+      - portable_config/scripts/uosc_danmaku/modules/render.lua
+      - portable_config/scripts/uosc_danmaku/modules/color.lua
 
 concurrency:
   group: v100-parity-${{ github.ref }}
@@ -92,8 +96,21 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          export LUA_PATH="portable_config/scripts/uosc_danmaku/?.lua;;"
           luajit build/hdr-pgs/tests/verify-image-subs-policy.lua
           luajit build/uosc-danmaku/tests/verify-blackbar-layout.lua
+          for core_range in 1000 240 missing legacy; do
+            luajit build/feedback/tests/verify-danmaku-native-cadence.lua \
+              portable_config/scripts/uosc_danmaku/modules/render.lua "$core_range"
+          done
+          luajit build/feedback/tests/verify-danmaku-native-viewport.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua modern
+          luajit build/feedback/tests/verify-danmaku-native-viewport.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua legacy
+          luajit build/feedback/tests/verify-danmaku-auto-cadence.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua verify 23.976
+          luajit build/feedback/tests/verify-danmaku-auto-cadence.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua verify 25
 
       - name: Prepare matching Windows build system
         shell: bash
@@ -956,6 +973,22 @@ jobs:
           gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-high-fps.c -o ass-high-fps-test
           ./ass-high-fps-test
 
+      - name: Verify continuous ASS clock and display scheduling with host fixtures
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
+          mkdir -p artifacts
+          # These execute the exact source headers with controlled clocks;
+          # they do not stand in for physical-screen or PresentMon measurements.
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/sub" \
+            build/feedback/tests/verify-secondary-ass-clock.c -lm -o ass-clock-test
+          ./ass-clock-test | tee artifacts/secondary-ass-clock.json
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" \
+            build/feedback/tests/verify-secondary-ass-presentation.c -lm -o ass-presentation-test
+          ./ass-presentation-test | tee artifacts/secondary-ass-presentation.txt
+
       - name: Verify decoded Dolby Vision metadata and build real RPU parser probe
         if: steps.build.outcome == 'success'
         shell: bash
@@ -1077,6 +1110,8 @@ jobs:
           cp build/dolby-vision/tests/verify-dovi-rpu.py artifact/
           cp -a build/dolby-vision/tests/fixtures artifact/dovi-rpu-fixtures
           cp build/bluray-menu/tests/verify-hdmv-context.py artifact/
+          cp artifacts/secondary-ass-clock.json artifact/
+          cp artifacts/secondary-ass-presentation.txt artifact/
           cp \
             winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
             artifact/AV3A-SYMBOLS.txt
@@ -1113,6 +1148,8 @@ jobs:
               verify-dovi-rpu.py \
               dovi-rpu-fixtures/* \
               verify-hdmv-context.py \
+              secondary-ass-clock.json \
+              secondary-ass-presentation.txt \
               > SHA256SUMS.txt
           )
 
