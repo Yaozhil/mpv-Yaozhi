@@ -1,4 +1,4 @@
-From cf52d4966c4bbfc1a6636564c3aa56d21627b9f5 Mon Sep 17 00:00:00 2001
+From 76d874e10e30040678095d0193a1c818d0da997e Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -6,14 +6,14 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
 ---
  options/options.c                      |   2 +-
  player/playloop.c                      |   2 +-
- sub/osd.c                              | 101 +++++++++++++--
+ sub/osd.c                              | 101 ++++++++++++--
  sub/osd.h                              |  11 +-
  sub/osd_state.h                        |  10 +-
  sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 168 +++++++++++++++++++++++++
- video/out/secondary_ass_presentation.h |  83 ++++++++++++
- video/out/vo.c                         |  97 ++++++++++++--
- 9 files changed, 452 insertions(+), 27 deletions(-)
+ sub/secondary_ass_clock.h              | 185 +++++++++++++++++++++++++
+ video/out/secondary_ass_presentation.h |  83 +++++++++++
+ video/out/vo.c                         |  97 ++++++++++++-
+ 9 files changed, 469 insertions(+), 27 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_presentation.h
 
@@ -44,7 +44,7 @@ index d501918..2020ce4 100644
  
  static void handle_clipboard_updates(struct MPContext *mpctx)
 diff --git a/sub/osd.c b/sub/osd.c
-index 92a5326..4dabc5e 100644
+index 92a5326..6bbe32c 100644
 --- a/sub/osd.c
 +++ b/sub/osd.c
 @@ -18,6 +18,7 @@
@@ -176,9 +176,9 @@ index 92a5326..4dabc5e 100644
 +        if (osd->secondary_rate > 0 && osd->secondary_clock.valid) {
 +            int64_t sample_wall = osd->secondary_present_wall > 0
 +                ? osd->secondary_present_wall : mp_time_ns();
-+            bool changed = secondary_ass_sampler_update(&osd->secondary_sampler,
++            bool changed = secondary_ass_sampler_update_at_draw(&osd->secondary_sampler,
 +                &osd->secondary_clock, osd->secondary_rate, sample_wall,
-+                osd->secondary_vsync_interval);
++                osd->secondary_vsync_interval, mp_time_ns());
 +            if (osd->secondary_sampler.valid)
 +                video_pts = osd->secondary_sampler.pts;
 +            if (osd->secondary_clock_trace) {
@@ -279,10 +279,10 @@ index 1ec17c8..fd7552d 100644
          fill_plaintext(sd, pts);
 diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
 new file mode 100644
-index 0000000..9280d00
+index 0000000..9f04fda
 --- /dev/null
 +++ b/sub/secondary_ass_clock.h
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,185 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_CLOCK_H
 +#define MP_SECONDARY_ASS_CLOCK_H
@@ -448,6 +448,23 @@ index 0000000..9280d00
 +    sampler->force = false;
 +    sampler->pts = secondary_ass_clock_sample(clock, sampler->sample_wall);
 +    return true;
++}
++
++static inline bool secondary_ass_sampler_update_at_draw(
++    struct secondary_ass_sampler *sampler,
++    const struct secondary_ass_clock *clock, double rate,
++    int64_t present_wall, int64_t vsync_interval, int64_t draw_wall)
++{
++    // An audio-synced source frame may be drawn before the animation's own
++    // submission boundary. Its queue-time prediction must not advance ASS a
++    // physical refresh early. Initialization and explicit discontinuities
++    // still take effect immediately; they are not ordinary animated ticks.
++    if (!clock->display_synced && sampler->valid && !sampler->force &&
++        sampler->rate == rate && clock->valid && draw_wall > 0 &&
++        present_wall > draw_wall)
++        present_wall = draw_wall;
++    return secondary_ass_sampler_update(sampler, clock, rate,
++                                        present_wall, vsync_interval);
 +}
 +
 +#endif

@@ -45,10 +45,13 @@ int main(void)
         for (int tick = 1; tick <= 500; tick++) {
             int64_t sample = secondary_ass_sampler_next_wall(&sampler);
             int64_t prepare = secondary_ass_sample_prepare_time(sample, step);
+            assert(!secondary_ass_sampler_update_at_draw(&sampler, &clock,
+                sample_rate, sample+3*step, step, prepare-1000));
+            assert(sampler.tick==(uint64_t)tick-1);
             int64_t present = secondary_ass_predict_present(&scheduled, prepare, step);
             assert(present >= prepare);
-            assert(secondary_ass_sampler_update(&sampler, &clock, sample_rate,
-                                                present, step));
+            assert(secondary_ass_sampler_update_at_draw(&sampler, &clock, sample_rate,
+                                                present, step, prepare));
             assert(sampler.tick == (uint64_t)tick);
             secondary_ass_present_feedback(&scheduled, present);
         }
@@ -85,6 +88,39 @@ int main(void)
     next=secondary_ass_predict_present(&q,prepare,6944481);
     assert(secondary_ass_sampler_update(&sampler,&clock,sampler.rate,next,6944481));
     assert(sampler.tick==248);
+    // Actual audio fresh174 was submitted BEFORE its own selection boundary
+    // yet its predicted queue target already selected174. Hold173 until the
+    // independent cached deadline; do not move the grid or queue prediction.
+    sampler=(struct secondary_ass_sampler){
+        .valid=true, .rate=71.9996125, .tick=173,
+        .origin_wall=183992481, .sample_wall=2586783190,
+    };
+    uint64_t held=sampler.tick;
+    due=secondary_ass_sampler_next_wall(&sampler);
+    prepare=secondary_ass_sample_prepare_time(due,6944481);
+    assert(2593328300<prepare);
+    assert(!secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
+                                               2603000862,6944481,2593328300));
+    assert(sampler.tick==held);
+    assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
+                                              due+6944481*2,6944481,prepare));
+    assert(sampler.tick==held+1);
+    sampler.force=true;
+    assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
+                                              due,6944481,2593328300));
+    secondary_ass_sampler_reset(&sampler);
+    assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,71.9996125,
+                                              due,6944481,2593328300));
+    // A future startup origin holds until its first ordinary due boundary.
+    assert(!secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
+                                                 due+6944481,6944481,2593328300));
+    assert(!secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
+                                                 due,6944481,due+100000000));
+    assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,90,
+                                                due+100000000,6944481,due));
+    clock.display_synced=true;
+    assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,90,
+                                                due+120000000,6944481,due));
     assert(secondary_ass_sample_prepare_time(0,6944481)==0);
     assert(secondary_ass_sample_prepare_time(123,0)==0);
     printf("PRESENTATION_PASS displays=%d frames_per_display=500 lifecycle=stale,missing,stall,source,rate-change\n",combinations);
