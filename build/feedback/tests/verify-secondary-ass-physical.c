@@ -190,7 +190,7 @@ int main(void)
             }
             previous_tick = sampler.tick;
             int64_t saved_phase = p.phase, saved_slot = p.phase_slot;
-            unsigned saved_samples = p.delay_count;
+            int saved_samples = p.delay_count;
             secondary_ass_physical_update_observed(&p, false, 0,
                 (struct secondary_ass_physical_point){0}, observed, observed,
                 raw, raw, n + 1, seed);
@@ -217,6 +217,16 @@ int main(void)
         assert(p.epoch == epoch + 1 && !p.phase && !p.last_base_slot && !p.delay_count);
         checks += 5;
     }
+    p=(struct secondary_ass_physical){.phase=1000000000,.phase_slot=100,
+        .interval=1000000000/144,.epoch=1,.historical_id=UINT32_MAX-1,
+        .last_submit_id=1};
+    struct secondary_ass_physical_point queued=secondary_ass_physical_queued_point(&p);
+    assert(queued.slot==104 && queued.wall==p.phase+4*p.interval);
+    p.last_submit_id=UINT32_MAX-1;
+    assert(secondary_ass_physical_queued_point(&p).slot==101);
+    p.last_submit_id=10;
+    assert(!secondary_ass_physical_queued_point(&p).slot); // unavailable queue, no invented phase
+    checks+=3;
     printf("secondary physical display phase: PASS (%u checks; modeled 60/120/144/165Hz x 600s)\n", checks);
     return 0;
 }
