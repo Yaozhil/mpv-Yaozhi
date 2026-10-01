@@ -1,4 +1,4 @@
-From f27df75ab02343b5a966d2eed5db2660be458365 Mon Sep 17 00:00:00 2001
+From 9e6a243c26153b1fa4875423c27c6d4d87b05a0d Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -11,9 +11,10 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
  sub/osd_state.h                        |  11 +-
  sub/sd_ass.c                           |   5 +
  sub/secondary_ass_clock.h              | 186 +++++++++++++++++++++++++
+ video/out/d3d11/context.c              |  56 +++++++-
  video/out/secondary_ass_presentation.h |  83 +++++++++++
  video/out/vo.c                         |  97 ++++++++++++-
- 9 files changed, 476 insertions(+), 27 deletions(-)
+ 10 files changed, 529 insertions(+), 30 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_presentation.h
 
@@ -475,6 +476,132 @@ index 0000000..90b4822
 +}
 +
 +#endif
+diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
+index fc8802e..dcc88a0 100644
+--- a/video/out/d3d11/context.c
++++ b/video/out/d3d11/context.c
+@@ -15,6 +15,10 @@
+  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include <inttypes.h>
++#include <stdlib.h>
++#include <string.h>
++
+ #include "common/msg.h"
+ #include "options/m_config.h"
+ #include "osdep/timer.h"
+@@ -125,6 +129,7 @@ struct priv {
+     int64_t last_sync_qpc_time;
+     int64_t vsync_duration_qpc;
+     int64_t last_submit_qpc;
++    bool secondary_trace;
+ 
+     struct mp_dxgi_factory_ctx dxgi_ctx;
+ };
+@@ -292,6 +297,17 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+     IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
+ }
+ 
++static void d3d11_trace_vsync_status(struct ra_swapchain *sw,
++                                    const char *status, HRESULT hr)
++{
++    struct priv *p = sw->priv;
++    if (p->secondary_trace)
++        MP_INFO(sw->ctx, "native-ass-dxgi: status=%s hr=0x%08"PRIx32
++                " sync_interval=%d last_submit_qpc=%"PRId64"\n",
++                status, (uint32_t)hr, p->opts->sync_interval,
++                p->last_submit_qpc);
++}
++
+ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+ {
+     struct priv *p = sw->priv;
+@@ -300,8 +316,10 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+     m_config_cache_update(p->opts_cache);
+ 
+     // The calculations below are only valid if mpv presents on every vsync
+-    if (p->opts->sync_interval != 1)
++    if (p->opts->sync_interval != 1) {
++        d3d11_trace_vsync_status(sw, "unsupported_sync_interval", S_OK);
+         return;
++    }
+ 
+     // They're also only valid for flip model swapchains
+     DXGI_SWAP_CHAIN_DESC desc;
+@@ -309,6 +327,8 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+     if (FAILED(hr) || (desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
+                        desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
+     {
++        d3d11_trace_vsync_status(sw, FAILED(hr) ? "description_error" :
++                                 "unsupported_swap_effect", hr);
+         return;
+     }
+ 
+@@ -316,8 +336,10 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+     // the last call to IDXGISwapChain::Present()
+     UINT submit_count;
+     hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &submit_count);
+-    if (FAILED(hr))
++    if (FAILED(hr)) {
++        d3d11_trace_vsync_status(sw, "present_count_error", hr);
+         return;
++    }
+ 
+     // GetFrameStatistics returns two pairs. The first is (PresentCount,
+     // PresentRefreshCount) which relates a present ID (on the same timeline as
+@@ -330,8 +352,12 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+         p->last_sync_refresh_count = 0;
+         p->last_sync_qpc_time = 0;
+     }
+-    if (FAILED(hr))
++    if (FAILED(hr)) {
++        d3d11_trace_vsync_status(sw,
++            hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT ? "disjoint" :
++            "statistics_error", hr);
+         return;
++    }
+ 
+     // Detecting skipped vsyncs is possible but not supported yet
+     info->skipped_vsyncs = -1;
+@@ -381,6 +407,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+                 (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
+         }
+     }
++
++    // Opt-in diagnostics only: retain the existing estimator and expose the
++    // two independent DXGI timelines instead of calling its queue guess an
++    // actual timestamp for the most recently submitted Present ID.
++    if (p->secondary_trace) {
++        LARGE_INTEGER now_qpc;
++        QueryPerformanceCounter(&now_qpc);
++        int64_t now_ns = mp_time_ns();
++        MP_INFO(sw->ctx, "native-ass-dxgi: status=ok submit_count=%u"
++                " present_count=%u present_refresh_count=%u"
++                " sync_refresh_count=%u sync_qpc=%"PRId64
++                " vsync_duration_qpc=%"PRId64" perf_freq=%"PRId64
++                " last_submit_qpc=%"PRId64" now_qpc=%"PRId64
++                " now_ns=%"PRId64" display_ns=%"PRId64
++                " sync_interval=%d swap_effect=%u\n",
++                submit_count, stats.PresentCount, stats.PresentRefreshCount,
++                stats.SyncRefreshCount, (int64_t)stats.SyncQPCTime.QuadPart,
++                p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
++                (int64_t)now_qpc.QuadPart, now_ns,
++                info->last_queue_display_time, p->opts->sync_interval,
++                (unsigned)desc.SwapEffect);
++    }
+ }
+ 
+ static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
+@@ -507,6 +555,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
+     struct priv *p = ctx->priv = talloc_zero(ctx, struct priv);
+     p->opts_cache = m_config_cache_alloc(ctx, ctx->global, &d3d11_conf);
+     p->opts = p->opts_cache->opts;
++    const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
++    p->secondary_trace = trace && strcmp(trace, "1") == 0;
+ 
+     p->vo_opts_cache = m_config_cache_alloc(ctx, ctx->vo->global, &vo_sub_opts);
+     p->vo_opts = p->vo_opts_cache->opts;
 diff --git a/video/out/secondary_ass_presentation.h b/video/out/secondary_ass_presentation.h
 new file mode 100644
 index 0000000..4d5a21d
