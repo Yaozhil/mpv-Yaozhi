@@ -1,4 +1,4 @@
-From 76d874e10e30040678095d0193a1c818d0da997e Mon Sep 17 00:00:00 2001
+From f27df75ab02343b5a966d2eed5db2660be458365 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -6,14 +6,14 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
 ---
  options/options.c                      |   2 +-
  player/playloop.c                      |   2 +-
- sub/osd.c                              | 101 ++++++++++++--
+ sub/osd.c                              | 106 ++++++++++++--
  sub/osd.h                              |  11 +-
- sub/osd_state.h                        |  10 +-
+ sub/osd_state.h                        |  11 +-
  sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 185 +++++++++++++++++++++++++
+ sub/secondary_ass_clock.h              | 186 +++++++++++++++++++++++++
  video/out/secondary_ass_presentation.h |  83 +++++++++++
  video/out/vo.c                         |  97 ++++++++++++-
- 9 files changed, 469 insertions(+), 27 deletions(-)
+ 9 files changed, 476 insertions(+), 27 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_presentation.h
 
@@ -44,7 +44,7 @@ index d501918..2020ce4 100644
  
  static void handle_clipboard_updates(struct MPContext *mpctx)
 diff --git a/sub/osd.c b/sub/osd.c
-index 92a5326..6bbe32c 100644
+index 92a5326..b09ce3c 100644
 --- a/sub/osd.c
 +++ b/sub/osd.c
 @@ -18,6 +18,7 @@
@@ -102,7 +102,7 @@ index 92a5326..6bbe32c 100644
      mp_mutex_unlock(&osd->lock);
  }
  
-@@ -332,12 +349,56 @@ double osd_get_secondary_refresh(struct osd_state *osd)
+@@ -332,12 +349,58 @@ double osd_get_secondary_refresh(struct osd_state *osd)
      return rate;
  }
  
@@ -146,10 +146,11 @@ index 92a5326..6bbe32c 100644
 +}
 +
 +void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
-+                                        int64_t vsync_interval)
++                                        int64_t vsync_interval, int64_t submit_wall)
 +{
 +    mp_mutex_lock(&osd->lock);
 +    osd->secondary_present_wall = wall > 0 ? wall : 0;
++    osd->secondary_submit_wall = submit_wall > 0 ? submit_wall : 0;
 +    osd->secondary_vsync_interval = vsync_interval > 0 ? vsync_interval : 0;
 +    mp_mutex_unlock(&osd->lock);
 +}
@@ -160,10 +161,11 @@ index 92a5326..6bbe32c 100644
 +    secondary_ass_clock_reset(&osd->secondary_clock);
 +    secondary_ass_sampler_reset(&osd->secondary_sampler);
 +    osd->secondary_present_wall = 0;
++    osd->secondary_submit_wall = 0;
      mp_mutex_unlock(&osd->lock);
  }
  
-@@ -358,12 +419,26 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+@@ -358,12 +421,29 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
          if (obj->sub && sub_is_primary_visible(obj->sub))
              res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
      } else if (obj->type == OSDTYPE_SUB2) {
@@ -178,26 +180,29 @@ index 92a5326..6bbe32c 100644
 +                ? osd->secondary_present_wall : mp_time_ns();
 +            bool changed = secondary_ass_sampler_update_at_draw(&osd->secondary_sampler,
 +                &osd->secondary_clock, osd->secondary_rate, sample_wall,
-+                osd->secondary_vsync_interval, mp_time_ns());
++                osd->secondary_vsync_interval,
++                MPMAX(osd->secondary_submit_wall, mp_time_ns()));
 +            if (osd->secondary_sampler.valid)
 +                video_pts = osd->secondary_sampler.pts;
 +            if (osd->secondary_clock_trace) {
 +                MP_INFO(osd, "native-ass-clock: pts=%.9f wall=%"PRId64
 +                        " sample-wall=%"PRId64" tick=%"PRIu64" changed=%d "
 +                        "rate=%.6f anchor-wall=%"PRId64" anchor-pts=%.9f "
-+                        "speed=%.9f phase-rate=%.9f display-synced=%d\n",
++                        "speed=%.9f phase-rate=%.9f display-synced=%d "
++                        "submit-wall=%"PRId64"\n",
 +                        video_pts, sample_wall, osd->secondary_sampler.sample_wall,
 +                        osd->secondary_sampler.tick, changed, osd->secondary_rate,
 +                        osd->secondary_clock.wall,
 +                        osd->secondary_clock.pts, osd->secondary_clock.speed,
 +                        osd->secondary_clock.phase_rate,
-+                        osd->secondary_clock.display_synced);
++                        osd->secondary_clock.display_synced,
++                        osd->secondary_submit_wall);
 +            }
          }
          if (obj->sub && sub_is_secondary_visible(obj->sub))
              res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
 diff --git a/sub/osd.h b/sub/osd.h
-index 37e6f7a..0070fff 100644
+index 37e6f7a..9e2ae32 100644
 --- a/sub/osd.h
 +++ b/sub/osd.h
 @@ -214,9 +214,16 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
@@ -214,13 +219,13 @@ index 37e6f7a..0070fff 100644
 +void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
 +                                bool display_synced);
 +void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
-+                                        int64_t vsync_interval);
++                                        int64_t vsync_interval, int64_t submit_wall);
 +void osd_reset_secondary_clock(struct osd_state *osd);
  
  struct osd_progbar_state {
      int type;           // <0: disabled, 1-255: symbol, else: no symbol
 diff --git a/sub/osd_state.h b/sub/osd_state.h
-index d50537f..580eff5 100644
+index d50537f..84003be 100644
 --- a/sub/osd_state.h
 +++ b/sub/osd_state.h
 @@ -5,6 +5,7 @@
@@ -231,7 +236,7 @@ index d50537f..580eff5 100644
  
  enum mp_osdtype {
      OSDTYPE_SUB,
-@@ -75,9 +76,12 @@ struct osd_state {
+@@ -75,9 +76,13 @@ struct osd_state {
      bool render_subs_in_filter;
      _Atomic double force_video_pts;
      // Opt-in clock for external secondary ASS only; guarded by lock.
@@ -242,6 +247,7 @@ index d50537f..580eff5 100644
 +    struct secondary_ass_clock secondary_clock;
 +    struct secondary_ass_sampler secondary_sampler;
 +    int64_t secondary_present_wall;
++    int64_t secondary_submit_wall;
 +    int64_t secondary_vsync_interval;
 +    bool secondary_clock_trace;
      bool secondary_has_output;
@@ -279,10 +285,10 @@ index 1ec17c8..fd7552d 100644
          fill_plaintext(sd, pts);
 diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
 new file mode 100644
-index 0000000..9f04fda
+index 0000000..90b4822
 --- /dev/null
 +++ b/sub/secondary_ass_clock.h
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,186 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_CLOCK_H
 +#define MP_SECONDARY_ASS_CLOCK_H
@@ -453,16 +459,17 @@ index 0000000..9f04fda
 +static inline bool secondary_ass_sampler_update_at_draw(
 +    struct secondary_ass_sampler *sampler,
 +    const struct secondary_ass_clock *clock, double rate,
-+    int64_t present_wall, int64_t vsync_interval, int64_t draw_wall)
++    int64_t present_wall, int64_t vsync_interval, int64_t submit_wall)
 +{
-+    // An audio-synced source frame may be drawn before the animation's own
-+    // submission boundary. Its queue-time prediction must not advance ASS a
-+    // physical refresh early. Initialization and explicit discontinuities
-+    // still take effect immediately; they are not ordinary animated ticks.
++    // Source frames are drawn before their scheduled flip. Select the due
++    // animation at the earliest submission time, not early CPU draw time or
++    // an unrelated future queue prediction. This lets fresh video consume a
++    // due tick without a second cached Present. Initialization and explicit
++    // discontinuities remain immediate, distinct from ordinary ticks.
 +    if (!clock->display_synced && sampler->valid && !sampler->force &&
-+        sampler->rate == rate && clock->valid && draw_wall > 0 &&
-+        present_wall > draw_wall)
-+        present_wall = draw_wall;
++        sampler->rate == rate && clock->valid && submit_wall > 0 &&
++        present_wall > submit_wall)
++        present_wall = submit_wall;
 +    return secondary_ass_sampler_update(sampler, clock, rate,
 +                                        present_wall, vsync_interval);
 +}
@@ -558,7 +565,7 @@ index 0000000..4d5a21d
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..d7d8c82 100644
+index 72e6c77..3989d0a 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,7 @@
@@ -626,7 +633,7 @@ index 72e6c77..d7d8c82 100644
 +            secondary_ass_predict_present(&in->secondary_presentation,
 +                                           present_ready, display_interval) : 0;
 +        osd_set_secondary_presentation_time(vo->osd, presentation_time,
-+                                             display_interval);
++                                             display_interval, present_ready);
 +        if (clock_rate > 0 && frame->current &&
 +            (frame->display_synced || !frame->repeat)) {
 +            double media_pts = frame->current->pts +
@@ -676,7 +683,7 @@ index 72e6c77..d7d8c82 100644
 +        secondary_ass_predict_present(&in->secondary_presentation,
 +                                       mp_time_ns(), display_interval) : 0;
 +    osd_set_secondary_presentation_time(vo->osd, presentation_time,
-+                                         display_interval);
++                                         display_interval, mp_time_ns());
 +    if (in->secondary_trace && presentation_time > 0)
 +        MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=0 ds=%d "
 +                "target_ns=%"PRId64" interval_ns=%"PRId64"\n",

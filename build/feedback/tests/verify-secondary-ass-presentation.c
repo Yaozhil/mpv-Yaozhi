@@ -100,7 +100,7 @@ int main(void)
     prepare=secondary_ass_sample_prepare_time(due,6944481);
     assert(2593328300<prepare);
     assert(!secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
-                                               2603000862,6944481,2593328300));
+                                               2603000862,6944481,2596059263));
     assert(sampler.tick==held);
     assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
                                               due+6944481*2,6944481,prepare));
@@ -121,6 +121,20 @@ int main(void)
     clock.display_synced=true;
     assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,90,
                                                 due+120000000,6944481,due));
+    // Opposite measured case: fresh142 starts CPU work before prepare, but
+    // its scheduled flip is AFTER prepare. It must absorb142 so cached ASS
+    // does not queue an extra old/new pair just after the same video frame.
+    clock.display_synced=false;
+    sampler=(struct secondary_ass_sampler){
+        .valid=true, .rate=71.9996125, .tick=141,
+        .origin_wall=161987181, .sample_wall=2120331054,
+    };
+    due=secondary_ass_sampler_next_wall(&sampler);
+    prepare=secondary_ass_sample_prepare_time(due,6944481);
+    assert(2130000000<prepare && prepare<2133729465);
+    assert(secondary_ass_sampler_update_at_draw(&sampler,&clock,sampler.rate,
+                                                2137984262,6944481,2133729465));
+    assert(sampler.tick==142);
     assert(secondary_ass_sample_prepare_time(0,6944481)==0);
     assert(secondary_ass_sample_prepare_time(123,0)==0);
     printf("PRESENTATION_PASS displays=%d frames_per_display=500 lifecycle=stale,missing,stall,source,rate-change\n",combinations);
