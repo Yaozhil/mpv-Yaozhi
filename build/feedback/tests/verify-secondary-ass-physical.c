@@ -31,7 +31,12 @@ int main(void)
         assert(secondary_ass_physical_slot(origin, t, origin+t) == origin+2*t);
         struct secondary_ass_physical p = {.phase=origin,.interval=t,.delay=1};
         assert(secondary_ass_physical_prepare(&p, origin+10*t) == origin+9*t-t/2);
-        checks += 4;
+        int64_t render = secondary_ass_physical_render_time(&p, origin+10*t, 1500000);
+        int64_t submit = secondary_ass_physical_prepare(&p, origin+10*t);
+        assert(render <= submit);
+        assert(origin+10*t - t - render >= 2500000);
+        assert(submit - render < 2500000);
+        checks += 7;
     }
     struct secondary_ass_physical p = {.phase=1,.interval=1,.last_base=INT64_MAX};
     assert(!secondary_ass_physical_predict(&p, 4));
