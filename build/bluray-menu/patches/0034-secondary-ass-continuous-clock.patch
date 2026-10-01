@@ -1,4 +1,4 @@
-From 916354a4899eea2b8fb914f303ed94ed8abc930e Mon Sep 17 00:00:00 2001
+From d8b43d2dfa2205e044459c3a9647551455cf1502 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -10,13 +10,13 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
  sub/osd.h                              |  17 +-
  sub/osd_state.h                        |  14 +-
  sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 281 ++++++++++++++
+ sub/secondary_ass_clock.h              | 281 +++++++++++++
  video/out/d3d11/context.c              |  89 ++++-
- video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++++
- video/out/secondary_ass_presentation.h |  83 +++++
- video/out/vo.c                         | 494 ++++++++++++++++++++++++-
+ video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++
+ video/out/secondary_ass_presentation.h |  83 ++++
+ video/out/vo.c                         | 524 +++++++++++++++++++++++--
  video/out/vo.h                         |  10 +
- 12 files changed, 1608 insertions(+), 40 deletions(-)
+ 12 files changed, 1619 insertions(+), 59 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -1400,7 +1400,7 @@ index 0000000..4d5a21d
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..0e6d987 100644
+index 72e6c77..5f89d98 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,8 @@
@@ -2052,7 +2052,39 @@ index 72e6c77..0e6d987 100644
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1309,7 +1736,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1264,8 +1691,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         bool working = render_frame(vo);
+         int64_t now = mp_time_ns();
+         int64_t wait_until = now + MP_TIME_S_TO_NS(working ? 0 : 1000);
+-        bool wakeup_on_done = false;
+-        int64_t wakeup_core_after = 0;
+ 
+         mp_mutex_lock(&in->lock);
+         if (in->wakeup_pts) {
+@@ -1281,12 +1706,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             wakeup_core(vo);
+         }
+         if ((!working && !in->rendering && !in->frame_queued) && in->wakeup_on_done) {
+-            // At this point we know VO is going to sleep
++            // Cached OSD redraws can continue before the sleep path below.
++            // Keep this notification pending until the frame really ends,
++            // and deliver it before any redraw/continue can consume it.
+             int64_t frame_end = get_current_frame_end(vo);
+-            if (frame_end >= 0)
+-                wakeup_core_after = frame_end;
+-            wakeup_on_done = true;
+-            in->wakeup_on_done = false;
++            if (!still_displaying(vo)) {
++                in->wakeup_on_done = false;
++                in->need_wakeup = true;
++                wakeup_core(vo);
++            } else if (frame_end > now) {
++                wait_until = MPMIN(wait_until, frame_end);
++            }
+         }
+         vo->want_redraw = false;
+         bool redraw = in->request_redraw;
+@@ -1309,7 +1739,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
          if (!working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
@@ -2063,7 +2095,7 @@ index 72e6c77..0e6d987 100644
              bool affordable = secondary_ass_budget_affordable(secondary_cost,
                  secondary_redraw_cost, secondary_duration, interval);
              // Once per second, allow a bounded recovery sample. A CPU wakeup
-@@ -1317,16 +1746,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1317,16 +1749,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
                  secondary_duration, interval, now, secondary_probe);
              if (affordable || probe) {
@@ -2115,7 +2147,7 @@ index 72e6c77..0e6d987 100644
                  }
              }
          }
-@@ -1345,7 +1808,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1345,10 +1811,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              // Some windowing platforms break if we submit frames too fast.
              if (vo->previous_redraw_time + max_interval <= now) {
                  vo->driver->control(vo, VOCTRL_REDRAW, NULL);
@@ -2123,8 +2155,30 @@ index 72e6c77..0e6d987 100644
 +                do_redraw(vo, 0, 0); // now is a good time
                  vo->previous_redraw_time = now;
              } else {
-                 wait_vo(vo, now + max_interval);
-@@ -1442,6 +1905,7 @@ void vo_seek_reset(struct vo *vo)
+-                wait_vo(vo, now + max_interval);
++                wait_vo(vo, MPMIN(wait_until, now + max_interval));
+             }
+             continue;
+         }
+@@ -1358,17 +1824,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         if (wait_until <= now)
+             continue;
+ 
+-        if (wakeup_on_done) {
+-            // At this point wait_until should be longer than frame duration
+-            if (wakeup_core_after >= 0 && wait_until >= wakeup_core_after) {
+-                wait_vo(vo, wakeup_core_after);
+-                mp_mutex_lock(&in->lock);
+-                in->need_wakeup = true;
+-                mp_mutex_unlock(&in->lock);
+-            }
+-            wakeup_core(vo);
+-        }
+-
+         wait_vo(vo, wait_until);
+     }
+     forget_frames(vo); // implicitly synchronized
+@@ -1442,6 +1897,7 @@ void vo_seek_reset(struct vo *vo)
      in->send_reset = true;
      wakeup_locked(vo);
      mp_mutex_unlock(&in->lock);
