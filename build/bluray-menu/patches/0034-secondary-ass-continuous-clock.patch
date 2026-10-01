@@ -1,4 +1,4 @@
-From bad607f339aaa220e8f3663f790d9f2805ed06af Mon Sep 17 00:00:00 2001
+From 916354a4899eea2b8fb914f303ed94ed8abc930e Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
@@ -14,9 +14,9 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
  video/out/d3d11/context.c              |  89 ++++-
  video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++++
  video/out/secondary_ass_presentation.h |  83 +++++
- video/out/vo.c                         | 402 +++++++++++++++++++-
+ video/out/vo.c                         | 494 ++++++++++++++++++++++++-
  video/out/vo.h                         |  10 +
- 12 files changed, 1519 insertions(+), 37 deletions(-)
+ 12 files changed, 1608 insertions(+), 40 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -1400,7 +1400,7 @@ index 0000000..4d5a21d
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..391cfe0 100644
+index 72e6c77..0e6d987 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,8 @@
@@ -1412,7 +1412,17 @@ index 72e6c77..391cfe0 100644
  #include <math.h>
  #include <stdatomic.h>
  #include <stdbool.h>
-@@ -34,6 +36,8 @@
+@@ -28,12 +30,18 @@
+ #include "config.h"
+ #include "osdep/timer.h"
+ #include "osdep/threads.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
+ #include "misc/dispatch.h"
+ #include "misc/rendezvous.h"
+ #include "options/options.h"
  #include "misc/bstr.h"
  #include "vo.h"
  #include "secondary_ass_budget.h"
@@ -1421,7 +1431,20 @@ index 72e6c77..391cfe0 100644
  #include "aspect.h"
  #include "dr_helper.h"
  #include "input/input.h"
-@@ -160,6 +164,10 @@ struct vo_internal {
+@@ -128,6 +136,12 @@ struct vo_internal {
+     // --- The following fields are protected by lock
+     mp_mutex lock;
+     mp_cond wakeup;
++#ifdef _WIN32
++    // Both handles live until the VO thread has joined. Wakeups remain
++    // interruptible when the physical presentation wait uses a precise timer.
++    HANDLE secondary_wakeup_event, secondary_wait_timer;
++    bool secondary_wait_timer_failed;
++#endif
+ 
+     bool need_wakeup;
+     bool terminate;
+@@ -160,9 +174,14 @@ struct vo_internal {
      int64_t flip_queue_offset; // queue flip events at most this much in advance
      int64_t timing_offset;     // same (but from options; not VO configured)
      int64_t secondary_last_draw; // VO thread only
@@ -1432,7 +1455,15 @@ index 72e6c77..391cfe0 100644
      int64_t secondary_render_cost;
      int64_t secondary_cost_update; // VO thread only
      int64_t secondary_gpu_cost; // VO thread only
-@@ -203,11 +211,14 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
++    int64_t secondary_gpu_peak; // opt-in completion diagnostics, VO thread only
+     struct secondary_ass_budget secondary_budget; // VO thread only
+     int64_t secondary_redraw_cost;
+     int64_t secondary_redraw_block_cost;
+@@ -200,14 +219,18 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
+     in->secondary_redraw_budget = (struct secondary_ass_budget){0};
+     in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
+     in->secondary_render_cost = in->secondary_gpu_cost = in->secondary_cost_update = 0;
++    in->secondary_gpu_peak = 0;
      in->secondary_redraw_cost = in->secondary_redraw_block_cost = 0;
      in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
      in->secondary_next_probe = 0;
@@ -1447,7 +1478,20 @@ index 72e6c77..391cfe0 100644
  static MP_THREAD_VOID vo_thread(void *ptr);
  
  static bool get_desc(struct m_obj_desc *dst, int index)
-@@ -573,6 +584,8 @@ static void update_display_fps(struct vo *vo)
+@@ -287,6 +310,12 @@ static void dealloc_vo(struct vo *vo)
+ 
+     mp_mutex_destroy(&vo->in->lock);
+     mp_cond_destroy(&vo->in->wakeup);
++#ifdef _WIN32
++    if (vo->in->secondary_wakeup_event)
++        CloseHandle(vo->in->secondary_wakeup_event);
++    if (vo->in->secondary_wait_timer)
++        CloseHandle(vo->in->secondary_wait_timer);
++#endif
+     talloc_free(vo);
+ }
+ 
+@@ -573,6 +602,8 @@ static void update_display_fps(struct vo *vo)
  
          mp_mutex_lock(&in->lock);
  
@@ -1456,27 +1500,98 @@ index 72e6c77..391cfe0 100644
          in->reported_display_fps = fps;
      }
  
-@@ -755,7 +768,18 @@ static void wait_vo(struct vo *vo, int64_t until_time)
- {
+@@ -737,6 +768,54 @@ static void forget_frames(struct vo *vo)
+     }
+ }
+ 
++#ifdef _WIN32
++// Called locked on the VO thread. The event reset and pending-wakeup test use
++// the same lock as wakeup_locked(), so no wakeup can be lost at wait entry.
++static int secondary_wait_precise_locked(struct vo *vo, int64_t until_time,
++                                         bool honor_pending)
++{
++    struct vo_internal *in = vo->in;
++    int64_t remaining = until_time - mp_time_ns();
++    if (remaining <= 0)
++        return ETIMEDOUT;
++    if (in->secondary_wait_timer_failed)
++        return EINVAL;
++    if (!in->secondary_wait_timer) {
++        in->secondary_wakeup_event = CreateEventW(NULL, TRUE, FALSE, NULL);
++        in->secondary_wait_timer = CreateWaitableTimerExW(NULL, NULL,
++            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++        if (!in->secondary_wait_timer)
++            in->secondary_wait_timer = CreateWaitableTimerExW(NULL, NULL, 0,
++                                                              TIMER_ALL_ACCESS);
++        if (!in->secondary_wakeup_event || !in->secondary_wait_timer) {
++            in->secondary_wait_timer_failed = true;
++            return EINVAL;
++        }
++    }
++    if (honor_pending && in->need_wakeup)
++        return 0;
++    if (!ResetEvent(in->secondary_wakeup_event))
++        return EINVAL;
++    remaining = until_time - mp_time_ns();
++    if (remaining <= 0)
++        return ETIMEDOUT;
++    LARGE_INTEGER due = {.QuadPart = -MPMAX(remaining / 100, 1)};
++    int64_t hrt = mp_start_hires_timers(remaining);
++    if (!SetWaitableTimer(in->secondary_wait_timer, &due, 0, NULL, NULL, FALSE)) {
++        mp_end_hires_timers(hrt);
++        return EINVAL;
++    }
++    HANDLE handles[] = {in->secondary_wakeup_event, in->secondary_wait_timer};
++    mp_mutex_unlock(&in->lock);
++    DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
++    mp_mutex_lock(&in->lock);
++    CancelWaitableTimer(in->secondary_wait_timer);
++    mp_end_hires_timers(hrt);
++    return result == WAIT_OBJECT_0 ? 0 :
++           result == WAIT_OBJECT_0 + 1 ? ETIMEDOUT : EINVAL;
++}
++#endif
++
+ // VOs which have no special requirements on UI event loops etc. can set the
+ // vo_driver.wait_events callback to this (and leave vo_driver.wakeup unset).
+ // This function must not be used or called for other purposes.
+@@ -745,8 +824,33 @@ void vo_wait_default(struct vo *vo, int64_t until_time)
      struct vo_internal *in = vo->in;
  
--    if (vo->driver->wait_events) {
-+    // gpu-next/d3d11 has no separate event-loop wait. For a near physical ASS
-+    // deadline, bypass the condition-variable tail just as wait_until() does;
-+    // otherwise a scheduler wakeup can miss the only remaining scanout slot.
-+    int64_t remaining = until_time - mp_time_ns();
-+    int64_t physical_tail = in->secondary_physical.interval > 0 &&
-+        in->secondary_physical.interval <= INT64_MAX / 3
-+        ? in->secondary_physical.interval * 3 : 0;
-+    if (!vo->driver->wait_events && physical_tail > 0 && remaining > 0 &&
-+        remaining <= physical_tail)
-+    {
-+        mp_sleep_ns(remaining);
-+    } else if (vo->driver->wait_events) {
-         vo->driver->wait_events(vo, until_time);
-     } else {
-         vo_wait_default(vo, until_time);
-@@ -763,6 +787,16 @@ static void wait_vo(struct vo *vo, int64_t until_time)
+     mp_mutex_lock(&in->lock);
+-    if (!in->need_wakeup)
+-        mp_cond_timedwait_until(&in->wakeup, &in->lock, until_time);
++    if (!in->need_wakeup) {
++        bool precise = false;
++        int result = EINVAL;
++        int64_t entered = mp_time_ns();
++#ifdef _WIN32
++        // gpu-next has a wait_events wrapper even when the D3D11 context
++        // falls back here. Choose the primitive at this actual wait entry.
++        int64_t remaining = until_time - entered;
++        precise = in->secondary_physical.phase && remaining > 0 &&
++                  remaining <= MP_TIME_MS_TO_NS(50);
++        if (precise)
++            result = secondary_wait_precise_locked(vo, until_time, true);
++#endif
++        if (result == EINVAL) {
++            precise = false;
++            result = mp_cond_timedwait_until(&in->wakeup, &in->lock, until_time);
++        }
++        if (in->secondary_trace && in->secondary_physical.interval > 0) {
++            int64_t woke = mp_time_ns();
++            if (woke > until_time &&
++                woke - until_time >= in->secondary_physical.interval / 4)
++                MP_INFO(vo, "native-ass-default-wait: enter_ns=%"PRId64
++                    " deadline_ns=%"PRId64" wake_ns=%"PRId64
++                    " precise=%d result=%d late_ns=%"PRId64"\n",
++                    entered, until_time, woke, precise, result, woke - until_time);
++        }
++    }
+     mp_mutex_unlock(&in->lock);
+ }
+ 
+@@ -763,6 +867,16 @@ static void wait_vo(struct vo *vo, int64_t until_time)
      mp_mutex_lock(&in->lock);
      in->need_wakeup = false;
      mp_mutex_unlock(&in->lock);
@@ -1493,7 +1608,18 @@ index 72e6c77..391cfe0 100644
  }
  
  static void wakeup_locked(struct vo *vo)
-@@ -885,9 +919,13 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+@@ -770,6 +884,10 @@ static void wakeup_locked(struct vo *vo)
+     struct vo_internal *in = vo->in;
+ 
+     mp_cond_broadcast(&in->wakeup);
++#ifdef _WIN32
++    if (in->secondary_wakeup_event)
++        SetEvent(in->secondary_wakeup_event);
++#endif
+     if (vo->driver->wakeup)
+         vo->driver->wakeup(vo);
+     in->need_wakeup = true;
+@@ -885,9 +1003,13 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
              in->secondary_redraw_cost, duration, interval);
          bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
              duration, interval, now, in->secondary_next_probe);
@@ -1509,34 +1635,23 @@ index 72e6c77..391cfe0 100644
          next_pts -= lead;
          next_pts -= in->flip_queue_offset;
          if (next_pts > now)
-@@ -951,12 +989,108 @@ static void wait_until(struct vo *vo, int64_t target)
+@@ -951,12 +1073,97 @@ static void wait_until(struct vo *vo, int64_t target)
      while (target > mp_time_ns()) {
          if (in->queued_events & VO_EVENT_LIVE_RESIZING)
              break;
 -        if (mp_cond_timedwait_until(&in->wakeup, &in->lock, target))
 +#ifdef _WIN32
-+        // Condition waits truncate to whole ms. Recheck their timeout, then
-+        // use the existing high-resolution timer for only the final <1 ms.
-+        // For a physical ASS presentation deadline, use that same timer for
-+        // the short tail of the wait. A condition-variable timeout can be
-+        // resumed several milliseconds late when the render thread is
-+        // descheduled, which is enough to miss one physical slot. The timer
-+        // path sleeps the thread and does not create an independent clock.
++        // Keep this wait interruptible for resizing/new work. An existing
++        // work flag belongs to the outer VO loop: unlike the scheduler wait,
++        // it must not turn this presentation deadline into a busy loop.
 +        int64_t remaining = target - mp_time_ns();
-+        int64_t physical_tail = in->secondary_physical.interval > 0 &&
-+            in->secondary_physical.interval <= INT64_MAX / 3
-+            ? in->secondary_physical.interval * 3 : 0;
-+        if (physical_tail > 0 && remaining > 0 && remaining <= physical_tail) {
-+            mp_mutex_unlock(&in->lock);
-+            mp_sleep_ns(remaining);
-+            mp_mutex_lock(&in->lock);
-+            continue;
-+        }
-+        if (remaining > 0 && remaining < MP_TIME_MS_TO_NS(1)) {
-+            mp_mutex_unlock(&in->lock);
-+            mp_sleep_ns(remaining);
-+            mp_mutex_lock(&in->lock);
-+            continue;
++        if ((in->secondary_physical.phase && remaining > 0 &&
++             remaining <= MP_TIME_MS_TO_NS(50)) ||
++            (remaining > 0 && remaining < MP_TIME_MS_TO_NS(1)))
++        {
++            int result = secondary_wait_precise_locked(vo, target, false);
++            if (result == 0 || result == ETIMEDOUT)
++                continue;
 +        }
 +#endif
 +        int result = mp_cond_timedwait_until(&in->wakeup, &in->lock, target);
@@ -1619,7 +1734,7 @@ index 72e6c77..391cfe0 100644
  static bool render_frame(struct vo *vo)
  {
      struct vo_internal *in = vo->in;
-@@ -965,8 +1099,58 @@ static bool render_frame(struct vo *vo)
+@@ -965,8 +1172,58 @@ static bool render_frame(struct vo *vo)
  
      update_display_fps(vo);
  
@@ -1678,7 +1793,7 @@ index 72e6c77..391cfe0 100644
      if (in->frame_queued) {
          talloc_free(in->current_frame);
          in->current_frame = in->frame_queued;
-@@ -1050,10 +1234,69 @@ static bool render_frame(struct vo *vo)
+@@ -1050,10 +1307,69 @@ static bool render_frame(struct vo *vo)
  
          stats_time_start(in->stats, "video-draw");
  
@@ -1751,10 +1866,22 @@ index 72e6c77..391cfe0 100644
  
          in->visible = vo->driver->draw_frame(vo, frame);
  
-@@ -1073,6 +1316,10 @@ static bool render_frame(struct vo *vo)
+@@ -1068,11 +1384,20 @@ static bool render_frame(struct vo *vo)
+                     talloc_zero(NULL, struct voctrl_performance_data);
+                 if (vo->driver->control(vo, VOCTRL_PERFORMANCE_DATA, perf) == VO_TRUE) {
+                     in->secondary_gpu_cost = 0;
+-                    for (int n = 0; n < perf->fresh.count; n++)
++                    in->secondary_gpu_peak = 0;
++                    for (int n = 0; n < perf->fresh.count; n++) {
+                         in->secondary_gpu_cost += perf->fresh.perf[n].avg;
++                        in->secondary_gpu_peak += perf->fresh.perf[n].peak;
++                    }
                      in->secondary_redraw_gpu_cost = 0;
-                     for (int n = 0; n < perf->redraw.count; n++)
+-                    for (int n = 0; n < perf->redraw.count; n++)
++                    for (int n = 0; n < perf->redraw.count; n++) {
                          in->secondary_redraw_gpu_cost += perf->redraw.perf[n].avg;
++                        in->secondary_gpu_peak += perf->redraw.perf[n].peak;
++                    }
 +                    // gpu-next reports source-frame processing in "fresh" and
 +                    // final blending/output in "redraw". A fresh image performs
 +                    // both stages; its completion budget must include both.
@@ -1762,7 +1889,29 @@ index 72e6c77..391cfe0 100644
                  }
                  talloc_free(perf);
                  in->secondary_cost_update = mp_time_ns();
-@@ -1120,6 +1367,19 @@ static bool render_frame(struct vo *vo)
+@@ -1100,6 +1425,7 @@ static bool render_frame(struct vo *vo)
+         } else {
+             in->secondary_budget = (struct secondary_ass_budget){0};
+             in->secondary_gpu_cost = in->secondary_cost_update = 0;
++            in->secondary_gpu_peak = 0;
+             in->secondary_redraw_budget = (struct secondary_ass_budget){0};
+             in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
+             in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
+@@ -1107,6 +1433,13 @@ static bool render_frame(struct vo *vo)
+ 
+         stats_time_end(in->stats, "video-draw");
+ 
++        if (in->secondary_trace && clock_rate > 0)
++            MP_INFO(vo, "native-ass-render: begin_ns=%"PRId64
++                " end_ns=%"PRId64" cpu_ns=%"PRId64
++                " gpu_avg_ns=%"PRId64" gpu_peak_ns=%"PRId64"\n",
++                in->secondary_last_draw, mp_time_ns(), cpu_cost,
++                in->secondary_gpu_cost, in->secondary_gpu_peak);
++
+         wait_until(vo, target);
+ 
+         stats_time_start(in->stats, "video-flip");
+@@ -1120,6 +1453,19 @@ static bool render_frame(struct vo *vo)
          if (vo->driver->get_vsync)
              vo->driver->get_vsync(vo, &vsync);
  
@@ -1782,7 +1931,7 @@ index 72e6c77..391cfe0 100644
          // Make up some crap if presentation feedback is missing.
          if (vsync.last_queue_display_time <= 0)
              vsync.last_queue_display_time = mp_time_ns();
-@@ -1173,7 +1433,7 @@ done:
+@@ -1173,7 +1519,7 @@ done:
      return more_frames;
  }
  
@@ -1791,7 +1940,7 @@ index 72e6c77..391cfe0 100644
  {
      struct vo_internal *in = vo->in;
  
-@@ -1181,6 +1441,18 @@ static void do_redraw(struct vo *vo)
+@@ -1181,6 +1527,18 @@ static void do_redraw(struct vo *vo)
          return;
  
      mp_mutex_lock(&in->lock);
@@ -1810,7 +1959,7 @@ index 72e6c77..391cfe0 100644
      in->request_redraw = false;
  
      if (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) {
-@@ -1200,15 +1472,82 @@ static void do_redraw(struct vo *vo)
+@@ -1200,15 +1558,82 @@ static void do_redraw(struct vo *vo)
      frame->still = true;
      frame->pts = 0;
      frame->duration = -1;
@@ -1894,7 +2043,7 @@ index 72e6c77..391cfe0 100644
          int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
          in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
              &in->secondary_redraw_budget, cpu_cost, 0);
-@@ -1252,6 +1591,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1252,6 +1677,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          goto done;
  
      read_opts(vo);
@@ -1903,7 +2052,7 @@ index 72e6c77..391cfe0 100644
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1309,7 +1650,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1309,7 +1736,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
          if (!working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
@@ -1914,7 +2063,7 @@ index 72e6c77..391cfe0 100644
              bool affordable = secondary_ass_budget_affordable(secondary_cost,
                  secondary_redraw_cost, secondary_duration, interval);
              // Once per second, allow a bounded recovery sample. A CPU wakeup
-@@ -1317,16 +1660,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1317,16 +1746,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
                  secondary_duration, interval, now, secondary_probe);
              if (affordable || probe) {
@@ -1966,7 +2115,7 @@ index 72e6c77..391cfe0 100644
                  }
              }
          }
-@@ -1345,7 +1722,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1345,7 +1808,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              // Some windowing platforms break if we submit frames too fast.
              if (vo->previous_redraw_time + max_interval <= now) {
                  vo->driver->control(vo, VOCTRL_REDRAW, NULL);
@@ -1975,7 +2124,7 @@ index 72e6c77..391cfe0 100644
                  vo->previous_redraw_time = now;
              } else {
                  wait_vo(vo, now + max_interval);
-@@ -1442,6 +1819,7 @@ void vo_seek_reset(struct vo *vo)
+@@ -1442,6 +1905,7 @@ void vo_seek_reset(struct vo *vo)
      in->send_reset = true;
      wakeup_locked(vo);
      mp_mutex_unlock(&in->lock);
