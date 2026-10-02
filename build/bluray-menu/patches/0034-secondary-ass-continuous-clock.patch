@@ -1,4 +1,4 @@
-From 82adfc6d7ae8db0566d00bdfc81e4d880f2a3b39 Mon Sep 17 00:00:00 2001
+From 8bcd3850a6faec4cf90574798944157a9ceaea0a Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] vo: diagnose bounded earlier Present protected by identified
@@ -12,15 +12,15 @@ Subject: [PATCH] vo: diagnose bounded earlier Present protected by identified
  sub/osd_state.h                        |  14 +-
  sub/sd_ass.c                           |   5 +
  sub/secondary_ass_clock.h              | 281 ++++++++++
- video/out/d3d11/context.c              | 483 +++++++++++++++-
+ video/out/d3d11/context.c              | 495 +++++++++++++++-
  video/out/d3d11/context.h              |   7 +
  video/out/secondary_ass_physical.h     | 560 ++++++++++++++++++
- video/out/secondary_ass_present_hold.h |  67 +++
+ video/out/secondary_ass_present_hold.h |  80 +++
  video/out/secondary_ass_presentation.h |  83 +++
  video/out/vo.c                         | 748 +++++++++++++++++++++++--
  video/out/vo.h                         |  13 +
  video/out/vo_gpu_next.c                |  19 +
- 15 files changed, 2404 insertions(+), 65 deletions(-)
+ 15 files changed, 2429 insertions(+), 65 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_present_hold.h
@@ -651,7 +651,7 @@ index 0000000..bc36b6e
 +
 +#endif
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index fc8802e..6cf8e9b 100644
+index fc8802e..60bd982 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -15,6 +15,10 @@
@@ -665,7 +665,15 @@ index fc8802e..6cf8e9b 100644
  #include "common/msg.h"
  #include "options/m_config.h"
  #include "osdep/timer.h"
-@@ -43,6 +47,8 @@ struct d3d11_opts {
+@@ -24,6 +28,7 @@
+ #include "video/out/gpu/d3d11_helpers.h"
+ #include "video/out/gpu/spirv.h"
+ #include "video/out/w32_common.h"
++#include "video/out/secondary_ass_present_hold.h"
+ #include "context.h"
+ #include "ra_d3d11.h"
+ 
+@@ -43,6 +48,8 @@ struct d3d11_opts {
      int output_mode;
  };
  
@@ -674,13 +682,15 @@ index fc8802e..6cf8e9b 100644
  #define OPT_BASE_STRUCT struct d3d11_opts
  const struct m_sub_options d3d11_conf = {
      .opts = (const struct m_option[]) {
-@@ -125,10 +131,319 @@ struct priv {
+@@ -125,10 +132,321 @@ struct priv {
      int64_t last_sync_qpc_time;
      int64_t vsync_duration_qpc;
      int64_t last_submit_qpc;
 +    bool secondary_trace;
 +    bool secondary_hold;
 +    int secondary_next_interval, secondary_last_interval;
++    bool secondary_held_present_seen;
++    uint32_t secondary_last_held_id;
 +
 +    // Opt-in, non-blocking GPU completion evidence. This is intentionally
 +    // owned by the D3D11 VO thread and never participates in scheduling.
@@ -994,7 +1004,7 @@ index fc8802e..6cf8e9b 100644
  static struct ra_tex *get_backbuffer(struct ra_ctx *ctx)
  {
      struct priv *p = ctx->priv;
-@@ -159,13 +474,18 @@ static bool resize(struct ra_ctx *ctx)
+@@ -159,13 +477,18 @@ static bool resize(struct ra_ctx *ctx)
          return false;
      }
  
@@ -1013,7 +1023,7 @@ index fc8802e..6cf8e9b 100644
      return true;
  }
  
-@@ -284,12 +604,31 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+@@ -284,12 +607,35 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
      struct priv *p = sw->priv;
  
      m_config_cache_update(p->opts_cache);
@@ -1030,6 +1040,10 @@ index fc8802e..6cf8e9b 100644
 +        interval = p->secondary_next_interval;
 +    p->secondary_next_interval = 0;
 +    p->secondary_last_interval = interval;
++    if (p->secondary_hold && interval > 1) {
++        p->secondary_held_present_seen = true;
++        p->secondary_last_held_id = 0; // unknown until a successful ID query
++    }
 +    HRESULT present_hr = IDXGISwapChain_Present(p->swapchain, interval, 0);
 +    d3d11_gpu_marker_after_present(sw, present_hr);
 +}
@@ -1046,7 +1060,7 @@ index fc8802e..6cf8e9b 100644
  }
  
  static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-@@ -300,8 +639,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -300,8 +646,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      m_config_cache_update(p->opts_cache);
  
      // The calculations below are only valid if mpv presents on every vsync
@@ -1059,7 +1073,7 @@ index fc8802e..6cf8e9b 100644
  
      // They're also only valid for flip model swapchains
      DXGI_SWAP_CHAIN_DESC desc;
-@@ -309,6 +651,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -309,6 +658,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      if (FAILED(hr) || (desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
                         desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
      {
@@ -1069,7 +1083,7 @@ index fc8802e..6cf8e9b 100644
          return;
      }
  
-@@ -316,8 +661,13 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -316,8 +668,16 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      // the last call to IDXGISwapChain::Present()
      UINT submit_count;
      hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &submit_count);
@@ -1081,10 +1095,13 @@ index fc8802e..6cf8e9b 100644
 +    }
 +    info->secondary_submit_id = submit_count;
 +    info->secondary_submit_interval = p->secondary_last_interval;
++    if (p->secondary_hold && p->secondary_last_interval > 1) {
++        p->secondary_last_held_id = submit_count;
++    }
  
      // GetFrameStatistics returns two pairs. The first is (PresentCount,
      // PresentRefreshCount) which relates a present ID (on the same timeline as
-@@ -329,9 +679,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -329,9 +689,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
          p->last_sync_refresh_count = 0;
          p->last_sync_qpc_time = 0;
@@ -1101,7 +1118,7 @@ index fc8802e..6cf8e9b 100644
  
      // Detecting skipped vsyncs is possible but not supported yet
      info->skipped_vsyncs = -1;
-@@ -345,20 +701,44 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -345,20 +711,46 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      p->last_sync_refresh_count = stats.SyncRefreshCount;
  
      // Get the elapsed time passed between the above vsyncs
@@ -1144,12 +1161,14 @@ index fc8802e..6cf8e9b 100644
      // If the physical frame rate is known and the other members of
      // DXGI_FRAME_STATISTICS are non-0, estimate the timing of the next frame
 -    if (p->vsync_duration_qpc && stats.PresentCount &&
-+    if ((!p->secondary_hold || p->secondary_last_interval == 1) &&
++    if ((!p->secondary_hold || (p->secondary_last_interval == 1 &&
++        secondary_ass_present_hold_queue_drained(true, p->secondary_held_present_seen,
++            p->secondary_last_held_id, stats.PresentCount))) &&
 +        p->vsync_duration_qpc && stats.PresentCount &&
          stats.PresentRefreshCount && stats.SyncRefreshCount &&
          stats.SyncQPCTime.QuadPart)
      {
-@@ -381,6 +761,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -381,6 +773,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
                  (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
          }
      }
@@ -1178,7 +1197,7 @@ index fc8802e..6cf8e9b 100644
  }
  
  static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
-@@ -423,6 +825,25 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
+@@ -423,6 +837,25 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
      bool fullscreen_switch_needed = false;
  
      switch (request) {
@@ -1204,7 +1223,7 @@ index fc8802e..6cf8e9b 100644
      case VOCTRL_VO_OPTS_CHANGED: {
          void *changed_option;
  
-@@ -477,6 +898,9 @@ static void d3d11_uninit(struct ra_ctx *ctx)
+@@ -477,6 +910,9 @@ static void d3d11_uninit(struct ra_ctx *ctx)
  
      if (ctx->ra)
          ra_tex_free(ctx->ra, &p->backbuffer);
@@ -1214,7 +1233,7 @@ index fc8802e..6cf8e9b 100644
      SAFE_RELEASE(p->swapchain);
      if (!ctx->opts.composition) {
          vo_w32_uninit(ctx->vo);
-@@ -502,11 +926,53 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
+@@ -502,11 +938,53 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
      .get_vsync    = d3d11_get_vsync,
  };
  
@@ -1268,7 +1287,7 @@ index fc8802e..6cf8e9b 100644
  
      p->vo_opts_cache = m_config_cache_alloc(ctx, ctx->vo->global, &vo_sub_opts);
      p->vo_opts = p->vo_opts_cache->opts;
-@@ -569,6 +1035,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -569,6 +1047,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
      if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
          goto error;
  
@@ -1868,10 +1887,10 @@ index 0000000..bfd4df7
 +#endif
 diff --git a/video/out/secondary_ass_present_hold.h b/video/out/secondary_ass_present_hold.h
 new file mode 100644
-index 0000000..b6ceb1c
+index 0000000..e074d30
 --- /dev/null
 +++ b/video/out/secondary_ass_present_hold.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,80 @@
 +#ifndef MP_SECONDARY_ASS_PRESENT_HOLD_H
 +#define MP_SECONDARY_ASS_PRESENT_HOLD_H
 +
@@ -1892,6 +1911,19 @@ index 0000000..b6ceb1c
 +    int64_t submit_time, legacy_time;
 +    bool early;
 +};
++
++// The legacy primary estimator assumes every pending Present lasts one
++// physical cycle. A newest sync=1 does not prove an older held frame retired.
++// Require an identified displayed Present strictly AFTER the last held ID.
++static inline bool secondary_ass_present_hold_queue_drained(
++    bool enabled, bool held_present_seen, uint32_t last_held_id,
++    uint32_t displayed_id)
++{
++    if (!enabled || !held_present_seen)
++        return true;
++    uint32_t passed = displayed_id - last_held_id;
++    return last_held_id && displayed_id && passed && passed < UINT32_C(0x80000000);
++}
 +
 +static inline struct secondary_ass_present_hold_plan
 +secondary_ass_present_hold_plan(const struct secondary_ass_physical *p,
