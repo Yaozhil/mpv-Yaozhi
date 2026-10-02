@@ -1,2706 +1,323 @@
-From 4051afbf1d05dcc229b60cbf6c9e5c7b857a7481 Mon Sep 17 00:00:00 2001
+From 225f2f791adbd714e1dbbc85c35a23dcb36d24bb Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
-Date: Thu, 1 Oct 2026 12:17:50 +0800
-Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
- markers
+Date: Sat, 3 Oct 2026 03:03:31 +0800
+Subject: [PATCH] vo: isolate cached ASS redraw from fresh video pacing
 
 ---
- options/options.c                      |   2 +-
- player/playloop.c                      |   2 +-
- sub/osd.c                              | 157 +++++++-
- sub/osd.h                              |  17 +-
- sub/osd_state.h                        |  14 +-
- sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 281 +++++++++++++
- video/out/d3d11/context.c              | 451 ++++++++++++++++++++-
- video/out/d3d11/context.h              |   7 +
- video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++
- video/out/secondary_ass_presentation.h |  83 ++++
- video/out/vo.c                         | 524 +++++++++++++++++++++++--
- video/out/vo.h                         |  10 +
- video/out/vo_gpu_next.c                |  19 +
- 14 files changed, 2006 insertions(+), 60 deletions(-)
- create mode 100644 sub/secondary_ass_clock.h
- create mode 100644 video/out/secondary_ass_physical.h
- create mode 100644 video/out/secondary_ass_presentation.h
+ sub/osd.c                          |  10 +++
+ sub/osd.h                          |   1 +
+ video/out/secondary_ass_physical.h |  37 ++++++++++
+ video/out/vo.c                     | 109 ++++++++++++++++++++++++++---
+ 4 files changed, 146 insertions(+), 11 deletions(-)
 
-diff --git a/options/options.c b/options/options.c
-index e73ebf0..cd78c81 100644
---- a/options/options.c
-+++ b/options/options.c
-@@ -390,7 +390,7 @@ const struct m_sub_options mp_subtitle_shared_sub_opts = {
-         {"secondary-sub-visibility", OPT_BOOL(sub_visibility[1])},
-         {"secondary-sub-ass-full-viewport", OPT_BOOL(secondary_ass_full_viewport)},
-         {"secondary-sub-ass-refresh-rate", OPT_DOUBLE(secondary_ass_refresh_rate),
--            M_RANGE(0, 240)},
-+            M_RANGE(0, 1000)},
-         {"sub-ass-override", OPT_CHOICE(ass_style_override[0],
-             {"no", ASS_STYLE_OVERRIDE_NONE},
-             {"yes", ASS_STYLE_OVERRIDE_YES},
-diff --git a/player/playloop.c b/player/playloop.c
-index d501918..2020ce4 100644
---- a/player/playloop.c
-+++ b/player/playloop.c
-@@ -1285,7 +1285,7 @@ static void update_secondary_refresh(struct MPContext *mpctx)
-         !mpctx->hrseek_active;
-     osd_set_secondary_refresh(mpctx->osd, enabled ?
-         mpctx->opts->subs_shared->secondary_ass_refresh_rate : 0,
--        mpctx->video_speed);
-+        mpctx->video_speed, mpctx->opts->playback_speed);
- }
- 
- static void handle_clipboard_updates(struct MPContext *mpctx)
 diff --git a/sub/osd.c b/sub/osd.c
-index 92a5326..703422a 100644
+index 703422a..7f244f0 100644
 --- a/sub/osd.c
 +++ b/sub/osd.c
-@@ -18,6 +18,7 @@
- #include <stdio.h>
- #include <stdlib.h>
- #include <assert.h>
-+#include <inttypes.h>
- 
- #include <libavutil/common.h>
- 
-@@ -167,6 +168,8 @@ struct osd_state *osd_create(struct mpv_global *global)
-         .force_video_pts = MP_NOPTS_VALUE,
-         .stats = stats_ctx_create(osd, global, "osd"),
-     };
-+    const char *clock_trace = getenv("MPV_NATIVE_ASS_TRACE");
-+    osd->secondary_clock_trace = clock_trace && !strcmp(clock_trace, "1");
-     mp_mutex_init(&osd->lock);
-     osd->opts = osd->opts_cache->opts;
- 
-@@ -218,6 +221,11 @@ void osd_set_sub(struct osd_state *osd, int index, struct dec_sub *dec_sub)
-     mp_mutex_lock(&osd->lock);
-     if (index >= 0 && index < 2) {
-         struct osd_object *obj = osd->objs[OSDTYPE_SUB + index];
-+        if (index == 1 && obj->sub != dec_sub) {
-+            secondary_ass_clock_reset(&osd->secondary_clock);
-+            secondary_ass_sampler_reset(&osd->secondary_sampler);
-+            osd->secondary_present_wall = 0;
-+        }
-         obj->sub = dec_sub;
-         obj->vo_change_id += 1;
-     }
-@@ -314,13 +322,22 @@ void osd_resize(struct osd_state *osd, struct mp_osd_res res)
-     mp_mutex_unlock(&osd->lock);
+@@ -388,6 +388,16 @@ int64_t osd_get_secondary_physical_next_sample_time(struct osd_state *osd)
+     return next;
  }
  
--void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed)
-+void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed,
-+                               double requested_speed)
++int64_t osd_get_secondary_physical_sample_divisor(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    struct secondary_ass_sampler *s = &osd->secondary_sampler;
++    int64_t divisor = osd->secondary_rate > 0 && osd->secondary_physical_phase &&
++        s->valid && s->physical_slots ? s->divisor : 0;
++    mp_mutex_unlock(&osd->lock);
++    return divisor;
++}
++
+ void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
+                                 bool display_synced)
  {
-     mp_mutex_lock(&osd->lock);
--    if (!rate || !osd->secondary_rate)
--        osd->secondary_clock_valid = false;
-+    if (!rate || !osd->secondary_rate) {
-+        secondary_ass_clock_reset(&osd->secondary_clock);
-+        osd->secondary_present_wall = 0;
-+    }
-+    if (rate != osd->secondary_rate || !rate)
-+        secondary_ass_sampler_reset(&osd->secondary_sampler);
-+    else if (requested_speed != osd->secondary_requested_speed)
-+        osd->secondary_sampler.force = true;
-+    secondary_ass_clock_set_speed(&osd->secondary_clock, speed, mp_time_ns());
-     osd->secondary_rate = rate;
-     osd->secondary_speed = speed;
-+    osd->secondary_requested_speed = requested_speed;
-     mp_mutex_unlock(&osd->lock);
- }
- 
-@@ -332,12 +349,103 @@ double osd_get_secondary_refresh(struct osd_state *osd)
-     return rate;
- }
- 
--void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall)
-+double osd_get_secondary_clock_rate(struct osd_state *osd)
- {
-+    // A quiet/static section needs no extra redraws, but the next moving event
-+    // still needs an accurate timeline. Do not tie clock validity to output.
-     mp_mutex_lock(&osd->lock);
--    osd->secondary_pts = pts;
--    osd->secondary_wall = wall;
--    osd->secondary_clock_valid = pts != MP_NOPTS_VALUE;
-+    double rate = osd->secondary_rate;
-+    mp_mutex_unlock(&osd->lock);
-+    return rate;
-+}
-+
-+int64_t osd_get_secondary_next_sample_time(struct osd_state *osd)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    int64_t next = osd->secondary_rate > 0
-+        ? secondary_ass_sampler_next_wall(&osd->secondary_sampler) : 0;
-+    mp_mutex_unlock(&osd->lock);
-+    return next;
-+}
-+
-+int64_t osd_get_secondary_physical_next_sample_slot(struct osd_state *osd)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    int64_t next = osd->secondary_rate > 0 && osd->secondary_physical_phase
-+        ? secondary_ass_sampler_next_slot(&osd->secondary_sampler) : 0;
-+    mp_mutex_unlock(&osd->lock);
-+    return next;
-+}
-+
-+int64_t osd_get_secondary_physical_next_sample_time(struct osd_state *osd)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    // A fallback sample is not aligned to physical refreshes. Establish the
-+    // physical sampler from identified feedback before reusing its grid.
-+    int64_t next = osd->secondary_rate > 0 && osd->secondary_physical_phase
-+        ? secondary_ass_sampler_next_wall(&osd->secondary_sampler) : 0;
-+    mp_mutex_unlock(&osd->lock);
-+    return next;
-+}
-+
-+void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
-+                                bool display_synced)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    if (pts == MP_NOPTS_VALUE) {
-+        secondary_ass_clock_reset(&osd->secondary_clock);
-+        secondary_ass_sampler_reset(&osd->secondary_sampler);
-+    } else {
-+        secondary_ass_clock_set_speed(&osd->secondary_clock, osd->secondary_speed,
-+                                      mp_time_ns());
-+        if (secondary_ass_clock_anchor(&osd->secondary_clock, pts, wall, display_synced))
-+            secondary_ass_sampler_reset(&osd->secondary_sampler);
-+    }
-+    mp_mutex_unlock(&osd->lock);
-+}
-+
-+void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
-+                                        int64_t vsync_interval, int64_t submit_wall,
-+                                        bool physical_phase)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    if (physical_phase != osd->secondary_physical_phase)
-+        secondary_ass_sampler_reset(&osd->secondary_sampler);
-+    osd->secondary_physical_phase = physical_phase;
-+    osd->secondary_physical_epoch = 0;
-+    osd->secondary_present_wall = wall > 0 ? wall : 0;
-+    osd->secondary_submit_wall = submit_wall > 0 ? submit_wall : 0;
-+    osd->secondary_vsync_interval = vsync_interval > 0 ? vsync_interval : 0;
-+    mp_mutex_unlock(&osd->lock);
-+}
-+
-+void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
-+    int64_t target_wall, int64_t target_slot, int64_t phase_wall,
-+    int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    if (!osd->secondary_physical_phase || osd->secondary_physical_epoch != epoch)
-+        secondary_ass_sampler_reset(&osd->secondary_sampler);
-+    osd->secondary_physical_phase = true;
-+    osd->secondary_physical_epoch = epoch;
-+    osd->secondary_target_slot = target_slot;
-+    osd->secondary_phase_wall = phase_wall;
-+    osd->secondary_phase_slot = phase_slot;
-+    osd->secondary_present_wall = target_wall;
-+    osd->secondary_submit_wall = submit_wall;
-+    osd->secondary_vsync_interval = interval;
-+    mp_mutex_unlock(&osd->lock);
-+}
-+
-+void osd_reset_secondary_clock(struct osd_state *osd)
-+{
-+    mp_mutex_lock(&osd->lock);
-+    secondary_ass_clock_reset(&osd->secondary_clock);
-+    secondary_ass_sampler_reset(&osd->secondary_sampler);
-+    osd->secondary_present_wall = 0;
-+    osd->secondary_submit_wall = 0;
-+    osd->secondary_physical_phase = false;
-+    osd->secondary_physical_epoch = 0;
-     mp_mutex_unlock(&osd->lock);
- }
- 
-@@ -358,12 +466,35 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
-         if (obj->sub && sub_is_primary_visible(obj->sub))
-             res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
-     } else if (obj->type == OSDTYPE_SUB2) {
--        if (osd->secondary_rate > 0 && osd->secondary_clock_valid) {
--            // Bound extrapolation if decoding/network stalls before the core
--            // enters its paused-for-cache state. Never change primary subs.
--            double elapsed = (mp_time_ns() - osd->secondary_wall) * 1e-9;
--            video_pts = osd->secondary_pts +
--                MPCLAMP(elapsed, 0, 0.1) * osd->secondary_speed;
-+        if (osd->secondary_rate > 0 && osd->secondary_clock.valid) {
-+            int64_t sample_wall = osd->secondary_present_wall > 0
-+                ? osd->secondary_present_wall : mp_time_ns();
-+            bool changed = osd->secondary_physical_phase
-+                ? secondary_ass_sampler_update_physical(&osd->secondary_sampler,
-+                    &osd->secondary_clock, osd->secondary_rate, sample_wall,
-+                    osd->secondary_target_slot, osd->secondary_phase_wall,
-+                    osd->secondary_phase_slot, osd->secondary_vsync_interval,
-+                    osd->secondary_physical_epoch)
-+                : secondary_ass_sampler_update_at_draw(&osd->secondary_sampler,
-+                &osd->secondary_clock, osd->secondary_rate, sample_wall,
-+                osd->secondary_vsync_interval,
-+                MPMAX(osd->secondary_submit_wall, mp_time_ns()));
-+            if (osd->secondary_sampler.valid)
-+                video_pts = osd->secondary_sampler.pts;
-+            if (osd->secondary_clock_trace) {
-+                MP_INFO(osd, "native-ass-clock: pts=%.9f wall=%"PRId64
-+                        " sample-wall=%"PRId64" tick=%"PRIu64" changed=%d "
-+                        "rate=%.6f anchor-wall=%"PRId64" anchor-pts=%.9f "
-+                        "speed=%.9f phase-rate=%.9f display-synced=%d "
-+                        "submit-wall=%"PRId64"\n",
-+                        video_pts, sample_wall, osd->secondary_sampler.sample_wall,
-+                        osd->secondary_sampler.tick, changed, osd->secondary_rate,
-+                        osd->secondary_clock.wall,
-+                        osd->secondary_clock.pts, osd->secondary_clock.speed,
-+                        osd->secondary_clock.phase_rate,
-+                        osd->secondary_clock.display_synced,
-+                        osd->secondary_submit_wall);
-+            }
-         }
-         if (obj->sub && sub_is_secondary_visible(obj->sub))
-             res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
 diff --git a/sub/osd.h b/sub/osd.h
-index 37e6f7a..888cc1c 100644
+index 888cc1c..21716bc 100644
 --- a/sub/osd.h
 +++ b/sub/osd.h
-@@ -214,9 +214,22 @@ bool osd_get_render_subs_in_filter(struct osd_state *osd);
- void osd_set_render_subs_in_filter(struct osd_state *osd, bool s);
- void osd_set_force_video_pts(struct osd_state *osd, double video_pts);
- double osd_get_force_video_pts(struct osd_state *osd);
--void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed);
-+void osd_set_secondary_refresh(struct osd_state *osd, double rate, double speed,
-+                               double requested_speed);
- double osd_get_secondary_refresh(struct osd_state *osd);
--void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall);
-+double osd_get_secondary_clock_rate(struct osd_state *osd);
-+int64_t osd_get_secondary_next_sample_time(struct osd_state *osd);
-+int64_t osd_get_secondary_physical_next_sample_time(struct osd_state *osd);
-+int64_t osd_get_secondary_physical_next_sample_slot(struct osd_state *osd);
-+void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
-+    int64_t target_wall, int64_t target_slot, int64_t phase_wall,
-+    int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall);
-+void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
-+                                bool display_synced);
-+void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
-+                                        int64_t vsync_interval, int64_t submit_wall,
-+                                        bool physical_phase);
-+void osd_reset_secondary_clock(struct osd_state *osd);
- 
- struct osd_progbar_state {
-     int type;           // <0: disabled, 1-255: symbol, else: no symbol
-diff --git a/sub/osd_state.h b/sub/osd_state.h
-index d50537f..81627d1 100644
---- a/sub/osd_state.h
-+++ b/sub/osd_state.h
-@@ -5,6 +5,7 @@
- 
- #include "osd.h"
- #include "osdep/threads.h"
-+#include "secondary_ass_clock.h"
- 
- enum mp_osdtype {
-     OSDTYPE_SUB,
-@@ -75,9 +76,16 @@ struct osd_state {
-     bool render_subs_in_filter;
-     _Atomic double force_video_pts;
-     // Opt-in clock for external secondary ASS only; guarded by lock.
--    double secondary_rate, secondary_speed, secondary_pts;
--    int64_t secondary_wall;
--    bool secondary_clock_valid;
-+    double secondary_rate, secondary_speed, secondary_requested_speed;
-+    struct secondary_ass_clock secondary_clock;
-+    struct secondary_ass_sampler secondary_sampler;
-+    int64_t secondary_present_wall;
-+    int64_t secondary_submit_wall;
-+    int64_t secondary_vsync_interval;
-+    bool secondary_physical_phase;
-+    int64_t secondary_target_slot, secondary_phase_slot, secondary_phase_wall;
-+    uint64_t secondary_physical_epoch;
-+    bool secondary_clock_trace;
-     bool secondary_has_output;
- 
-     bool want_redraw;
-diff --git a/sub/sd_ass.c b/sub/sd_ass.c
-index 1ec17c8..fd7552d 100644
---- a/sub/sd_ass.c
-+++ b/sub/sd_ass.c
-@@ -63,6 +63,7 @@ struct sd_ass_priv {
-     int num_seen_packets;
-     bool check_animated;
-     bool timing_diagnostics;
-+    bool clock_trace;
-     int64_t timing_start;
-     unsigned timing_render, timing_changed, timing_position, timing_content;
-     int64_t timing_ass_ns, timing_pack_ns, timing_ass_max, timing_pack_max;
-@@ -341,6 +342,8 @@ static int init(struct sd *sd)
-     struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
-     sd->priv = ctx;
-     ctx->timing_diagnostics = getenv("MPV_NATIVE_TIMING") != NULL;
-+    const char *clock_trace = getenv("MPV_NATIVE_ASS_TRACE");
-+    ctx->clock_trace = clock_trace && strcmp(clock_trace, "1") == 0;
- 
-     // Note: accept "null" as alias for "ass", so EDL delay_open subtitle
-     //       streams work.
-@@ -855,6 +858,8 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
-         ass_set_storage_size(renderer, 0, 0);
-     }
-     long long ts = find_timestamp(sd, pts);
-+    if (sd->order == 1 && ctx->clock_trace)
-+        MP_INFO(sd, "native-ass-sample: pts=%.9f ass_ms=%lld\n", pts, ts);
- 
-     if (no_ass)
-         fill_plaintext(sd, pts);
-diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
-new file mode 100644
-index 0000000..bc36b6e
---- /dev/null
-+++ b/sub/secondary_ass_clock.h
-@@ -0,0 +1,281 @@
-+/* SPDX-License-Identifier: LGPL-2.1-or-later */
-+#ifndef MP_SECONDARY_ASS_CLOCK_H
-+#define MP_SECONDARY_ASS_CLOCK_H
-+
-+#include <math.h>
-+#include <stdbool.h>
-+#include <stdint.h>
-+
-+// Media seconds at a monotonic wall-clock point, not decoded-frame cadence.
-+// All state is protected by the owning OSD lock.
-+struct secondary_ass_clock {
-+    bool valid;
-+    bool display_synced;
-+    double pts;
-+    double speed;
-+    double phase_rate;
-+    int64_t wall;
-+};
-+
-+// Sampling cadence has a separate origin. Updating a source-frame authority
-+// must not restart an animation tick at that source's frame rate.
-+struct secondary_ass_sampler {
-+    bool valid;
-+    bool force;
-+    double rate;
-+    double pts;
-+    int64_t origin_wall;
-+    int64_t sample_wall;
-+    uint64_t tick;
-+    bool physical_slots;
-+    uint64_t epoch;
-+    int64_t origin_slot, divisor;
-+    int64_t phase_wall, phase_slot, physical_interval;
-+};
-+
-+static inline void secondary_ass_sampler_reset(struct secondary_ass_sampler *sampler)
-+{
-+    *sampler = (struct secondary_ass_sampler){0};
-+}
-+
-+static inline void secondary_ass_clock_reset(struct secondary_ass_clock *clock)
-+{
-+    *clock = (struct secondary_ass_clock){0};
-+}
-+
-+static inline double secondary_ass_clock_sample(const struct secondary_ass_clock *clock,
-+                                                int64_t wall)
-+{
-+    // Subtract in floating point so malformed timestamps cannot overflow an
-+    // int64_t before validation. Negative offsets are intentional: an upcoming
-+    // presentation may be queued before its wall-clock time.
-+    double elapsed = ((double)wall - (double)clock->wall) * 1e-9;
-+    return clock->pts + elapsed * (clock->speed + clock->phase_rate);
-+}
-+
-+static inline void secondary_ass_clock_set_speed(struct secondary_ass_clock *clock,
-+                                                 double speed, int64_t wall)
-+{
-+    if (!isfinite(speed) || speed <= 0) {
-+        secondary_ass_clock_reset(clock);
-+        return;
-+    }
-+    if (clock->speed == speed)
-+        return;
-+    if (clock->valid) {
-+        // Changing speed must not apply the new multiplier to all time since
-+        // the last source frame. Integrate the old speed to the change first.
-+        clock->pts = secondary_ass_clock_sample(clock, wall);
-+        clock->wall = wall;
-+    }
-+    clock->speed = speed;
-+    clock->phase_rate = 0;
-+}
-+
-+// Return true when an actual discontinuity requires a fresh sampling origin.
-+static inline bool secondary_ass_clock_anchor(struct secondary_ass_clock *clock,
-+                                              double pts, int64_t wall,
-+                                              bool display_synced)
-+{
-+    if (!isfinite(pts) || !isfinite(clock->speed) || clock->speed <= 0) {
-+        secondary_ass_clock_reset(clock);
-+        return true;
-+    }
-+
-+    double projected = clock->valid
-+        ? secondary_ass_clock_sample(clock, wall) : pts;
-+    double error = pts - projected;
-+
-+    bool reset = !clock->valid || clock->display_synced != display_synced ||
-+                 !isfinite(projected) || error >= 0.250 || error <= -0.250;
-+    if (reset)
-+    {
-+        // Both media authorities are paired with their wall-clock target.
-+        // Display feedback can still jitter even after ideal_frame_vsync
-+        // removes source-frame quantization. Never copy that phase noise into
-+        // the animation's position on each display repeat.
-+        // Explicit lifecycle resets take precedence over the discontinuity
-+        // safeguard, including seeks smaller than 250ms.
-+        clock->pts = pts;
-+        clock->wall = wall;
-+        clock->phase_rate = 0;
-+    } else {
-+        // Audio deadlines and display feedback may both jitter slightly.
-+        // Discipline phase over one second instead of jumping position at
-+        // every source frame. Limit relative rate adjustment to +/-0.5% so a
-+        // late frame cannot visibly accelerate/decelerate the animation.
-+        double limit = clock->speed * 0.005;
-+        double correction = error; // error / 1 second
-+        clock->phase_rate = correction < -limit ? -limit :
-+                            correction > limit ? limit : correction;
-+        clock->pts = projected;
-+        clock->wall = wall;
-+    }
-+    clock->valid = true;
-+    clock->display_synced = display_synced;
-+    return reset;
-+}
-+
-+static inline int64_t secondary_ass_sampler_slot_wall(
-+    const struct secondary_ass_sampler *s, int64_t slot)
-+{
-+    if (s->phase_wall <= 0 || s->phase_slot <= 0 || slot <= 0 ||
-+        s->physical_interval <= 0)
-+        return 0;
-+    int64_t delta = slot - s->phase_slot;
-+    if ((delta >= 0 && delta > (INT64_MAX - s->phase_wall) / s->physical_interval) ||
-+        (delta < 0 && -delta > (s->phase_wall - 1) / s->physical_interval))
-+        return 0;
-+    return s->phase_wall + delta * s->physical_interval;
-+}
-+
-+static inline int64_t secondary_ass_sampler_next_slot(
-+    const struct secondary_ass_sampler *s)
-+{
-+    if (!s->valid || !s->physical_slots || s->divisor <= 0 || s->origin_slot <= 0 ||
-+        s->tick >= (uint64_t)((INT64_MAX - s->origin_slot) / s->divisor))
-+        return 0;
-+    return s->origin_slot + (int64_t)(s->tick + 1) * s->divisor;
-+}
-+
-+static inline int64_t secondary_ass_sampler_next_wall(const struct secondary_ass_sampler *sampler)
-+{
-+    if (!sampler->valid || !isfinite(sampler->rate) || sampler->rate <= 0)
-+        return 0;
-+    if (sampler->physical_slots)
-+        return secondary_ass_sampler_slot_wall(sampler,
-+            secondary_ass_sampler_next_slot(sampler));
-+    double offset = ((double)sampler->tick + 1) * (1e9 / sampler->rate);
-+    if (offset >= (double)INT64_MAX - sampler->origin_wall)
-+        return 0;
-+    return sampler->origin_wall + (int64_t)(offset + 0.5);
-+}
-+
-+static inline bool secondary_ass_sampler_update(struct secondary_ass_sampler *sampler,
-+    const struct secondary_ass_clock *clock, double rate, int64_t present_wall,
-+    int64_t vsync_interval);
-+
-+// A divided display cadence is identified by refresh slots, not by a second
-+// nominal wall-time oscillator. Period refinement changes only the local
-+// slot-to-wall projection; it never replays all elapsed ticks at a new rate.
-+static inline bool secondary_ass_sampler_update_physical(
-+    struct secondary_ass_sampler *s, const struct secondary_ass_clock *clock,
-+    double rate, int64_t present_wall, int64_t target_slot,
-+    int64_t phase_wall, int64_t phase_slot, int64_t interval, uint64_t epoch)
-+{
-+    if (!clock->valid || !isfinite(rate) || rate <= 0 || target_slot <= 0 ||
-+        phase_wall <= 0 || phase_slot <= 0 || interval <= 0 || !epoch) {
-+        secondary_ass_sampler_reset(s);
-+        return false;
-+    }
-+    bool initialize = !s->valid || s->rate != rate || s->epoch != epoch;
-+    if (initialize) {
-+        double ratio = 1e9 / rate / interval;
-+        if (!isfinite(ratio) || ratio < 0.5 || ratio >= (double)INT64_MAX)
-+            return false;
-+        int64_t divisor = (int64_t)(ratio + 0.5);
-+        // This is eligibility for an integer divisor, not a pacing tolerance.
-+        // Arbitrary manual rates retain the existing wall-clock sampler.
-+        if (divisor < 1 || fabs(rate * interval * 1e-9 * divisor - 1) > 0.005) {
-+            if (s->physical_slots)
-+                secondary_ass_sampler_reset(s);
-+            bool changed = secondary_ass_sampler_update(s, clock, rate,
-+                                                       present_wall, interval);
-+            s->epoch = epoch;
-+            return changed;
-+        }
-+        *s = (struct secondary_ass_sampler){
-+            .valid = true, .physical_slots = true, .rate = rate, .epoch = epoch,
-+            .divisor = divisor, .origin_slot = target_slot,
-+            .origin_wall = present_wall, .sample_wall = present_wall,
-+            .pts = secondary_ass_clock_sample(clock, present_wall),
-+        };
-+    }
-+    if (!s->physical_slots)
-+        return secondary_ass_sampler_update(s, clock, rate, present_wall, interval);
-+    s->phase_wall = phase_wall;
-+    s->phase_slot = phase_slot;
-+    s->physical_interval = interval;
-+    if (initialize)
-+        return true;
-+    if (target_slot < s->origin_slot)
-+        return false;
-+    uint64_t tick = (uint64_t)((target_slot - s->origin_slot) / s->divisor);
-+    if (tick <= s->tick && !s->force)
-+        return false;
-+    if (tick > s->tick)
-+        s->tick = tick;
-+    if (s->tick > (uint64_t)((INT64_MAX - s->origin_slot) / s->divisor))
-+        return false;
-+    int64_t sample_slot = s->origin_slot + (int64_t)s->tick * s->divisor;
-+    int64_t wall = s->force ? present_wall : secondary_ass_sampler_slot_wall(s, sample_slot);
-+    if (wall <= 0)
-+        return false;
-+    s->sample_wall = wall;
-+    s->pts = secondary_ass_clock_sample(clock, wall);
-+    s->force = false;
-+    return true;
-+}
-+
-+static inline bool secondary_ass_sampler_update(struct secondary_ass_sampler *sampler,
-+                                                const struct secondary_ass_clock *clock,
-+                                                double rate, int64_t present_wall,
-+                                                int64_t vsync_interval)
-+{
-+    if (!clock->valid || !isfinite(rate) || rate <= 0) {
-+        secondary_ass_sampler_reset(sampler);
-+        return false;
-+    }
-+    if (!sampler->valid || sampler->rate != rate) {
-+        sampler->valid = true;
-+        sampler->force = false;
-+        sampler->rate = rate;
-+        sampler->origin_wall = sampler->sample_wall = present_wall;
-+        sampler->tick = 0;
-+        sampler->pts = secondary_ass_clock_sample(clock, present_wall);
-+        return true;
-+    }
-+
-+    double elapsed_ns = (double)present_wall - (double)sampler->origin_wall;
-+    // Put an integer-divided animation tick boundary halfway between physical
-+    // refreshes, rather than exactly on a jittery feedback timestamp. The
-+    // selected sample still uses the stable grid wall, never the CPU draw time.
-+    double margin_ns = vsync_interval > 0 ? vsync_interval * 0.5 : 0;
-+    double tick_value = (elapsed_ns + margin_ns) * 1e-9 * rate;
-+    if (tick_value <= 0 || tick_value >= (double)UINT64_MAX)
-+        return false;
-+    uint64_t tick = (uint64_t)tick_value;
-+    if (tick <= sampler->tick && !sampler->force)
-+        return false;
-+
-+    double offset_ns = tick * (1e9 / rate);
-+    if (offset_ns >= (double)INT64_MAX - sampler->origin_wall)
-+        return false;
-+    if (tick > sampler->tick)
-+        sampler->tick = tick;
-+    sampler->sample_wall = sampler->force ? present_wall
-+        : sampler->origin_wall + (int64_t)(offset_ns + 0.5);
-+    sampler->force = false;
-+    sampler->pts = secondary_ass_clock_sample(clock, sampler->sample_wall);
-+    return true;
-+}
-+
-+static inline bool secondary_ass_sampler_update_at_draw(
-+    struct secondary_ass_sampler *sampler,
-+    const struct secondary_ass_clock *clock, double rate,
-+    int64_t present_wall, int64_t vsync_interval, int64_t submit_wall)
-+{
-+    // Source frames are drawn before their scheduled flip. Select the due
-+    // animation at the earliest submission time, not early CPU draw time or
-+    // an unrelated future queue prediction. This lets fresh video consume a
-+    // due tick without a second cached Present. Initialization and explicit
-+    // discontinuities remain immediate, distinct from ordinary ticks.
-+    if (!clock->display_synced && sampler->valid && !sampler->force &&
-+        sampler->rate == rate && clock->valid && submit_wall > 0 &&
-+        present_wall > submit_wall)
-+        present_wall = submit_wall;
-+    return secondary_ass_sampler_update(sampler, clock, rate,
-+                                        present_wall, vsync_interval);
-+}
-+
-+#endif
-diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index fc8802e..47a8fde 100644
---- a/video/out/d3d11/context.c
-+++ b/video/out/d3d11/context.c
-@@ -15,6 +15,10 @@
-  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
-  */
- 
-+#include <inttypes.h>
-+#include <stdlib.h>
-+#include <string.h>
-+
- #include "common/msg.h"
- #include "options/m_config.h"
- #include "osdep/timer.h"
-@@ -43,6 +47,8 @@ struct d3d11_opts {
-     int output_mode;
- };
- 
-+#define MP_D3D11_GPU_MARKER_RING 64
-+
- #define OPT_BASE_STRUCT struct d3d11_opts
- const struct m_sub_options d3d11_conf = {
-     .opts = (const struct m_option[]) {
-@@ -125,10 +131,317 @@ struct priv {
-     int64_t last_sync_qpc_time;
-     int64_t vsync_duration_qpc;
-     int64_t last_submit_qpc;
-+    bool secondary_trace;
-+
-+    // Opt-in, non-blocking GPU completion evidence. This is intentionally
-+    // owned by the D3D11 VO thread and never participates in scheduling.
-+    ID3D11DeviceContext *gpu_marker_context;
-+    bool gpu_marker_active;
-+    bool gpu_marker_error;
-+    uint64_t gpu_marker_next_seq;
-+    uint64_t gpu_marker_generation;
-+    int gpu_marker_last;
-+    int gpu_marker_bound;
-+    struct d3d11_gpu_marker {
-+        ID3D11Query *query;
-+        uint64_t seq;
-+        uint64_t generation;
-+        uint64_t frame_id;
-+        int64_t issue_before_ns;
-+        int64_t issue_after_ns;
-+        int64_t last_not_ready_ns;
-+        int64_t ready_lower_ns;
-+        int64_t ready_upper_ns;
-+        unsigned expected_present;
-+        unsigned actual_present;
-+        bool in_use;
-+        bool completed;
-+        bool present_bound;
-+        bool present_verified;
-+        bool present_count_valid;
-+    } gpu_markers[MP_D3D11_GPU_MARKER_RING];
- 
-     struct mp_dxgi_factory_ctx dxgi_ctx;
- };
- 
-+static const struct ra_swapchain_fns d3d11_swapchain;
-+
-+static void d3d11_gpu_marker_release_queries(struct ra_ctx *ctx)
-+{
-+    struct priv *p = ctx->priv;
-+    for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
-+        struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+        if (p->gpu_marker_active && m->in_use)
-+            MP_INFO(ctx, "native-ass-gpu-marker: status=discard"
-+                    " seq=%"PRIu64" generation=%"PRIu64"\n",
-+                    m->seq, m->generation);
-+        SAFE_RELEASE(p->gpu_markers[n].query);
-+        p->gpu_markers[n] = (struct d3d11_gpu_marker) {0};
-+    }
-+    p->gpu_marker_last = -1;
-+    p->gpu_marker_bound = -1;
-+    p->gpu_marker_generation++;
-+}
-+
-+static void d3d11_gpu_marker_disable(struct ra_ctx *ctx, HRESULT hr,
-+                                     const char *status)
-+{
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active)
-+        return;
-+
-+    MP_INFO(ctx, "native-ass-gpu-marker: status=%s hr=0x%08"PRIx32
-+            " generation=%"PRIu64"\n", status, (uint32_t)hr,
-+            p->gpu_marker_generation);
-+    d3d11_gpu_marker_release_queries(ctx);
-+    p->gpu_marker_active = false;
-+    p->gpu_marker_error = true;
-+}
-+
-+static bool d3d11_gpu_marker_create_queries(struct ra_ctx *ctx)
-+{
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active)
-+        return false;
-+
-+    if (!p->gpu_marker_context)
-+        ID3D11Device_GetImmediateContext(p->device, &p->gpu_marker_context);
-+    if (!p->gpu_marker_context) {
-+        d3d11_gpu_marker_disable(ctx, E_NOINTERFACE, "no_immediate_context");
-+        return false;
-+    }
-+
-+    D3D11_QUERY_DESC desc = {
-+        .Query = D3D11_QUERY_EVENT,
-+        .MiscFlags = 0,
-+    };
-+    for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
-+        HRESULT hr = ID3D11Device_CreateQuery(p->device, &desc,
-+                                               &p->gpu_markers[n].query);
-+        if (FAILED(hr)) {
-+            d3d11_gpu_marker_disable(ctx, hr, "query_create_error");
-+            return false;
-+        }
-+    }
-+    return true;
-+}
-+
-+static void d3d11_gpu_marker_maybe_release(struct priv *p, int n)
-+{
-+    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+    if (!m->in_use || !m->completed || !m->present_verified)
-+        return;
-+    // A completed query is reusable. Keep the fixed pool alive until resize,
-+    // error or teardown; dropping its reference here leaves the next free
-+    // slot without a query and stops collecting after the first completion.
-+    ID3D11Query *query = m->query;
-+    *m = (struct d3d11_gpu_marker) {.query = query};
-+    if (p->gpu_marker_last == n)
-+        p->gpu_marker_last = -1;
-+}
-+
-+static void d3d11_gpu_marker_poll(struct ra_ctx *ctx, const char *stage)
-+{
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active || !p->gpu_marker_context)
-+        return;
-+
-+    for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
-+        struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+        if (!m->in_use || m->completed || !m->query)
-+            continue;
-+
-+        int64_t before_ns = mp_time_ns();
-+        HRESULT hr = ID3D11DeviceContext_GetData(
-+            p->gpu_marker_context, (ID3D11Asynchronous *)m->query,
-+            NULL, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
-+        int64_t after_ns = mp_time_ns();
-+        if (hr == S_FALSE) {
-+            // The state was sampled somewhere inside this GetData call.
-+            // GPU work may complete before it returns, so only before_ns is
-+            // a conservative lower bound; S_OK uses after_ns as the upper.
-+            m->last_not_ready_ns = before_ns;
-+            continue;
-+        }
-+        if (FAILED(hr)) {
-+            MP_INFO(ctx, "native-ass-gpu-marker: status=poll_error"
-+                    " seq=%"PRIu64" generation=%"PRIu64
-+                    " stage=%s hr=0x%08"PRIx32" before_ns=%"PRId64
-+                    " after_ns=%"PRId64"\n", m->seq, m->generation, stage,
-+                    (uint32_t)hr, before_ns, after_ns);
-+            d3d11_gpu_marker_disable(ctx, hr, "poll_error");
-+            return;
-+        }
-+
-+        m->completed = true;
-+        m->ready_lower_ns = m->last_not_ready_ns;
-+        m->ready_upper_ns = after_ns;
-+        MP_INFO(ctx, "native-ass-gpu-marker: status=complete"
-+                " seq=%"PRIu64" generation=%"PRIu64
-+                " frame_id=%"PRIu64" stage=%s"
-+                " evidence=gpu_completion_bracket lower_ns=%"PRId64
-+                " upper_ns=%"PRId64" present_expected=%u"
-+                " present_actual=%u present_bound=%d\n", m->seq,
-+                m->generation, m->frame_id, stage, m->ready_lower_ns,
-+                m->ready_upper_ns, m->expected_present, m->actual_present,
-+                m->present_bound);
-+        d3d11_gpu_marker_maybe_release(p, n);
-+    }
-+}
-+
-+static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id)
-+{
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active || !p->gpu_marker_context)
-+        return;
-+
-+    d3d11_gpu_marker_poll(ctx, "draw_end_before_end");
-+    if (!p->gpu_marker_active)
-+        return;
-+    p->gpu_marker_last = -1;
-+    int n = -1;
-+    for (int i = 0; i < MP_D3D11_GPU_MARKER_RING; i++) {
-+        if (!p->gpu_markers[i].in_use) {
-+            n = i;
-+            break;
-+        }
-+    }
-+    if (n < 0) {
-+        MP_INFO(ctx, "native-ass-gpu-marker: status=ring_full"
-+                " generation=%"PRIu64" frame_id=%"PRIu64"\n",
-+                p->gpu_marker_generation, frame_id);
-+        return;
-+    }
-+
-+    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+    if (!m->query) {
-+        MP_INFO(ctx, "native-ass-gpu-marker: status=marker_unavailable"
-+                " generation=%"PRIu64" frame_id=%"PRIu64"\n",
-+                p->gpu_marker_generation, frame_id);
-+        return;
-+    }
-+    ID3D11Query *query = m->query;
-+    int64_t before_ns = mp_time_ns();
-+    ID3D11DeviceContext_End(p->gpu_marker_context,
-+                            (ID3D11Asynchronous *)query);
-+    int64_t after_ns = mp_time_ns();
-+    *m = (struct d3d11_gpu_marker) {
-+        .query = query,
-+        .seq = ++p->gpu_marker_next_seq,
-+        .generation = p->gpu_marker_generation,
-+        .frame_id = frame_id,
-+        .issue_before_ns = before_ns,
-+        .issue_after_ns = after_ns,
-+        .last_not_ready_ns = before_ns,
-+        .in_use = true,
-+    };
-+    p->gpu_marker_last = n;
-+    MP_INFO(ctx, "native-ass-gpu-marker: status=queued"
-+            " seq=%"PRIu64" generation=%"PRIu64" frame_id=%"PRIu64
-+            " issue_before_ns=%"PRId64" issue_after_ns=%"PRId64"\n",
-+            m->seq, m->generation, m->frame_id, before_ns, after_ns);
-+}
-+
-+static void d3d11_gpu_marker_bind_present(struct ra_swapchain *sw)
-+{
-+    struct ra_ctx *ctx = sw->ctx;
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active)
-+        return;
-+
-+    d3d11_gpu_marker_poll(ctx, "present_before");
-+    if (!p->gpu_marker_active)
-+        return;
-+    UINT before = 0;
-+    HRESULT hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &before);
-+    int n = p->gpu_marker_last;
-+    // A Present may be called without a new draw. Consume this marker slot
-+    // exactly once so that a later present cannot be rebound to the same End.
-+    p->gpu_marker_last = -1;
-+    p->gpu_marker_bound = -1;
-+    if (FAILED(hr) || n < 0 || n >= MP_D3D11_GPU_MARKER_RING ||
-+        !p->gpu_markers[n].in_use)
-+    {
-+        if (n >= 0 && n < MP_D3D11_GPU_MARKER_RING &&
-+            p->gpu_markers[n].in_use)
-+        {
-+            p->gpu_markers[n].present_verified = true;
-+            d3d11_gpu_marker_maybe_release(p, n);
-+        }
-+        MP_INFO(ctx, "native-ass-gpu-marker: status=present_unbound"
-+                " generation=%"PRIu64" hr=0x%08"PRIx32"\n",
-+                p->gpu_marker_generation, (uint32_t)hr);
-+        return;
-+    }
-+
-+    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+    m->expected_present = before + 1;
-+    m->present_count_valid = SUCCEEDED(hr);
-+    m->present_bound = SUCCEEDED(hr);
-+    if (m->present_bound)
-+        p->gpu_marker_bound = n;
-+    MP_INFO(ctx, "native-ass-gpu-marker: status=present_bind"
-+            " seq=%"PRIu64" generation=%"PRIu64
-+            " expected_present=%u count_before=%u\n", m->seq,
-+            m->generation, m->expected_present, before);
-+}
-+
-+static void d3d11_gpu_marker_after_present(struct ra_swapchain *sw,
-+                                           HRESULT present_hr)
-+{
-+    struct ra_ctx *ctx = sw->ctx;
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active)
-+        return;
-+
-+    d3d11_gpu_marker_poll(ctx, "present_after");
-+    if (!p->gpu_marker_active)
-+        return;
-+    UINT after = 0;
-+    HRESULT count_hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &after);
-+    int n = p->gpu_marker_bound;
-+    p->gpu_marker_bound = -1;
-+    if (n >= 0 && n < MP_D3D11_GPU_MARKER_RING &&
-+        p->gpu_markers[n].in_use && p->gpu_markers[n].present_bound)
-+    {
-+        struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+        if (SUCCEEDED(count_hr))
-+            m->actual_present = after;
-+        m->present_verified = true;
-+        MP_INFO(ctx, "native-ass-gpu-marker: status=present_result"
-+                " seq=%"PRIu64" generation=%"PRIu64
-+                " expected_present=%u actual_present=%u match=%d"
-+                " present_hr=0x%08"PRIx32" count_hr=0x%08"PRIx32"\n",
-+                m->seq, m->generation, m->expected_present, after,
-+                m->expected_present == after && SUCCEEDED(present_hr) &&
-+                    SUCCEEDED(count_hr),
-+                (uint32_t)present_hr, (uint32_t)count_hr);
-+        d3d11_gpu_marker_maybe_release(p, n);
-+    } else {
-+        MP_INFO(ctx, "native-ass-gpu-marker: status=present_result_unbound"
-+                " generation=%"PRIu64" present_hr=0x%08"PRIx32
-+                " count_hr=0x%08"PRIx32" actual_present=%u\n",
-+                p->gpu_marker_generation, (uint32_t)present_hr,
-+                (uint32_t)count_hr, after);
-+        if (n >= 0 && n < MP_D3D11_GPU_MARKER_RING &&
-+            p->gpu_markers[n].in_use)
-+        {
-+            p->gpu_markers[n].present_verified = true;
-+            d3d11_gpu_marker_maybe_release(p, n);
-+        }
-+    }
-+}
-+
-+static void d3d11_gpu_marker_reset_priv(struct ra_ctx *ctx)
-+{
-+    struct priv *p = ctx->priv;
-+    if (!p->gpu_marker_active)
-+        return;
-+    d3d11_gpu_marker_release_queries(ctx);
-+    MP_INFO(ctx, "native-ass-gpu-marker: status=generation_reset"
-+            " generation=%"PRIu64"\n", p->gpu_marker_generation);
-+}
-+
- static struct ra_tex *get_backbuffer(struct ra_ctx *ctx)
- {
-     struct priv *p = ctx->priv;
-@@ -159,13 +472,18 @@ static bool resize(struct ra_ctx *ctx)
-         return false;
-     }
- 
-+    d3d11_gpu_marker_reset_priv(ctx);
-     hr = IDXGISwapChain_ResizeBuffers(p->swapchain, 0, ctx->vo->dwidth,
-         ctx->vo->dheight, DXGI_FORMAT_UNKNOWN, 0);
-     if (FAILED(hr)) {
-+        if (p->gpu_marker_active)
-+            d3d11_gpu_marker_disable(ctx, hr, "resize_error");
-         MP_FATAL(ctx, "Couldn't resize swapchain: %s\n", mp_HRESULT_to_str(hr));
-         return false;
-     }
- 
-+    if (p->gpu_marker_active)
-+        d3d11_gpu_marker_create_queries(ctx);
-     return true;
- }
- 
-@@ -284,12 +602,26 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
-     struct priv *p = sw->priv;
- 
-     m_config_cache_update(p->opts_cache);
-+    d3d11_gpu_marker_bind_present(sw);
- 
-     LARGE_INTEGER perf_count;
-     QueryPerformanceCounter(&perf_count);
-     p->last_submit_qpc = perf_count.QuadPart;
- 
--    IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
-+    HRESULT present_hr = IDXGISwapChain_Present(p->swapchain,
-+                                                 p->opts->sync_interval, 0);
-+    d3d11_gpu_marker_after_present(sw, present_hr);
-+}
-+
-+static void d3d11_trace_vsync_status(struct ra_swapchain *sw,
-+                                    const char *status, HRESULT hr)
-+{
-+    struct priv *p = sw->priv;
-+    if (p->secondary_trace)
-+        MP_INFO(sw->ctx, "native-ass-dxgi: status=%s hr=0x%08"PRIx32
-+                " sync_interval=%d last_submit_qpc=%"PRId64"\n",
-+                status, (uint32_t)hr, p->opts->sync_interval,
-+                p->last_submit_qpc);
- }
- 
- static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-@@ -300,8 +632,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-     m_config_cache_update(p->opts_cache);
- 
-     // The calculations below are only valid if mpv presents on every vsync
--    if (p->opts->sync_interval != 1)
-+    if (p->opts->sync_interval != 1) {
-+        info->secondary_phase_reset = true;
-+        d3d11_trace_vsync_status(sw, "unsupported_sync_interval", S_OK);
-         return;
-+    }
- 
-     // They're also only valid for flip model swapchains
-     DXGI_SWAP_CHAIN_DESC desc;
-@@ -309,6 +644,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-     if (FAILED(hr) || (desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
-                        desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
-     {
-+        info->secondary_phase_reset = true;
-+        d3d11_trace_vsync_status(sw, FAILED(hr) ? "description_error" :
-+                                 "unsupported_swap_effect", hr);
-         return;
-     }
- 
-@@ -316,8 +654,12 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-     // the last call to IDXGISwapChain::Present()
-     UINT submit_count;
-     hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &submit_count);
--    if (FAILED(hr))
-+    if (FAILED(hr)) {
-+        info->secondary_phase_reset = true;
-+        d3d11_trace_vsync_status(sw, "present_count_error", hr);
-         return;
-+    }
-+    info->secondary_submit_id = submit_count;
- 
-     // GetFrameStatistics returns two pairs. The first is (PresentCount,
-     // PresentRefreshCount) which relates a present ID (on the same timeline as
-@@ -329,9 +671,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-     if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
-         p->last_sync_refresh_count = 0;
-         p->last_sync_qpc_time = 0;
-+        p->vsync_duration_qpc = 0;
-     }
--    if (FAILED(hr))
-+    if (FAILED(hr)) {
-+        info->secondary_phase_reset = true;
-+        d3d11_trace_vsync_status(sw,
-+            hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT ? "disjoint" :
-+            "statistics_error", hr);
-         return;
-+    }
- 
-     // Detecting skipped vsyncs is possible but not supported yet
-     info->skipped_vsyncs = -1;
-@@ -345,17 +693,40 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-     p->last_sync_refresh_count = stats.SyncRefreshCount;
- 
-     // Get the elapsed time passed between the above vsyncs
--    unsigned sqt_passed = 0;
-+    int64_t sqt_passed = 0;
-     if (stats.SyncQPCTime.QuadPart && p->last_sync_qpc_time)
-         sqt_passed = stats.SyncQPCTime.QuadPart - p->last_sync_qpc_time;
-     p->last_sync_qpc_time = stats.SyncQPCTime.QuadPart;
- 
-+    if (stats.SyncQPCTime.QuadPart && stats.SyncRefreshCount && stats.PresentCount) {
-+        // Independent raw observation for the secondary clock. Primary video
-+        // synchronization retains its existing one-step estimator below.
-+        info->secondary_sync_qpc_ns = qpc_to_ns(sw, stats.SyncQPCTime.QuadPart);
-+        info->secondary_sync_time = mp_time_ns() +
-+            info->secondary_sync_qpc_ns - qpc_ns_now(sw);
-+        info->secondary_sync_refresh_count = stats.SyncRefreshCount;
-+        info->secondary_present_refresh_count = stats.PresentRefreshCount;
-+        info->secondary_present_id = stats.PresentCount;
-+    }
-+
-     // If any vsyncs have passed, estimate the physical frame rate
--    if (src_passed && sqt_passed)
-+    if (src_passed && sqt_passed > 0)
-         p->vsync_duration_qpc = sqt_passed / src_passed;
-     if (p->vsync_duration_qpc)
-         info->vsync_duration = qpc_to_ns(sw, p->vsync_duration_qpc);
- 
-+    if (p->vsync_duration_qpc && stats.PresentCount &&
-+        stats.PresentRefreshCount && stats.SyncRefreshCount &&
-+        stats.SyncQPCTime.QuadPart)
-+    {
-+        int32_t refresh_offset = stats.PresentRefreshCount - stats.SyncRefreshCount;
-+        int64_t actual_qpc = stats.SyncQPCTime.QuadPart +
-+            (int64_t)refresh_offset * p->vsync_duration_qpc;
-+        info->secondary_display_time = mp_time_ns() +
-+            qpc_to_ns(sw, actual_qpc) - qpc_ns_now(sw);
-+        info->secondary_present_id = stats.PresentCount;
-+    }
-+
-     // If the physical frame rate is known and the other members of
-     // DXGI_FRAME_STATISTICS are non-0, estimate the timing of the next frame
-     if (p->vsync_duration_qpc && stats.PresentCount &&
-@@ -381,6 +752,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-                 (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
-         }
-     }
-+
-+    // Opt-in diagnostics only: retain the existing estimator and expose the
-+    // two independent DXGI timelines instead of calling its queue guess an
-+    // actual timestamp for the most recently submitted Present ID.
-+    if (p->secondary_trace) {
-+        LARGE_INTEGER now_qpc;
-+        QueryPerformanceCounter(&now_qpc);
-+        int64_t now_ns = mp_time_ns();
-+        MP_INFO(sw->ctx, "native-ass-dxgi: status=ok submit_count=%u"
-+                " present_count=%u present_refresh_count=%u"
-+                " sync_refresh_count=%u sync_qpc=%"PRId64
-+                " vsync_duration_qpc=%"PRId64" perf_freq=%"PRId64
-+                " last_submit_qpc=%"PRId64" now_qpc=%"PRId64
-+                " now_ns=%"PRId64" display_ns=%"PRId64
-+                " sync_interval=%d swap_effect=%u\n",
-+                submit_count, stats.PresentCount, stats.PresentRefreshCount,
-+                stats.SyncRefreshCount, (int64_t)stats.SyncQPCTime.QuadPart,
-+                p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
-+                (int64_t)now_qpc.QuadPart, now_ns,
-+                info->last_queue_display_time, p->opts->sync_interval,
-+                (unsigned)desc.SwapEffect);
-+    }
- }
- 
- static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
-@@ -477,6 +870,9 @@ static void d3d11_uninit(struct ra_ctx *ctx)
- 
-     if (ctx->ra)
-         ra_tex_free(ctx->ra, &p->backbuffer);
-+    if (p->gpu_marker_active || p->gpu_marker_context)
-+        d3d11_gpu_marker_release_queries(ctx);
-+    SAFE_RELEASE(p->gpu_marker_context);
-     SAFE_RELEASE(p->swapchain);
-     if (!ctx->opts.composition) {
-         vo_w32_uninit(ctx->vo);
-@@ -502,11 +898,51 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
-     .get_vsync    = d3d11_get_vsync,
- };
- 
-+void ra_d3d11_ctx_gpu_marker_draw_begin(struct ra_ctx *ra)
-+{
-+    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
-+        return;
-+    struct priv *p = ra->priv;
-+    if (p && p->gpu_marker_active) {
-+        // A draw which was never presented must not own the next draw's
-+        // Present. Preserve its queued/complete evidence as unbound instead.
-+        int n = p->gpu_marker_last;
-+        if (n >= 0 && n < MP_D3D11_GPU_MARKER_RING &&
-+            p->gpu_markers[n].in_use)
-+        {
-+            struct d3d11_gpu_marker *m = &p->gpu_markers[n];
-+            MP_INFO(ra, "native-ass-gpu-marker: status=draw_unpresented"
-+                    " seq=%"PRIu64" generation=%"PRIu64"\n",
-+                    m->seq, m->generation);
-+            m->present_verified = true;
-+            d3d11_gpu_marker_maybe_release(p, n);
-+        }
-+        p->gpu_marker_last = -1;
-+        d3d11_gpu_marker_poll(ra, "draw_begin");
-+    }
-+}
-+
-+void ra_d3d11_ctx_gpu_marker_draw_end(struct ra_ctx *ra, uint64_t frame_id)
-+{
-+    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
-+        return;
-+    struct priv *p = ra->priv;
-+    if (p && p->gpu_marker_active)
-+        d3d11_gpu_marker_end(ra, frame_id);
-+}
-+
- static bool d3d11_init(struct ra_ctx *ctx)
- {
-     struct priv *p = ctx->priv = talloc_zero(ctx, struct priv);
-     p->opts_cache = m_config_cache_alloc(ctx, ctx->global, &d3d11_conf);
-     p->opts = p->opts_cache->opts;
-+    const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
-+    const char *marker = getenv("MPV_NATIVE_GPU_MARKER");
-+    p->secondary_trace = trace && strcmp(trace, "1") == 0;
-+    p->gpu_marker_active = p->secondary_trace && marker && strcmp(marker, "1") == 0;
-+    p->gpu_marker_generation = 1;
-+    p->gpu_marker_last = -1;
-+    p->gpu_marker_bound = -1;
- 
-     p->vo_opts_cache = m_config_cache_alloc(ctx, ctx->vo->global, &vo_sub_opts);
-     p->vo_opts = p->vo_opts_cache->opts;
-@@ -569,6 +1005,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
-     if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
-         goto error;
- 
-+    if (p->gpu_marker_active)
-+        d3d11_gpu_marker_create_queries(ctx);
-+
-     if (ctx->opts.composition)
-         vo_w32_swapchain(ctx->vo, p->swapchain);
- 
-diff --git a/video/out/d3d11/context.h b/video/out/d3d11/context.h
-index 640533b..55b896b 100644
---- a/video/out/d3d11/context.h
-+++ b/video/out/d3d11/context.h
-@@ -1,6 +1,7 @@
- #pragma once
- 
- #include <dxgi.h>
-+#include <stdint.h>
- 
- #include "video/out/gpu/context.h"
- 
-@@ -13,3 +14,9 @@ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
- struct pl_d3d11_swapchain_params;
- void ra_d3d11_ctx_set_swapchain_params(struct ra_ctx *ra,
-                                        struct pl_d3d11_swapchain_params *params);
-+
-+// Opt-in, non-blocking D3D11 GPU completion evidence. These calls are no-ops
-+// unless MPV_NATIVE_ASS_TRACE=1 and MPV_NATIVE_GPU_MARKER=1 are both set.
-+// They never flush, wait, or affect the rendering scheduler.
-+void ra_d3d11_ctx_gpu_marker_draw_begin(struct ra_ctx *ra);
-+void ra_d3d11_ctx_gpu_marker_draw_end(struct ra_ctx *ra, uint64_t frame_id);
+@@ -221,6 +221,7 @@ double osd_get_secondary_clock_rate(struct osd_state *osd);
+ int64_t osd_get_secondary_next_sample_time(struct osd_state *osd);
+ int64_t osd_get_secondary_physical_next_sample_time(struct osd_state *osd);
+ int64_t osd_get_secondary_physical_next_sample_slot(struct osd_state *osd);
++int64_t osd_get_secondary_physical_sample_divisor(struct osd_state *osd);
+ void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
+     int64_t target_wall, int64_t target_slot, int64_t phase_wall,
+     int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall);
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
-new file mode 100644
-index 0000000..631a9e6
---- /dev/null
+index 631a9e6..dcfd5e8 100644
+--- a/video/out/secondary_ass_physical.h
 +++ b/video/out/secondary_ass_physical.h
-@@ -0,0 +1,494 @@
-+#ifndef MP_SECONDARY_ASS_PHYSICAL_H
-+#define MP_SECONDARY_ASS_PHYSICAL_H
-+
-+#include <stdbool.h>
-+#include <stdint.h>
-+
-+#include "secondary_ass_budget.h"
-+
-+// Historical feedback belongs to a real Present ID. Keep it separate from
-+// the driver's prediction used by the primary video synchronization clock.
-+struct secondary_ass_physical {
-+    int64_t phase, interval, last_base;
-+    uint64_t epoch;
-+    bool epoch_exhausted;
-+    int64_t phase_slot, last_base_slot;
-+    int64_t sync_slot, sync_qpc_ns;
-+    uint32_t sync_count;
-+    bool sync_segment_consistent;
-+    int64_t measure_qpc_ns;
-+    uint32_t measure_count;
-+    int64_t periods[5];
-+    unsigned period_count, period_next;
-+    uint64_t historical_id;
-+    uint64_t last_submit_id;
-+    int delay, delay_samples[3], delay_count, delay_next;
-+    struct { uint64_t id; int64_t base, base_slot, target_slot; } submitted[32];
-+    unsigned next;
-+};
-+
-+struct secondary_ass_physical_point {
-+    int64_t slot, wall;
-+};
-+
-+static inline void secondary_ass_physical_reset(struct secondary_ass_physical *p)
+@@ -409,6 +409,43 @@ static inline int64_t secondary_ass_physical_render_slot_time(
+     return submit - cost;
+ }
+ 
++// The cache uses its original ASS slot while its headroom is bounded by the
++// unmodified fresh-video target. Never round that video target onto the ASS
++// lattice: doing so grants cache time by delaying the primary picture.
++static inline int64_t secondary_ass_physical_cache_sample_prepare(
++    struct secondary_ass_physical *p, int64_t now, int64_t sample_slot,
++    int64_t divisor, int64_t fresh_pts, int64_t duration,
++    int64_t animation_interval, int64_t fresh_cost, int64_t redraw_cost,
++    int64_t block_cost, int64_t earliest_redraw)
 +{
-+    uint64_t epoch = p->epoch;
-+    *p = (struct secondary_ass_physical){0};
-+    // Never reuse an epoch after wrapping. In that unreachable lifetime the
-+    // physical path stays unavailable instead of reviving an old OSD grid.
-+    p->epoch = epoch < UINT64_MAX ? epoch + 1 : UINT64_MAX;
-+    p->epoch_exhausted = epoch == UINT64_MAX;
-+}
-+
-+static inline bool secondary_ass_physical_interval_valid(int64_t interval)
-+{
-+    return interval > 0 && interval <= INT64_MAX / 8;
-+}
-+
-+static inline struct secondary_ass_physical_point
-+secondary_ass_physical_point_at(const struct secondary_ass_physical *p,
-+                               int64_t slot)
-+{
-+    struct secondary_ass_physical_point none = {0};
-+    if (p->epoch_exhausted || p->phase <= 0 || p->phase_slot <= 0 ||
-+        slot <= 0 || !secondary_ass_physical_interval_valid(p->interval))
-+        return none;
-+    int64_t delta = slot - p->phase_slot;
-+    int64_t wall;
-+    if (delta >= 0) {
-+        if (delta > (INT64_MAX - p->phase) / p->interval)
-+            return none;
-+        wall = p->phase + delta * p->interval;
-+    } else {
-+        if (-delta > (p->phase - 1) / p->interval)
-+            return none;
-+        wall = p->phase + delta * p->interval;
-+    }
-+    return (struct secondary_ass_physical_point){slot, wall};
-+}
-+
-+static inline struct secondary_ass_physical_point
-+secondary_ass_physical_predict_point(const struct secondary_ass_physical *p,
-+                                    int64_t ready)
-+{
-+    struct secondary_ass_physical_point none = {0};
-+    if (p->phase <= 0 || ready < p->phase || p->phase_slot <= 0 ||
++    if (now <= 0 || duration <= 0 || fresh_pts <= 0 || divisor <= 0 ||
 +        !secondary_ass_physical_interval_valid(p->interval) ||
-+        p->delay < 0 || p->delay > 4)
-+        return none;
-+    int64_t steps = (ready - p->phase) / p->interval + 1;
-+    if (steps > INT64_MAX - p->phase_slot)
-+        return none;
-+    int64_t base = p->phase_slot + steps;
-+    if (base <= p->last_base_slot) {
-+        if (p->last_base_slot == INT64_MAX)
-+            return none;
-+        base = p->last_base_slot + 1;
-+    }
-+    if (base > INT64_MAX - p->delay)
-+        return none;
-+    return secondary_ass_physical_point_at(p, base + p->delay);
-+}
-+
-+static inline void secondary_ass_physical_measure_anchor(
-+    struct secondary_ass_physical *p, int64_t qpc_ns, uint32_t count)
-+{
-+    p->measure_qpc_ns = qpc_ns;
-+    p->measure_count = count;
-+}
-+
-+// Display-sync submits one frame per refresh. Pending Present IDs therefore
-+// locate the next queued scanout from identified display history; they are not
-+// an elapsed wall oscillator or a guess about independent audio redraws.
-+static inline struct secondary_ass_physical_point
-+secondary_ass_physical_queued_point(const struct secondary_ass_physical *p)
-+{
-+    if (!p->last_submit_id || !p->historical_id || p->phase_slot <= 0)
-+        return (struct secondary_ass_physical_point){0};
-+    uint32_t pending = (uint32_t)p->last_submit_id - (uint32_t)p->historical_id;
-+    if (pending > 8 || p->phase_slot > INT64_MAX - pending - 1)
-+        return (struct secondary_ass_physical_point){0};
-+    return secondary_ass_physical_point_at(p, p->phase_slot + pending + 1);
-+}
-+
-+// QPC and raw refresh counts are independent observations. A missing raw
-+// count invalidates a period-measurement segment, not the submission queue.
-+// Logical slots advance from checked QPC differences in a fixed-mode epoch.
-+static inline bool secondary_ass_physical_observe(
-+    struct secondary_ass_physical *p, int64_t qpc_ns, uint32_t count,
-+    int64_t seed_interval)
-+{
-+    if (p->epoch_exhausted || qpc_ns <= 0)
-+        return false;
-+    if (!p->epoch)
-+        p->epoch = 1;
-+    if (!p->interval) {
-+        if (!secondary_ass_physical_interval_valid(seed_interval))
-+            return false;
-+        p->interval = seed_interval;
-+    }
-+    if (!p->sync_qpc_ns) {
-+        p->sync_qpc_ns = qpc_ns;
-+        p->sync_count = count;
-+        // Leave room for a historical Present before the first Sync sample.
-+        p->sync_slot = INT64_C(4294967296);
-+        p->sync_segment_consistent = true;
-+        secondary_ass_physical_measure_anchor(p, qpc_ns, count);
-+        return true;
-+    }
-+    if (qpc_ns == p->sync_qpc_ns && count == p->sync_count)
-+        return true;
-+    if (qpc_ns <= p->sync_qpc_ns)
-+        return false;
-+    int64_t elapsed = qpc_ns - p->sync_qpc_ns;
-+    if (elapsed > INT64_MAX - p->interval / 2)
-+        return false;
-+    int64_t steps = (elapsed + p->interval / 2) / p->interval;
-+    if (steps <= 0 || steps > INT64_MAX - p->sync_slot ||
-+        steps > INT64_MAX / p->interval)
-+        return false;
-+    int64_t residual = elapsed - steps * p->interval;
-+    // An ambiguous non-integer gap cannot establish a fixed physical lattice.
-+    // Keep the queue, but make predictions unavailable until valid feedback.
-+    if (residual > p->interval / 4 || residual < -p->interval / 4) {
-+        p->phase = p->phase_slot = 0;
-+        p->measure_qpc_ns = 0;
-+        return false;
-+    }
-+    uint32_t passed = count - p->sync_count;
-+    bool consistent = passed < UINT32_C(0x80000000) &&
-+                      (uint64_t)steps == passed;
-+    p->sync_slot += steps;
-+    p->sync_qpc_ns = qpc_ns;
-+    p->sync_count = count;
-+    p->sync_segment_consistent = consistent;
-+    if (!consistent || !p->measure_qpc_ns) {
-+        secondary_ass_physical_measure_anchor(p, qpc_ns, count);
-+        return true;
-+    }
-+    int64_t window = qpc_ns - p->measure_qpc_ns;
-+    if (window < INT64_C(500000000))
-+        return true;
-+    uint32_t refreshes = count - p->measure_count;
-+    secondary_ass_physical_measure_anchor(p, qpc_ns, count);
-+    if (!refreshes || refreshes >= UINT32_C(0x80000000))
-+        return true;
-+    int64_t measured = window / refreshes;
-+    if (!secondary_ass_physical_interval_valid(measured))
-+        return true;
-+    p->periods[p->period_next] = measured;
-+    p->period_next = (p->period_next + 1) % 5;
-+    if (p->period_count < 5)
-+        p->period_count++;
-+    if (p->period_count < 3)
-+        return true;
-+    int64_t values[5];
-+    for (unsigned n = 0; n < p->period_count; n++)
-+        values[n] = p->periods[n];
-+    for (unsigned n = 1; n < p->period_count; n++) {
-+        int64_t value = values[n];
-+        unsigned k = n;
-+        while (k && values[k - 1] > value) {
-+            values[k] = values[k - 1];
-+            k--;
-+        }
-+        values[k] = value;
-+    }
-+    p->interval = values[p->period_count / 2];
-+    return true;
-+}
-+
-+static inline int64_t secondary_ass_physical_slot(int64_t phase,
-+                                                 int64_t interval,
-+                                                 int64_t ready)
-+{
-+    if (phase <= 0 || interval <= 0 || ready < phase)
-+        return 0;
-+    int64_t steps = (ready - phase) / interval + 1;
-+    if (steps > (INT64_MAX - phase) / interval)
-+        return 0;
-+    return phase + steps * interval;
-+}
-+
-+static inline void secondary_ass_physical_feedback_point(
-+    struct secondary_ass_physical *p, struct secondary_ass_physical_point actual,
-+    uint64_t historical_id)
-+{
-+    if (p->epoch_exhausted || actual.wall <= 0 || actual.slot <= 0 ||
-+        !historical_id || historical_id == p->historical_id)
-+        return;
-+    p->phase = actual.wall;
-+    p->phase_slot = actual.slot;
-+    p->historical_id = historical_id;
-+    for (unsigned n = 0; n < 32; n++) {
-+        if (p->submitted[n].id != historical_id)
-+            continue;
-+        int64_t delta;
-+        if (p->submitted[n].base_slot > 0) {
-+            delta = actual.slot - p->submitted[n].base_slot;
-+        } else {
-+            // Legacy adapters have no slot identity. Keep their historical
-+            // wall-offset learner; the observed path always has base_slot.
-+            int64_t elapsed = actual.wall - p->submitted[n].base;
-+            if (elapsed < -p->interval / 2 || elapsed > 4 * p->interval + p->interval / 2)
-+                break;
-+            delta = (elapsed + p->interval / 2) / p->interval;
-+        }
-+        // Delay is a learned submission pipeline offset, never a guessed
-+        // fixed extra vsync. Ignore disjoint/overloaded history outliers.
-+        if (delta < 0 || delta > 4)
-+            break;
-+        int delay = (int)delta;
-+        p->delay_samples[p->delay_next] = delay;
-+        p->delay_next = (p->delay_next + 1) % 3;
-+        if (p->delay_count < 3)
-+            p->delay_count++;
-+        int values[3];
-+        for (int j = 0; j < p->delay_count; j++)
-+            values[j] = p->delay_samples[j];
-+        for (int j = 1; j < p->delay_count; j++) {
-+            int value = values[j], k = j;
-+            while (k && values[k - 1] > value) {
-+                values[k] = values[k - 1];
-+                k--;
-+            }
-+            values[k] = value;
-+        }
-+        p->delay = values[p->delay_count / 2];
-+        break;
-+    }
-+}
-+
-+// Compatibility for callers without raw clock/count pairs. This interface is
-+// deliberately not the physical-period estimator used by the observed path.
-+static inline void secondary_ass_physical_feedback(
-+    struct secondary_ass_physical *p, int64_t actual, int64_t interval,
-+    uint64_t historical_id)
-+{
-+    if (actual <= 0 || !secondary_ass_physical_interval_valid(interval) ||
-+        !historical_id || p->epoch_exhausted ||
-+        historical_id == p->historical_id)
-+        return;
-+    int64_t slot = p->phase_slot > 0 ? p->phase_slot : INT64_C(4294967296);
-+    if (p->phase > 0 && p->interval > 0) {
-+        int64_t delta = actual - p->phase;
-+        int64_t steps = delta / p->interval;
-+        int64_t remainder = delta % p->interval;
-+        if (remainder >= p->interval / 2)
-+            steps++;
-+        if (remainder <= -p->interval / 2)
-+            steps--;
-+        if ((steps > 0 && slot > INT64_MAX - steps) ||
-+            (steps < 0 && slot <= -steps))
-+            return;
-+        slot += steps;
-+    }
-+    if (!p->epoch)
-+        p->epoch = 1;
-+    p->interval = interval;
-+    secondary_ass_physical_feedback_point(p,
-+        (struct secondary_ass_physical_point){slot, actual}, historical_id);
-+}
-+
-+static inline int64_t secondary_ass_physical_predict(
-+    struct secondary_ass_physical *p, int64_t ready)
-+{
-+    if (p->phase_slot > 0)
-+        return secondary_ass_physical_predict_point(p, ready).wall;
-+    int64_t base = secondary_ass_physical_slot(p->phase, p->interval, ready);
-+    if (!base)
-+        return 0;
-+    if (base <= p->last_base)
-+    {
-+        if (p->last_base > INT64_MAX - p->interval)
-+            return 0;
-+        base = p->last_base + p->interval;
-+    }
-+    if (base > INT64_MAX - p->delay * p->interval)
-+        return 0;
-+    return base + p->delay * p->interval;
-+}
-+
-+static inline void secondary_ass_physical_submit_point(
-+    struct secondary_ass_physical *p, uint64_t id,
-+    struct secondary_ass_physical_point intended)
-+{
-+    if (p->epoch_exhausted || !id || intended.wall <= 0 ||
-+        intended.slot <= p->delay || p->delay < 0 || p->delay > 4 ||
-+        !secondary_ass_physical_interval_valid(p->interval) ||
-+        intended.wall <= p->delay * p->interval)
-+        return;
-+    if (p->submitted[(p->next + 31) % 32].id == id)
-+        return;
-+    int64_t base_slot = intended.slot - p->delay;
-+    int64_t base = intended.wall - p->delay * p->interval;
-+    p->submitted[p->next].id = id;
-+    p->submitted[p->next].base = base;
-+    p->submitted[p->next].base_slot = base_slot;
-+    p->submitted[p->next].target_slot = intended.slot;
-+    p->next = (p->next + 1) % 32;
-+    if (base_slot > p->last_base_slot) {
-+        p->last_base_slot = base_slot;
-+        p->last_base = base;
-+    }
-+}
-+
-+static inline void secondary_ass_physical_submit(
-+    struct secondary_ass_physical *p, uint64_t id, int64_t intended)
-+{
-+    if (!p->phase || !id || intended <= 0)
-+        return;
-+    if (p->phase_slot > 0 && p->interval > 0) {
-+        int64_t delta = intended - p->phase;
-+        int64_t steps = delta / p->interval;
-+        int64_t remainder = delta % p->interval;
-+        if (remainder >= p->interval / 2)
-+            steps++;
-+        if (remainder <= -p->interval / 2)
-+            steps--;
-+        if ((steps > 0 && p->phase_slot > INT64_MAX - steps) ||
-+            (steps < 0 && p->phase_slot <= -steps))
-+            return;
-+        secondary_ass_physical_submit_point(p, id,
-+            (struct secondary_ass_physical_point){p->phase_slot + steps, intended});
-+        return;
-+    }
-+    if (p->submitted[(p->next + 31) % 32].id == id)
-+        return;
-+    int64_t base = intended - p->delay * p->interval;
-+    p->submitted[p->next].id = id;
-+    p->submitted[p->next].base = base;
-+    p->next = (p->next + 1) % 32;
-+    p->last_base = base;
-+}
-+
-+static inline int64_t secondary_ass_physical_prepare(
-+    const struct secondary_ass_physical *p, int64_t sample)
-+{
-+    if (!p->phase || sample <= 0)
-+        return 0;
-+    return sample - p->delay * p->interval - p->interval / 2;
-+}
-+
-+static inline int64_t secondary_ass_physical_render_time(
-+    const struct secondary_ass_physical *p, int64_t sample, int64_t cost)
-+{
-+    int64_t submit = secondary_ass_physical_prepare(p, sample);
-+    if (submit <= 0)
-+        return 0;
-+    // Prepare GPU work early on very high-refresh monitors. Submission still
-+    // occurs in the intended half-vsync window, rather than displaying early.
-+    int64_t lead = cost + 1000000;
-+    if (lead < p->interval / 2)
-+        lead = p->interval / 2;
-+    return sample - p->delay * p->interval - lead;
-+}
-+
-+static inline int64_t secondary_ass_physical_submit_time(
-+    const struct secondary_ass_physical *p, int64_t sample)
-+{
-+    if (!p->phase || !secondary_ass_physical_interval_valid(p->interval) ||
-+        p->delay < 0 || p->delay > 4 || sample <= (p->delay + 1) * p->interval)
-+        return 0;
-+    // Present(sync=1) may target only the next scanout after its base cycle.
-+    // Submit just inside that cycle, leaving GPU/flip completion headroom.
-+    // Half-cycle submission left <0.15 ms in the recorded missed scanouts.
-+    int64_t guard = p->interval / 4;
-+    if (guard > 1000000)
-+        guard = 1000000;
-+    return sample - (p->delay + 1) * p->interval + guard;
-+}
-+
-+static inline int64_t secondary_ass_physical_render_slot_time(
-+    const struct secondary_ass_physical *p, int64_t sample, int64_t cost)
-+{
-+    int64_t submit = secondary_ass_physical_submit_time(p, sample);
-+    if (submit <= 0 || cost < 0 || cost > submit)
-+        return 0;
-+    return submit - cost;
-+}
-+
-+// The queued video's actual submission opportunity bounds this cached draw.
-+// Execute a successful decision directly; another deadline calculation must
-+// not leave both the queued video and its earlier cached slot unserviced.
-+static inline int64_t secondary_ass_physical_cache_prepare(
-+    struct secondary_ass_physical *p, int64_t now, int64_t sample,
-+    int64_t fresh_pts, int64_t duration, int64_t animation_interval,
-+    int64_t fresh_cost, int64_t redraw_cost, int64_t block_cost,
-+    int64_t earliest_redraw)
-+{
-+    if (!p->phase || p->interval <= 0 || sample <= 0 ||
-+        duration < p->interval ||
++        divisor > INT64_MAX / p->interval ||
++        duration < divisor * p->interval ||
++        fresh_pts > INT64_MAX - duration || fresh_cost < 0 ||
++        now > INT64_MAX - fresh_cost ||
 +        !secondary_ass_budget_affordable(fresh_cost, redraw_cost,
-+                                         duration, animation_interval) ||
-+        now > INT64_MAX - fresh_cost)
++                                         duration, animation_interval))
 +        return 0;
-+    int64_t ready = now + fresh_cost;
-+    if (ready < fresh_pts)
-+        ready = fresh_pts;
-+    int64_t slot = secondary_ass_physical_predict(p, ready);
-+    int64_t prepare = secondary_ass_physical_render_slot_time(p, sample, redraw_cost);
++    struct secondary_ass_physical_point sample =
++        secondary_ass_physical_point_at(p, sample_slot);
++    struct secondary_ass_physical_point fresh =
++        secondary_ass_physical_predict_point(p,
++            now + fresh_cost > fresh_pts ? now + fresh_cost : fresh_pts);
++    if (sample.wall <= 0 || fresh.wall <= 0 || sample.slot >= fresh.slot ||
++        p->delay < 0 || p->delay > 4 || sample.slot <= p->delay ||
++        sample.slot - p->delay <= p->last_base_slot)
++        return 0;
++    int64_t prepare = secondary_ass_physical_render_slot_time(p, sample.wall, redraw_cost);
 +    if (prepare < earliest_redraw)
 +        prepare = earliest_redraw;
-+    if (slot <= 0 || prepare <= 0 || sample >= slot - p->interval / 2 ||
-+        (prepare > now && prepare - now - fresh_cost > 2000000))
++    if (prepare <= 0 || (prepare > now && prepare - now > duration))
 +        return 0;
-+    int64_t deadline = slot - p->delay * p->interval - p->interval / 4;
++    int64_t deadline = fresh.wall - p->delay * p->interval - p->interval / 4;
 +    return secondary_ass_budget_before_deadline(now > prepare ? now : prepare,
 +        deadline, fresh_cost, block_cost, 1000000) ? prepare : 0;
 +}
 +
-+static inline void secondary_ass_physical_update(
-+    struct secondary_ass_physical *p, bool invalid, uint64_t submitted_id,
-+    int64_t intended, int64_t actual, int64_t interval, uint64_t historical_id)
-+{
-+    if (invalid) {
-+        secondary_ass_physical_reset(p);
-+        return;
-+    }
-+    // A successful Present still occupies a slot when statistics temporarily
-+    // contain zeroes. Its ID is independent of historical feedback validity.
-+    secondary_ass_physical_submit(p, submitted_id, intended);
-+    secondary_ass_physical_feedback(p, actual, interval, historical_id);
-+}
-+
-+static inline void secondary_ass_physical_update_observed(
-+    struct secondary_ass_physical *p, bool invalid, uint64_t submitted_id,
-+    struct secondary_ass_physical_point intended, int64_t sync_qpc_ns,
-+    int64_t sync_wall, uint32_t sync_count, uint32_t present_count,
-+    uint64_t historical_id, int64_t seed_interval)
-+{
-+    if (invalid) {
-+        secondary_ass_physical_reset(p);
-+        return;
-+    }
-+    // Registration uses the exact slot selected before this feedback. A later
-+    // period refinement cannot reinterpret a successful Present's identity.
-+    secondary_ass_physical_submit_point(p, submitted_id, intended);
-+    if (submitted_id)
-+        p->last_submit_id = submitted_id;
-+    if (sync_wall <= 0 || !secondary_ass_physical_observe(
-+            p, sync_qpc_ns, sync_count, seed_interval) || !historical_id)
-+        return;
-+    uint32_t raw_offset = present_count - sync_count;
-+    int64_t offset = raw_offset <= INT32_MAX ? raw_offset :
-+                    -(int64_t)(UINT32_MAX - raw_offset) - 1;
-+    // Cross-gap extrapolation is ambiguous when a raw refresh count was lost.
-+    // A same-count Sync/Present pair is still an identified exact timestamp.
-+    if (offset < -32 || offset > 32 ||
-+        (offset && !p->sync_segment_consistent) ||
-+        (offset > 0 && p->sync_slot > INT64_MAX - offset) ||
-+        (offset < 0 && p->sync_slot <= -offset))
-+        return;
-+    int64_t adjustment = offset * p->interval;
-+    if ((adjustment > 0 && sync_wall > INT64_MAX - adjustment) ||
-+        (adjustment < 0 && sync_wall <= -adjustment))
-+        return;
-+    secondary_ass_physical_feedback_point(p,
-+        (struct secondary_ass_physical_point){p->sync_slot + offset,
-+                                             sync_wall + adjustment},
-+        historical_id);
-+}
-+
-+#endif
-diff --git a/video/out/secondary_ass_presentation.h b/video/out/secondary_ass_presentation.h
-new file mode 100644
-index 0000000..4d5a21d
---- /dev/null
-+++ b/video/out/secondary_ass_presentation.h
-@@ -0,0 +1,83 @@
-+#ifndef MP_SECONDARY_ASS_PRESENTATION_H
-+#define MP_SECONDARY_ASS_PRESENTATION_H
-+
-+#include <stdint.h>
-+
-+// Independent from the player's video-sync estimator: audio-sync must retain
-+// its audio master while animated secondary ASS uses the display's phase.
-+struct secondary_ass_presentation {
-+    int64_t last_display;
-+    int64_t last_target;
-+    int64_t interval;
-+    int64_t next_draw;
-+    int64_t draw_interval;
-+};
-+
-+static inline int64_t secondary_ass_predict_present(
-+    struct secondary_ass_presentation *p, int64_t now, int64_t interval)
-+{
-+    if (interval <= 0)
-+        interval = 1000000000 / 60;
-+    // A monitor/rate change invalidates the old display lattice, not the media
-+    // clock. Avoid reusing a timestamp many refreshes into an unrelated queue.
-+    if (p->interval && (interval > p->interval + p->interval / 100 ||
-+                       interval < p->interval - p->interval / 100))
-+    {
-+        p->last_display = p->last_target = 0;
-+    }
-+    p->interval = interval;
-+    int64_t base = p->last_display > 0 ? p->last_display : p->last_target;
-+    int64_t target = base > 0 ? base + interval : now + interval;
-+    if (p->last_target > 0 && target <= p->last_target)
-+        target = p->last_target + interval;
-+    if (target < now)
-+        target += ((now - target) / interval + 1) * interval;
-+    if (target > now + 1000000000)
-+        target = now + interval;
-+    p->last_target = target;
-+    return target;
-+}
-+
-+static inline void secondary_ass_present_feedback(
-+    struct secondary_ass_presentation *p, int64_t displayed)
-+{
-+    // Missing/sparse feedback must not invent a CPU flip-time display phase.
-+    p->last_display = displayed > 0 ? displayed : p->last_target;
-+}
-+
-+static inline int64_t secondary_ass_sample_prepare_time(
-+    int64_t sample_wall, int64_t vsync_interval)
-+{
-+    if (sample_wall <= 0 || vsync_interval <= 0)
-+        return 0;
-+    // Match the sampler's half-vsync selection boundary. Preparing a full
-+    // vsync early can submit the previous sample and consume the only redraw
-+    // before a source-frame deadline. Cross the boundary by one ns to avoid
-+    // integer/nearest-grid rounding selecting the previous tick.
-+    int64_t lead = vsync_interval / 2;
-+    return sample_wall - lead + (lead > 0);
-+}
-+
-+static inline int64_t secondary_ass_next_draw(
-+    struct secondary_ass_presentation *p, int64_t now, int64_t interval)
-+{
-+    if (interval <= 0)
-+        interval = 1;
-+    if (!p->next_draw || p->draw_interval != interval) {
-+        p->next_draw = now + interval;
-+        p->draw_interval = interval;
-+    }
-+    return p->next_draw;
-+}
-+
-+static inline void secondary_ass_consume_draw(
-+    struct secondary_ass_presentation *p, int64_t now)
-+{
-+    // A source-video frame can consume a due slot, but must not restart the
-+    // secondary cadence. Advance missed slots without a catch-up redraw burst.
-+    if (p->draw_interval > 0 && p->next_draw <= now)
-+        p->next_draw += ((now - p->next_draw) / p->draw_interval + 1) *
-+                        p->draw_interval;
-+}
-+
-+#endif
+ // The queued video's actual submission opportunity bounds this cached draw.
+ // Execute a successful decision directly; another deadline calculation must
+ // not leave both the queued video and its earlier cached slot unserviced.
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..5f89d98 100644
+index 5f89d98..8326511 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
-@@ -16,6 +16,8 @@
-  */
- 
- #include <assert.h>
-+#include <errno.h>
-+#include <inttypes.h>
- #include <math.h>
- #include <stdatomic.h>
- #include <stdbool.h>
-@@ -28,12 +30,18 @@
- #include "config.h"
- #include "osdep/timer.h"
- #include "osdep/threads.h"
-+
-+#ifdef _WIN32
-+#include <windows.h>
-+#endif
- #include "misc/dispatch.h"
- #include "misc/rendezvous.h"
- #include "options/options.h"
- #include "misc/bstr.h"
- #include "vo.h"
- #include "secondary_ass_budget.h"
-+#include "secondary_ass_presentation.h"
-+#include "secondary_ass_physical.h"
- #include "aspect.h"
- #include "dr_helper.h"
- #include "input/input.h"
-@@ -128,6 +136,12 @@ struct vo_internal {
-     // --- The following fields are protected by lock
-     mp_mutex lock;
-     mp_cond wakeup;
-+#ifdef _WIN32
-+    // Both handles live until the VO thread has joined. Wakeups remain
-+    // interruptible when the physical presentation wait uses a precise timer.
-+    HANDLE secondary_wakeup_event, secondary_wait_timer;
-+    bool secondary_wait_timer_failed;
-+#endif
- 
-     bool need_wakeup;
-     bool terminate;
-@@ -160,9 +174,14 @@ struct vo_internal {
-     int64_t flip_queue_offset; // queue flip events at most this much in advance
-     int64_t timing_offset;     // same (but from options; not VO configured)
-     int64_t secondary_last_draw; // VO thread only
-+    struct secondary_ass_presentation secondary_presentation; // VO thread only
-+    struct secondary_ass_physical secondary_physical; // VO thread only
-+    bool secondary_sync_mode_valid, secondary_sync_mode;
-+    bool secondary_trace; // explicitly enabled diagnostic; never on by default
+@@ -178,6 +178,7 @@ struct vo_internal {
+     struct secondary_ass_physical secondary_physical; // VO thread only
+     bool secondary_sync_mode_valid, secondary_sync_mode;
+     bool secondary_trace; // explicitly enabled diagnostic; never on by default
++    bool secondary_present_grid; // opt-in cadence experiment, not a default
      int64_t secondary_render_cost;
      int64_t secondary_cost_update; // VO thread only
      int64_t secondary_gpu_cost; // VO thread only
-+    int64_t secondary_gpu_peak; // opt-in completion diagnostics, VO thread only
-     struct secondary_ass_budget secondary_budget; // VO thread only
-     int64_t secondary_redraw_cost;
-     int64_t secondary_redraw_block_cost;
-@@ -200,14 +219,18 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
-     in->secondary_redraw_budget = (struct secondary_ass_budget){0};
-     in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
-     in->secondary_render_cost = in->secondary_gpu_cost = in->secondary_cost_update = 0;
-+    in->secondary_gpu_peak = 0;
-     in->secondary_redraw_cost = in->secondary_redraw_block_cost = 0;
-     in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
-     in->secondary_next_probe = 0;
-+    in->secondary_presentation = (struct secondary_ass_presentation){0};
-+    secondary_ass_physical_reset(&in->secondary_physical);
- }
- 
+@@ -230,7 +231,16 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
  extern const struct m_sub_options gl_video_conf;
  
  static void forget_frames(struct vo *vo);
-+static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id);
+-static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id);
++struct secondary_ass_grid_task {
++    struct secondary_ass_physical_point point;
++    uint64_t epoch, current_id, queued_id;
++    int64_t divisor;
++    int delay;
++    double rate;
++};
++
++static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
++                      const struct secondary_ass_grid_task *grid_task);
  static MP_THREAD_VOID vo_thread(void *ptr);
  
  static bool get_desc(struct m_obj_desc *dst, int index)
-@@ -287,6 +310,12 @@ static void dealloc_vo(struct vo *vo)
- 
-     mp_mutex_destroy(&vo->in->lock);
-     mp_cond_destroy(&vo->in->wakeup);
-+#ifdef _WIN32
-+    if (vo->in->secondary_wakeup_event)
-+        CloseHandle(vo->in->secondary_wakeup_event);
-+    if (vo->in->secondary_wait_timer)
-+        CloseHandle(vo->in->secondary_wait_timer);
-+#endif
-     talloc_free(vo);
- }
- 
-@@ -573,6 +602,8 @@ static void update_display_fps(struct vo *vo)
- 
-         mp_mutex_lock(&in->lock);
- 
-+        if (in->reported_display_fps != fps)
-+            secondary_ass_physical_reset(&in->secondary_physical);
-         in->reported_display_fps = fps;
-     }
- 
-@@ -737,6 +768,54 @@ static void forget_frames(struct vo *vo)
-     }
- }
- 
-+#ifdef _WIN32
-+// Called locked on the VO thread. The event reset and pending-wakeup test use
-+// the same lock as wakeup_locked(), so no wakeup can be lost at wait entry.
-+static int secondary_wait_precise_locked(struct vo *vo, int64_t until_time,
-+                                         bool honor_pending)
-+{
-+    struct vo_internal *in = vo->in;
-+    int64_t remaining = until_time - mp_time_ns();
-+    if (remaining <= 0)
-+        return ETIMEDOUT;
-+    if (in->secondary_wait_timer_failed)
-+        return EINVAL;
-+    if (!in->secondary_wait_timer) {
-+        in->secondary_wakeup_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-+        in->secondary_wait_timer = CreateWaitableTimerExW(NULL, NULL,
-+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-+        if (!in->secondary_wait_timer)
-+            in->secondary_wait_timer = CreateWaitableTimerExW(NULL, NULL, 0,
-+                                                              TIMER_ALL_ACCESS);
-+        if (!in->secondary_wakeup_event || !in->secondary_wait_timer) {
-+            in->secondary_wait_timer_failed = true;
-+            return EINVAL;
-+        }
-+    }
-+    if (honor_pending && in->need_wakeup)
-+        return 0;
-+    if (!ResetEvent(in->secondary_wakeup_event))
-+        return EINVAL;
-+    remaining = until_time - mp_time_ns();
-+    if (remaining <= 0)
-+        return ETIMEDOUT;
-+    LARGE_INTEGER due = {.QuadPart = -MPMAX(remaining / 100, 1)};
-+    int64_t hrt = mp_start_hires_timers(remaining);
-+    if (!SetWaitableTimer(in->secondary_wait_timer, &due, 0, NULL, NULL, FALSE)) {
-+        mp_end_hires_timers(hrt);
-+        return EINVAL;
-+    }
-+    HANDLE handles[] = {in->secondary_wakeup_event, in->secondary_wait_timer};
-+    mp_mutex_unlock(&in->lock);
-+    DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
-+    mp_mutex_lock(&in->lock);
-+    CancelWaitableTimer(in->secondary_wait_timer);
-+    mp_end_hires_timers(hrt);
-+    return result == WAIT_OBJECT_0 ? 0 :
-+           result == WAIT_OBJECT_0 + 1 ? ETIMEDOUT : EINVAL;
-+}
-+#endif
-+
- // VOs which have no special requirements on UI event loops etc. can set the
- // vo_driver.wait_events callback to this (and leave vo_driver.wakeup unset).
- // This function must not be used or called for other purposes.
-@@ -745,8 +824,33 @@ void vo_wait_default(struct vo *vo, int64_t until_time)
-     struct vo_internal *in = vo->in;
- 
-     mp_mutex_lock(&in->lock);
--    if (!in->need_wakeup)
--        mp_cond_timedwait_until(&in->wakeup, &in->lock, until_time);
-+    if (!in->need_wakeup) {
-+        bool precise = false;
-+        int result = EINVAL;
-+        int64_t entered = mp_time_ns();
-+#ifdef _WIN32
-+        // gpu-next has a wait_events wrapper even when the D3D11 context
-+        // falls back here. Choose the primitive at this actual wait entry.
-+        int64_t remaining = until_time - entered;
-+        precise = in->secondary_physical.phase && remaining > 0 &&
-+                  remaining <= MP_TIME_MS_TO_NS(50);
-+        if (precise)
-+            result = secondary_wait_precise_locked(vo, until_time, true);
-+#endif
-+        if (result == EINVAL) {
-+            precise = false;
-+            result = mp_cond_timedwait_until(&in->wakeup, &in->lock, until_time);
-+        }
-+        if (in->secondary_trace && in->secondary_physical.interval > 0) {
-+            int64_t woke = mp_time_ns();
-+            if (woke > until_time &&
-+                woke - until_time >= in->secondary_physical.interval / 4)
-+                MP_INFO(vo, "native-ass-default-wait: enter_ns=%"PRId64
-+                    " deadline_ns=%"PRId64" wake_ns=%"PRId64
-+                    " precise=%d result=%d late_ns=%"PRId64"\n",
-+                    entered, until_time, woke, precise, result, woke - until_time);
-+        }
-+    }
-     mp_mutex_unlock(&in->lock);
- }
- 
-@@ -763,6 +867,16 @@ static void wait_vo(struct vo *vo, int64_t until_time)
-     mp_mutex_lock(&in->lock);
-     in->need_wakeup = false;
-     mp_mutex_unlock(&in->lock);
-+    if (in->secondary_trace && in->secondary_physical.interval > 0) {
-+        int64_t woke = mp_time_ns();
-+        if (woke > until_time &&
-+            woke - until_time >= in->secondary_physical.interval / 4)
-+        {
-+            MP_INFO(vo, "native-ass-wake: deadline_ns=%"PRId64
-+                " wake_ns=%"PRId64" late_ns=%"PRId64"\n",
-+                until_time, woke, woke - until_time);
-+        }
-+    }
- }
- 
- static void wakeup_locked(struct vo *vo)
-@@ -770,6 +884,10 @@ static void wakeup_locked(struct vo *vo)
-     struct vo_internal *in = vo->in;
- 
-     mp_cond_broadcast(&in->wakeup);
-+#ifdef _WIN32
-+    if (in->secondary_wakeup_event)
-+        SetEvent(in->secondary_wakeup_event);
-+#endif
-     if (vo->driver->wakeup)
-         vo->driver->wakeup(vo);
-     in->need_wakeup = true;
-@@ -885,9 +1003,13 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
-             in->secondary_redraw_cost, duration, interval);
-         bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
-             duration, interval, now, in->secondary_next_probe);
--        if (secondary_rate > 0 && (affordable || probe))
--            lead = MPMIN(lead, MPMAX(MP_TIME_S_TO_NS(0.5 / secondary_rate),
-+        if (secondary_rate > 0 && (affordable || probe)) {
-+            int64_t minimum = MP_TIME_S_TO_NS(0.002);
-+            if (in->reported_display_fps > 0)
-+                minimum += MP_TIME_S_TO_NS(1.0 / in->reported_display_fps);
-+            lead = MPMIN(lead, MPMAX(minimum,
-                 in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
-+        }
-         next_pts -= lead;
-         next_pts -= in->flip_queue_offset;
-         if (next_pts > now)
-@@ -951,12 +1073,97 @@ static void wait_until(struct vo *vo, int64_t target)
-     while (target > mp_time_ns()) {
-         if (in->queued_events & VO_EVENT_LIVE_RESIZING)
-             break;
--        if (mp_cond_timedwait_until(&in->wakeup, &in->lock, target))
-+#ifdef _WIN32
-+        // Keep this wait interruptible for resizing/new work. An existing
-+        // work flag belongs to the outer VO loop: unlike the scheduler wait,
-+        // it must not turn this presentation deadline into a busy loop.
-+        int64_t remaining = target - mp_time_ns();
-+        if ((in->secondary_physical.phase && remaining > 0 &&
-+             remaining <= MP_TIME_MS_TO_NS(50)) ||
-+            (remaining > 0 && remaining < MP_TIME_MS_TO_NS(1)))
-+        {
-+            int result = secondary_wait_precise_locked(vo, target, false);
-+            if (result == 0 || result == ETIMEDOUT)
-+                continue;
-+        }
-+#endif
-+        int result = mp_cond_timedwait_until(&in->wakeup, &in->lock, target);
-+        if (result && result != ETIMEDOUT)
-             break;
-     }
-+    if (in->secondary_trace && in->secondary_physical.interval > 0) {
-+        int64_t woke = mp_time_ns();
-+        if (woke > target && woke - target >= in->secondary_physical.interval / 4)
-+            MP_INFO(vo, "native-ass-wait-until: deadline_ns=%"PRId64
-+                " wake_ns=%"PRId64" late_ns=%"PRId64"\n",
-+                target, woke, woke - target);
-+    }
-     mp_mutex_unlock(&in->lock);
- }
- 
-+static struct secondary_ass_physical_point secondary_next_sample(struct vo *vo)
-+{
-+    struct secondary_ass_physical *p = &vo->in->secondary_physical;
-+    int64_t slot = osd_get_secondary_physical_next_sample_slot(vo->osd);
-+    if (slot > 0)
-+        return secondary_ass_physical_point_at(p, slot);
-+    // An arbitrary manual cadence can still use the wall-time fallback. Map
-+    // its opportunity to an actual slot before checking queue occupancy.
-+    int64_t wall = osd_get_secondary_physical_next_sample_time(vo->osd);
-+    if (wall <= 0 || !p->phase || !p->interval)
-+        return (struct secondary_ass_physical_point){0};
-+    int64_t delta = wall - p->phase;
-+    int64_t steps = delta / p->interval;
-+    int64_t rest = delta % p->interval;
-+    if (rest >= p->interval / 2)
-+        steps++;
-+    if (rest <= -p->interval / 2)
-+        steps--;
-+    if ((steps > 0 && p->phase_slot > INT64_MAX - steps) ||
-+        (steps < 0 && p->phase_slot <= -steps))
-+        return (struct secondary_ass_physical_point){0};
-+    return secondary_ass_physical_point_at(p, p->phase_slot + steps);
-+}
-+
-+static void secondary_physical_feedback(struct vo *vo,
-+    const struct vo_vsync_info *vsync, struct secondary_ass_physical_point intended)
-+{
-+    struct vo_internal *in = vo->in;
-+    int64_t seed = in->reported_display_fps > 0
-+        ? MP_TIME_S_TO_NS(1.0 / in->reported_display_fps) : vsync->vsync_duration;
-+    secondary_ass_physical_update_observed(&in->secondary_physical,
-+        vsync->secondary_phase_reset, vsync->secondary_submit_id, intended,
-+        vsync->secondary_sync_qpc_ns, vsync->secondary_sync_time,
-+        vsync->secondary_sync_refresh_count, vsync->secondary_present_refresh_count,
-+        vsync->secondary_present_id, seed);
-+    if (in->secondary_trace && in->secondary_physical.historical_id ==
-+            vsync->secondary_present_id) {
-+        struct secondary_ass_physical *p = &in->secondary_physical;
-+        for (unsigned n = 0; n < 32; n++) {
-+            if (p->submitted[n].id != vsync->secondary_present_id ||
-+                p->submitted[n].target_slot <= 0)
-+                continue;
-+            MP_INFO(vo, "native-ass-physical: id=%"PRIu64" target_slot=%"PRId64
-+                " actual_slot=%"PRId64" late_slots=%"PRId64" epoch=%"PRIu64"\n",
-+                vsync->secondary_present_id, p->submitted[n].target_slot,
-+                p->phase_slot, p->phase_slot - p->submitted[n].target_slot, p->epoch);
-+            break;
-+        }
-+    }
-+}
-+
-+static void secondary_set_presentation(struct vo *vo,
-+    struct secondary_ass_physical_point point, int64_t fallback,
-+    int64_t interval, int64_t submit)
-+{
-+    struct secondary_ass_physical *p = &vo->in->secondary_physical;
-+    if (point.slot > 0 && point.wall > 0)
-+        osd_set_secondary_physical_presentation_time(vo->osd, point.wall, point.slot,
-+            p->phase, p->phase_slot, p->interval, p->epoch, submit);
-+    else
-+        osd_set_secondary_presentation_time(vo->osd, fallback, interval, submit, false);
-+}
-+
- static bool render_frame(struct vo *vo)
- {
-     struct vo_internal *in = vo->in;
-@@ -965,8 +1172,58 @@ static bool render_frame(struct vo *vo)
- 
+@@ -1173,7 +1183,10 @@ static bool render_frame(struct vo *vo)
      update_display_fps(vo);
  
-+    double native_rate = osd_get_secondary_refresh(vo->osd);
-+    int64_t native_sample = secondary_next_sample(vo).wall;
-+
+     double native_rate = osd_get_secondary_refresh(vo->osd);
+-    int64_t native_sample = secondary_next_sample(vo).wall;
++    struct secondary_ass_physical_point native_point = secondary_next_sample(vo);
++    int64_t native_sample = native_point.wall;
++    int64_t sample_divisor = in->secondary_present_grid
++        ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
+ 
      mp_mutex_lock(&in->lock);
  
-+    // A queued fresh image must not occupy the VO thread across an earlier
-+    // physical ASS slot. Service that cheap cached slot first when both draws
-+    // still fit before the fresh image's actual scanout opportunity.
-+    if (in->frame_queued && in->current_frame && !in->paused &&
-+        in->hasframe && !in->current_frame->still && !in->dropped_frame &&
-+        !in->send_reset && !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
-+        !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) &&
-+        !in->frame_queued->display_synced && !in->current_frame->display_synced &&
-+        native_rate > 0 &&
-+        in->secondary_physical.phase && native_sample > 0 &&
-+        in->current_frame->duration >= in->secondary_physical.interval)
-+    {
-+        int64_t now = mp_time_ns();
-+        int64_t interval = MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate),
-+                                in->secondary_physical.interval);
-+        int64_t duration = MPMIN(in->frame_queued->duration, in->current_frame->duration);
-+        int64_t prepare = secondary_ass_physical_cache_prepare(
-+            &in->secondary_physical, now, native_sample,
-+            in->frame_queued->pts - in->flip_queue_offset, duration, interval,
-+            in->secondary_render_cost, in->secondary_redraw_cost,
-+            in->secondary_redraw_block_cost,
-+            vo->previous_redraw_time + in->secondary_physical.interval);
-+        if (in->secondary_trace && prepare <= 0)
-+            MP_INFO(vo, "native-ass-cache-plan: now_ns=%"PRId64
-+                " sample_ns=%"PRId64" fresh_pts_ns=%"PRId64
-+                " fresh_cost_ns=%"PRId64" redraw_cost_ns=%"PRId64
-+                " block_cost_ns=%"PRId64" earliest_ns=%"PRId64"\n",
-+                now, native_sample, in->frame_queued->pts - in->flip_queue_offset,
+@@ -1199,6 +1212,26 @@ static bool render_frame(struct vo *vo)
+             in->secondary_render_cost, in->secondary_redraw_cost,
+             in->secondary_redraw_block_cost,
+             vo->previous_redraw_time + in->secondary_physical.interval);
++        struct secondary_ass_grid_task grid_task = {0};
++        if (sample_divisor > 0 &&
++            sample_divisor <= INT64_MAX / in->secondary_physical.interval &&
++            duration >= sample_divisor * in->secondary_physical.interval) {
++            struct secondary_ass_physical_point sample = native_point;
++            prepare = secondary_ass_physical_cache_sample_prepare(
++                &in->secondary_physical, now, sample.slot, sample_divisor,
++                in->frame_queued->pts - in->flip_queue_offset, duration, interval,
 +                in->secondary_render_cost, in->secondary_redraw_cost,
 +                in->secondary_redraw_block_cost,
 +                vo->previous_redraw_time + in->secondary_physical.interval);
-+        if (prepare > 0)
-+        {
-+            uint64_t current_id = in->current_frame->frame_id;
-+            uint64_t queued_id = in->frame_queued->frame_id;
-+            mp_mutex_unlock(&in->lock);
-+            wait_until(vo, prepare);
-+            int64_t redraw_start = mp_time_ns();
-+            vo->driver->control(vo, VOCTRL_REDRAW, NULL);
-+            do_redraw(vo, current_id, queued_id);
-+            vo->previous_redraw_time = redraw_start;
-+            // The queued image is untouched. "working" only requests an
-+            // immediate next VO iteration; it does not count a video frame.
-+            return true;
++            if (prepare > 0)
++                grid_task = (struct secondary_ass_grid_task){
++                    .point = sample, .epoch = in->secondary_physical.epoch,
++                    .current_id = in->current_frame->frame_id,
++                    .queued_id = in->frame_queued->frame_id,
++                    .divisor = sample_divisor, .delay = in->secondary_physical.delay,
++                    .rate = native_rate,
++                };
 +        }
-+    }
-+
-     if (in->frame_queued) {
-         talloc_free(in->current_frame);
-         in->current_frame = in->frame_queued;
-@@ -1050,10 +1307,69 @@ static bool render_frame(struct vo *vo)
- 
-         stats_time_start(in->stats, "video-draw");
- 
--        if (frame->current && !frame->repeat)
--            osd_anchor_secondary_clock(vo->osd, frame->current->pts,
--                frame->display_synced ? now : MPMAX(now, frame->pts));
-+        int64_t display_interval = in->vsync_interval > 1 ?
-+            (int64_t)in->vsync_interval : MP_TIME_S_TO_NS(1.0 / 60);
-+        // Clock eligibility is independent of whether an animated event is
-+        // visible right now. Keep authority/phase accurate through ASS gaps.
-+        double clock_rate = osd_get_secondary_clock_rate(vo->osd);
-+        int64_t present_ready = MPMAX(mp_time_ns(), target);
-+        int64_t presentation_time = clock_rate > 0 ?
-+            secondary_ass_predict_present(&in->secondary_presentation,
-+                                           present_ready, display_interval) : 0;
-+        struct secondary_ass_physical_point physical_point = {0};
-+        bool physical_phase = clock_rate > 0 && !frame->display_synced &&
-+            in->secondary_physical.phase && native_rate > 0 &&
-+            duration >= in->secondary_physical.interval &&
-+            secondary_ass_budget_affordable(in->secondary_render_cost,
-+                in->secondary_redraw_cost, duration,
-+                MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
-+        if (in->secondary_sync_mode_valid &&
-+            in->secondary_sync_mode != frame->display_synced)
-+            secondary_ass_physical_reset(&in->secondary_physical);
-+        in->secondary_sync_mode = frame->display_synced;
-+        in->secondary_sync_mode_valid = true;
-+        if (physical_phase && in->secondary_physical.phase) {
-+            display_interval = in->secondary_physical.interval;
-+            present_ready = MPMAX(present_ready,
-+                                 mp_time_ns() + in->secondary_render_cost);
-+            physical_point = secondary_ass_physical_predict_point(
-+                &in->secondary_physical, present_ready);
-+            presentation_time = physical_point.wall;
-+            // Preserve media PTS and the selected scanout slot; submit inside
-+            // that slot's safe window after preparing the image ahead of it.
-+            target = secondary_ass_physical_submit_time(&in->secondary_physical,
-+                                                    presentation_time);
-+            present_ready = target;
-+        } else if (clock_rate > 0 && frame->display_synced) {
-+            // Only sample the identified queued display slot. Primary video's
-+            // draw/flip timing and ideal-frame authority remain unchanged.
-+            physical_point = secondary_ass_physical_queued_point(&in->secondary_physical);
-+            if (physical_point.wall > 0) {
-+                presentation_time = physical_point.wall;
-+                display_interval = in->secondary_physical.interval;
-+            }
-+        }
-+        physical_phase = physical_point.slot > 0 && !frame->display_synced;
-+        secondary_set_presentation(vo, physical_point, presentation_time,
-+                                   display_interval, present_ready);
-+        if (clock_rate > 0 && frame->current &&
-+            (frame->display_synced || !frame->repeat)) {
-+            double media_pts = frame->current->pts +
-+                (frame->display_synced ? frame->ideal_frame_vsync : 0);
-+            osd_anchor_secondary_clock(vo->osd, media_pts,
-+                frame->display_synced ? presentation_time : frame->pts,
-+                frame->display_synced);
-+        }
-+        if (in->secondary_trace && presentation_time > 0)
-+            MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=%d ds=%d "
-+                    "target_ns=%"PRId64" interval_ns=%"PRId64
-+                    " physical=%d delay=%d phase_ns=%"PRId64"\n",
-+                    frame->frame_id, !frame->repeat, frame->display_synced,
-+                    presentation_time, display_interval, physical_phase,
-+                    in->secondary_physical.delay, in->secondary_physical.phase);
-         in->secondary_last_draw = mp_time_ns();
-+        secondary_ass_consume_draw(&in->secondary_presentation,
-+                                   in->secondary_last_draw);
- 
-         in->visible = vo->driver->draw_frame(vo, frame);
- 
-@@ -1068,11 +1384,20 @@ static bool render_frame(struct vo *vo)
-                     talloc_zero(NULL, struct voctrl_performance_data);
-                 if (vo->driver->control(vo, VOCTRL_PERFORMANCE_DATA, perf) == VO_TRUE) {
-                     in->secondary_gpu_cost = 0;
--                    for (int n = 0; n < perf->fresh.count; n++)
-+                    in->secondary_gpu_peak = 0;
-+                    for (int n = 0; n < perf->fresh.count; n++) {
-                         in->secondary_gpu_cost += perf->fresh.perf[n].avg;
-+                        in->secondary_gpu_peak += perf->fresh.perf[n].peak;
-+                    }
-                     in->secondary_redraw_gpu_cost = 0;
--                    for (int n = 0; n < perf->redraw.count; n++)
-+                    for (int n = 0; n < perf->redraw.count; n++) {
-                         in->secondary_redraw_gpu_cost += perf->redraw.perf[n].avg;
-+                        in->secondary_gpu_peak += perf->redraw.perf[n].peak;
-+                    }
-+                    // gpu-next reports source-frame processing in "fresh" and
-+                    // final blending/output in "redraw". A fresh image performs
-+                    // both stages; its completion budget must include both.
-+                    in->secondary_gpu_cost += in->secondary_redraw_gpu_cost;
-                 }
-                 talloc_free(perf);
-                 in->secondary_cost_update = mp_time_ns();
-@@ -1100,6 +1425,7 @@ static bool render_frame(struct vo *vo)
-         } else {
-             in->secondary_budget = (struct secondary_ass_budget){0};
-             in->secondary_gpu_cost = in->secondary_cost_update = 0;
-+            in->secondary_gpu_peak = 0;
-             in->secondary_redraw_budget = (struct secondary_ass_budget){0};
-             in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
-             in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
-@@ -1107,6 +1433,13 @@ static bool render_frame(struct vo *vo)
- 
-         stats_time_end(in->stats, "video-draw");
- 
-+        if (in->secondary_trace && clock_rate > 0)
-+            MP_INFO(vo, "native-ass-render: begin_ns=%"PRId64
-+                " end_ns=%"PRId64" cpu_ns=%"PRId64
-+                " gpu_avg_ns=%"PRId64" gpu_peak_ns=%"PRId64"\n",
-+                in->secondary_last_draw, mp_time_ns(), cpu_cost,
-+                in->secondary_gpu_cost, in->secondary_gpu_peak);
-+
-         wait_until(vo, target);
- 
-         stats_time_start(in->stats, "video-flip");
-@@ -1120,6 +1453,19 @@ static bool render_frame(struct vo *vo)
-         if (vo->driver->get_vsync)
-             vo->driver->get_vsync(vo, &vsync);
- 
-+        if (clock_rate > 0) {
-+            secondary_physical_feedback(vo, &vsync, physical_point);
-+            secondary_ass_present_feedback(&in->secondary_presentation,
-+                                           vsync.last_queue_display_time);
-+            if (in->secondary_trace)
-+                MP_INFO(vo, "native-ass-present: target_ns=%"PRId64
-+                        " display_ns=%"PRId64"\n", presentation_time,
-+                        vsync.last_queue_display_time);
-+        } else {
-+            in->secondary_presentation = (struct secondary_ass_presentation){0};
-+            secondary_ass_physical_reset(&in->secondary_physical);
-+        }
-+
-         // Make up some crap if presentation feedback is missing.
-         if (vsync.last_queue_display_time <= 0)
-             vsync.last_queue_display_time = mp_time_ns();
-@@ -1173,7 +1519,7 @@ done:
+         if (in->secondary_trace && prepare <= 0)
+             MP_INFO(vo, "native-ass-cache-plan: now_ns=%"PRId64
+                 " sample_ns=%"PRId64" fresh_pts_ns=%"PRId64
+@@ -1216,8 +1249,10 @@ static bool render_frame(struct vo *vo)
+             wait_until(vo, prepare);
+             int64_t redraw_start = mp_time_ns();
+             vo->driver->control(vo, VOCTRL_REDRAW, NULL);
+-            do_redraw(vo, current_id, queued_id);
+-            vo->previous_redraw_time = redraw_start;
++            bool drawn = do_redraw(vo, current_id, queued_id,
++                                   grid_task.point.slot > 0 ? &grid_task : NULL);
++            if (drawn || grid_task.point.slot <= 0)
++                vo->previous_redraw_time = redraw_start;
+             // The queued image is untouched. "working" only requests an
+             // immediate next VO iteration; it does not count a video frame.
+             return true;
+@@ -1519,14 +1554,35 @@ done:
      return more_frames;
  }
  
--static void do_redraw(struct vo *vo)
-+static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+-static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
++static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
++                      const struct secondary_ass_grid_task *grid_task)
  {
      struct vo_internal *in = vo->in;
  
-@@ -1181,6 +1527,18 @@ static void do_redraw(struct vo *vo)
-         return;
+     if (!vo->config_ok)
+-        return;
++        return false;
++
++    // Read OSD state outside the VO lock, preserving the existing lock order.
++    double grid_rate = grid_task ? osd_get_secondary_refresh(vo->osd) : 0;
++    int64_t grid_divisor = grid_task
++        ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
  
      mp_mutex_lock(&in->lock);
-+    // A seek or live resize can interrupt the short preparation wait. Take
-+    // the retained-frame reference only if this exact cache task still exists.
-+    if (current_id && (!in->hasframe || in->paused || in->send_reset ||
++    if (grid_task && (in->paused || !in->hasframe || in->send_reset ||
 +        in->dropped_frame || (in->queued_events & VO_EVENT_LIVE_RESIZING) ||
-+        !in->current_frame || !in->frame_queued || in->current_frame->still ||
-+        in->current_frame->display_synced || in->frame_queued->display_synced ||
-+        in->current_frame->frame_id != current_id ||
-+        in->frame_queued->frame_id != queued_id))
++        !in->current_frame || in->current_frame->still ||
++        in->current_frame->display_synced ||
++        in->current_frame->frame_id != grid_task->current_id ||
++        (in->frame_queued ? in->frame_queued->frame_id : 0) != grid_task->queued_id ||
++        in->secondary_physical.epoch != grid_task->epoch ||
++        in->secondary_physical.delay != grid_task->delay ||
++        grid_task->point.slot <= grid_task->delay ||
++        grid_task->point.slot - grid_task->delay <= in->secondary_physical.last_base_slot ||
++        grid_rate != grid_task->rate || grid_divisor != grid_task->divisor))
 +    {
 +        mp_mutex_unlock(&in->lock);
-+        return;
++        return false;
 +    }
+     // A seek or live resize can interrupt the short preparation wait. Take
+     // the retained-frame reference only if this exact cache task still exists.
+     if (current_id && (!in->hasframe || in->paused || in->send_reset ||
+@@ -1537,13 +1593,13 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+         in->frame_queued->frame_id != queued_id))
+     {
+         mp_mutex_unlock(&in->lock);
+-        return;
++        return false;
+     }
      in->request_redraw = false;
  
      if (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) {
-@@ -1200,15 +1558,82 @@ static void do_redraw(struct vo *vo)
-     frame->still = true;
-     frame->pts = 0;
-     frame->duration = -1;
-+    int64_t video_duration = in->current_frame ? in->current_frame->duration : 0;
-     mp_mutex_unlock(&in->lock);
+         mp_mutex_unlock(&in->lock);
+-        return;
++        return false;
+     }
  
-+    int64_t display_interval = in->vsync_interval > 1 ?
-+        (int64_t)in->vsync_interval : MP_TIME_S_TO_NS(1.0 / 60);
-+    double secondary_rate = osd_get_secondary_refresh(vo->osd);
-+    double clock_rate = osd_get_secondary_clock_rate(vo->osd);
-+    int64_t presentation_time = clock_rate > 0 ?
-+        secondary_ass_predict_present(&in->secondary_presentation,
-+                                       mp_time_ns(), display_interval) : 0;
-+    struct secondary_ass_physical_point physical_point = {0};
-+    bool physical_phase = clock_rate > 0 && !frame->display_synced &&
-+        in->secondary_physical.phase && secondary_rate > 0 &&
-+        video_duration >= in->secondary_physical.interval &&
-+        secondary_ass_budget_affordable(in->secondary_render_cost,
-+            in->secondary_redraw_cost, video_duration,
-+            MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval));
-+    if (physical_phase) {
-+        display_interval = in->secondary_physical.interval;
-+        physical_point = secondary_ass_physical_predict_point(&in->secondary_physical,
-+            mp_time_ns() + in->secondary_redraw_cost);
-+        presentation_time = physical_point.wall;
-+        struct secondary_ass_physical_point next_sample = secondary_next_sample(vo);
-+        int64_t sample = next_sample.wall;
-+        int64_t prepare = secondary_ass_physical_render_slot_time(
-+            &in->secondary_physical, sample, in->secondary_redraw_cost);
-+        if (sample > 0 && prepare <= mp_time_ns() + display_interval / 4 &&
-+            next_sample.slot >= physical_point.slot)
-+        {
-+            presentation_time = sample;
-+            physical_point = next_sample;
-+        }
-+    }
-+    if (frame->display_synced && clock_rate > 0) {
-+        physical_point = secondary_ass_physical_queued_point(&in->secondary_physical);
-+        if (physical_point.wall > 0) {
+     bool full_redraw = in->dropped_frame;
+@@ -1590,6 +1646,12 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+             presentation_time = sample;
+             physical_point = next_sample;
+         }
++        if (grid_task) {
++            // Late wakeups keep the original identified slot. Re-predicting
++            // here would conceal a missed refresh by moving its target.
++            physical_point = grid_task->point;
 +            presentation_time = physical_point.wall;
-+            display_interval = in->secondary_physical.interval;
 +        }
-+    }
-+    secondary_set_presentation(vo, physical_point, presentation_time,
-+                               display_interval, mp_time_ns());
-+    if (in->secondary_trace && presentation_time > 0)
-+        MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=0 ds=%d "
-+                "target_ns=%"PRId64" interval_ns=%"PRId64
-+                " physical=%d delay=%d phase_ns=%"PRId64"\n",
-+                frame->frame_id, frame->display_synced, presentation_time,
-+                display_interval, physical_phase, in->secondary_physical.delay,
-+                in->secondary_physical.phase);
-     in->secondary_last_draw = mp_time_ns();
-+    secondary_ass_consume_draw(&in->secondary_presentation,
-+                               in->secondary_last_draw);
-     vo->driver->draw_frame(vo, frame);
-     int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
-+    if (physical_phase)
-+        wait_until(vo, secondary_ass_physical_submit_time(&in->secondary_physical,
-+                                                       presentation_time));
-     vo->driver->flip_page(vo);
-+    if (clock_rate > 0) {
-+        struct vo_vsync_info vsync = {
-+            .last_queue_display_time = -1,
-+            .skipped_vsyncs = -1,
-+        };
-+        if (vo->driver->get_vsync)
-+            vo->driver->get_vsync(vo, &vsync);
-+        secondary_physical_feedback(vo, &vsync, physical_point);
-+        secondary_ass_present_feedback(&in->secondary_presentation,
-+                                       vsync.last_queue_display_time);
-+        if (in->secondary_trace)
-+            MP_INFO(vo, "native-ass-present: target_ns=%"PRId64
-+                    " display_ns=%"PRId64"\n", presentation_time,
-+                    vsync.last_queue_display_time);
-+    }
-     // Presentation may wait for vsync. Include that blocking time in deadline
-     // headroom, but do not mistake a mostly idle wait for sustained GPU work.
--    if (!full_redraw && osd_get_secondary_refresh(vo->osd) > 0) {
-+    if (!full_redraw && secondary_rate > 0) {
-         int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
-         in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
-             &in->secondary_redraw_budget, cpu_cost, 0);
-@@ -1252,6 +1677,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-         goto done;
+     }
+     if (frame->display_synced && clock_rate > 0) {
+         physical_point = secondary_ass_physical_queued_point(&in->secondary_physical);
+@@ -1649,6 +1711,7 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
  
+     if (frame != &dummy && !(vo->driver->caps & VO_CAP_FRAMEOWNER))
+         talloc_free(frame);
++    return true;
+ }
+ 
+ static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
+@@ -1679,6 +1742,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
      read_opts(vo);
-+    const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
-+    in->secondary_trace = trace && strcmp(trace, "1") == 0;
+     const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
+     in->secondary_trace = trace && strcmp(trace, "1") == 0;
++    const char *present_grid = getenv("MPV_NATIVE_PRESENT_GRID");
++    in->secondary_present_grid = in->secondary_trace && present_grid &&
++        strcmp(present_grid, "1") == 0;
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1264,8 +1691,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-         bool working = render_frame(vo);
-         int64_t now = mp_time_ns();
-         int64_t wait_until = now + MP_TIME_S_TO_NS(working ? 0 : 1000);
--        bool wakeup_on_done = false;
--        int64_t wakeup_core_after = 0;
+@@ -1737,6 +1803,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         mp_mutex_unlock(&in->lock);
  
-         mp_mutex_lock(&in->lock);
-         if (in->wakeup_pts) {
-@@ -1281,12 +1706,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-             wakeup_core(vo);
-         }
-         if ((!working && !in->rendering && !in->frame_queued) && in->wakeup_on_done) {
--            // At this point we know VO is going to sleep
-+            // Cached OSD redraws can continue before the sleep path below.
-+            // Keep this notification pending until the frame really ends,
-+            // and deliver it before any redraw/continue can consume it.
-             int64_t frame_end = get_current_frame_end(vo);
--            if (frame_end >= 0)
--                wakeup_core_after = frame_end;
--            wakeup_on_done = true;
--            in->wakeup_on_done = false;
-+            if (!still_displaying(vo)) {
-+                in->wakeup_on_done = false;
-+                in->need_wakeup = true;
-+                wakeup_core(vo);
-+            } else if (frame_end > now) {
-+                wait_until = MPMIN(wait_until, frame_end);
-+            }
-         }
-         vo->want_redraw = false;
-         bool redraw = in->request_redraw;
-@@ -1309,7 +1739,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
++        struct secondary_ass_grid_task grid_task = {0};
          if (!working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
--            interval = MPMAX(interval, in->vsync_interval);
-+            interval = MPMAX(interval, in->secondary_physical.phase &&
-+                secondary_duration >= in->secondary_physical.interval
-+                ? in->secondary_physical.interval : in->vsync_interval);
-             bool affordable = secondary_ass_budget_affordable(secondary_cost,
-                 secondary_redraw_cost, secondary_duration, interval);
-             // Once per second, allow a bounded recovery sample. A CPU wakeup
-@@ -1317,16 +1749,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-             bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
-                 secondary_duration, interval, now, secondary_probe);
-             if (affordable || probe) {
--                int64_t next = in->secondary_last_draw + interval;
-+                int64_t next = secondary_ass_next_draw(
-+                    &in->secondary_presentation, in->secondary_last_draw, interval);
-+                // Prepare the next ASS sample at its selection boundary,
-+                // keeping the sampler and presentation timer on one grid.
-+                int64_t sample_time = osd_get_secondary_next_sample_time(vo->osd);
-+                int64_t sample_prepare = secondary_ass_sample_prepare_time(
-+                    sample_time, (int64_t)in->vsync_interval);
-+                if (secondary_duration >= in->secondary_physical.interval &&
-+                    in->secondary_physical.phase)
-+                {
-+                    sample_time = secondary_next_sample(vo).wall;
-+                    sample_prepare = secondary_ass_physical_render_slot_time(
-+                        &in->secondary_physical, sample_time, secondary_redraw_cost);
-+                }
-+                if (sample_prepare > 0)
-+                    next = sample_prepare;
-                 int64_t cost = secondary_block_cost > 0 ? secondary_block_cost : interval;
-                 if (probe)
-                     cost = MPMAX(secondary_gpu_redraw, MPMIN(cost, interval));
-                 bool headroom = secondary_ass_budget_headroom(secondary_duration,
-                     MPMAX(now, next), secondary_deadline, secondary_cost,
-                     cost, MP_TIME_S_TO_NS(0.002));
-+                if (!headroom && in->secondary_physical.phase &&
-+                    secondary_duration >= in->secondary_physical.interval)
-+                {
-+                    int64_t deadline = secondary_ass_physical_predict(
-+                        &in->secondary_physical, secondary_deadline);
-+                    deadline -= in->secondary_physical.delay *
-+                        in->secondary_physical.interval +
-+                        in->secondary_physical.interval / 4;
-+                    headroom = secondary_ass_budget_before_deadline(
-+                        MPMAX(now, next), deadline, secondary_cost, cost,
-+                        MP_TIME_MS_TO_NS(1));
-+                }
+             interval = MPMAX(interval, in->secondary_physical.phase &&
+@@ -1754,12 +1821,14 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 // Prepare the next ASS sample at its selection boundary,
+                 // keeping the sampler and presentation timer on one grid.
+                 int64_t sample_time = osd_get_secondary_next_sample_time(vo->osd);
++                struct secondary_ass_physical_point physical_sample = {0};
+                 int64_t sample_prepare = secondary_ass_sample_prepare_time(
+                     sample_time, (int64_t)in->vsync_interval);
+                 if (secondary_duration >= in->secondary_physical.interval &&
+                     in->secondary_physical.phase)
+                 {
+-                    sample_time = secondary_next_sample(vo).wall;
++                    physical_sample = secondary_next_sample(vo);
++                    sample_time = physical_sample.wall;
+                     sample_prepare = secondary_ass_physical_render_slot_time(
+                         &in->secondary_physical, sample_time, secondary_redraw_cost);
+                 }
+@@ -1786,6 +1855,22 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                  if (headroom) {
                      redraw |= now >= next;
                      wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
-+                } else if (in->secondary_trace) {
-+                    MP_INFO(vo, "native-ass-schedule: now_ns=%"PRId64
-+                        " next_ns=%"PRId64" deadline_ns=%"PRId64
-+                        " fresh_cost_ns=%"PRId64" redraw_cost_ns=%"PRId64
-+                        " block_cost_ns=%"PRId64" headroom=0\n",
-+                        now, next, secondary_deadline, secondary_cost,
-+                        secondary_redraw_cost, cost);
-                 }
-             }
-         }
-@@ -1345,10 +1811,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
++                    if (in->secondary_present_grid && physical_sample.slot > 0 &&
++                        now >= next && !probe) {
++                        int64_t divisor = osd_get_secondary_physical_sample_divisor(vo->osd);
++                        mp_mutex_lock(&in->lock);
++                        if (divisor > 0 && in->current_frame && !in->frame_queued &&
++                            divisor <= INT64_MAX / in->secondary_physical.interval &&
++                            secondary_duration >= divisor * in->secondary_physical.interval)
++                            grid_task = (struct secondary_ass_grid_task){
++                                .point = physical_sample,
++                                .epoch = in->secondary_physical.epoch,
++                                .current_id = in->current_frame->frame_id,
++                                .divisor = divisor, .delay = in->secondary_physical.delay,
++                                .rate = secondary_rate,
++                            };
++                        mp_mutex_unlock(&in->lock);
++                    }
+                 } else if (in->secondary_trace) {
+                     MP_INFO(vo, "native-ass-schedule: now_ns=%"PRId64
+                         " next_ns=%"PRId64" deadline_ns=%"PRId64
+@@ -1811,8 +1896,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              // Some windowing platforms break if we submit frames too fast.
              if (vo->previous_redraw_time + max_interval <= now) {
                  vo->driver->control(vo, VOCTRL_REDRAW, NULL);
--                do_redraw(vo); // now is a good time
-+                do_redraw(vo, 0, 0); // now is a good time
-                 vo->previous_redraw_time = now;
+-                do_redraw(vo, 0, 0); // now is a good time
+-                vo->previous_redraw_time = now;
++                bool drawn = do_redraw(vo, 0, 0,
++                    grid_task.point.slot > 0 ? &grid_task : NULL);
++                if (drawn || grid_task.point.slot <= 0)
++                    vo->previous_redraw_time = now;
              } else {
--                wait_vo(vo, now + max_interval);
-+                wait_vo(vo, MPMIN(wait_until, now + max_interval));
+                 wait_vo(vo, MPMIN(wait_until, now + max_interval));
              }
-             continue;
-         }
-@@ -1358,17 +1824,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-         if (wait_until <= now)
-             continue;
- 
--        if (wakeup_on_done) {
--            // At this point wait_until should be longer than frame duration
--            if (wakeup_core_after >= 0 && wait_until >= wakeup_core_after) {
--                wait_vo(vo, wakeup_core_after);
--                mp_mutex_lock(&in->lock);
--                in->need_wakeup = true;
--                mp_mutex_unlock(&in->lock);
--            }
--            wakeup_core(vo);
--        }
--
-         wait_vo(vo, wait_until);
-     }
-     forget_frames(vo); // implicitly synchronized
-@@ -1442,6 +1897,7 @@ void vo_seek_reset(struct vo *vo)
-     in->send_reset = true;
-     wakeup_locked(vo);
-     mp_mutex_unlock(&in->lock);
-+    osd_reset_secondary_clock(vo->osd);
- }
- 
- // Whether at least 1 frame was queued or rendered since last seek or reconfig.
-diff --git a/video/out/vo.h b/video/out/vo.h
-index f24918d..a3d1d9e 100644
---- a/video/out/vo.h
-+++ b/video/out/vo.h
-@@ -294,6 +294,16 @@ struct vo_vsync_info {
-     // This implies the latency of the output.
-     int64_t last_queue_display_time;
- 
-+    // Historical native-ASS phase, identified by a real displayed Present.
-+    // Separate from the future queue guess used by primary video sync.
-+    int64_t secondary_display_time;
-+    int64_t secondary_sync_qpc_ns, secondary_sync_time;
-+    uint32_t secondary_sync_refresh_count, secondary_present_refresh_count;
-+    uint64_t secondary_present_id;
-+    uint64_t secondary_submit_id;
-+    // Explicit invalidity resets phase/history; temporary zero statistics do not.
-+    bool secondary_phase_reset;
-+
-     // Time between 2 vsync events in nanoseconds. The difference should be the
-     // from 2 times sampled from the same reference point (it should not be the
-     // difference between e.g. the end of scanout and the start of the next one;
-diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 4d144ec..6d9e50d 100644
---- a/video/out/vo_gpu_next.c
-+++ b/video/out/vo_gpu_next.c
-@@ -60,6 +60,7 @@
- #if HAVE_D3D11 && defined(PL_HAVE_D3D11)
- #include <libplacebo/d3d11.h>
- #include "video/out/d3d11/ra_d3d11.h"
-+#include "video/out/d3d11/context.h"
- #include "osdep/windows_utils.h"
- #endif
- 
-@@ -150,6 +151,8 @@ struct priv {
-     bool frame_pending;
-     bool paused;
-     bool timing_diagnostics;
-+    bool gpu_marker_diagnostics;
-+    uint64_t gpu_marker_frame_id;
-     int64_t timing_start;
-     unsigned timing_draw, timing_redraw, timing_flip, timing_mix;
-     uint64_t timing_frame_id;
-@@ -1371,6 +1374,12 @@ static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
- static bool draw_frame(struct vo *vo, struct vo_frame *frame)
- {
-     struct priv *p = vo->priv;
-+#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
-+    if (p->gpu_marker_diagnostics) {
-+        ra_d3d11_ctx_gpu_marker_draw_begin(p->ra_ctx);
-+        p->gpu_marker_frame_id = frame->frame_id;
-+    }
-+#endif
-     pl_options pars = p->pars;
-     pl_gpu gpu = p->gpu;
-     update_options(vo);
-@@ -1869,6 +1878,10 @@ done:
-     if (!valid) // clear with purple to indicate error
-         pl_tex_clear(gpu, swframe.fbo, (float[4]){ 0.5, 0.0, 1.0, 1.0 });
- 
-+#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
-+    if (p->gpu_marker_diagnostics)
-+        ra_d3d11_ctx_gpu_marker_draw_end(p->ra_ctx, p->gpu_marker_frame_id);
-+#endif
-     pl_gpu_flush(gpu);
-     p->frame_pending = true;
-     return VO_TRUE;
-@@ -2610,6 +2623,12 @@ static int preinit(struct vo *vo)
- {
-     struct priv *p = vo->priv;
-     p->timing_diagnostics = getenv("MPV_NATIVE_TIMING") != NULL;
-+#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
-+    const char *gpu_marker = getenv("MPV_NATIVE_GPU_MARKER");
-+    const char *ass_trace = getenv("MPV_NATIVE_ASS_TRACE");
-+    p->gpu_marker_diagnostics = gpu_marker && strcmp(gpu_marker, "1") == 0 &&
-+                                ass_trace && strcmp(ass_trace, "1") == 0;
-+#endif
-     p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
-     p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
-     p->next_opts = p->next_opts_cache->opts;
 -- 
 2.54.0.windows.1
 
