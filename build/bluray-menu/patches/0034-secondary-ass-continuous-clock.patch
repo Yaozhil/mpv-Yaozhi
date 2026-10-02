@@ -1,4 +1,4 @@
-From 055bd44496fe9c105ad19210eeeace5ae28979da Mon Sep 17 00:00:00 2001
+From 1e17af7694dca64835ba33c76a196d62b257972b Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
@@ -16,10 +16,10 @@ Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
  video/out/d3d11/context.h              |   7 +
  video/out/secondary_ass_physical.h     | 494 ++++++++++++++++++
  video/out/secondary_ass_presentation.h |  83 +++
- video/out/vo.c                         | 691 +++++++++++++++++++++++--
+ video/out/vo.c                         | 694 +++++++++++++++++++++++--
  video/out/vo.h                         |  21 +
  video/out/vo_gpu_next.c                |  19 +
- 14 files changed, 2246 insertions(+), 64 deletions(-)
+ 14 files changed, 2249 insertions(+), 64 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -1909,7 +1909,7 @@ index 0000000..4d5a21d
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..94f38ef 100644
+index 72e6c77..87d591f 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,8 @@
@@ -2556,7 +2556,7 @@ index 72e6c77..94f38ef 100644
          int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
          in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
              &in->secondary_redraw_budget, cpu_cost, 0);
-@@ -1233,6 +1662,150 @@ static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
+@@ -1233,6 +1662,153 @@ static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
      return vo->driver->get_image(vo, imgfmt, w, h, stride_align, flags);
  }
  
@@ -2657,7 +2657,9 @@ index 72e6c77..94f38ef 100644
 +            in->current_frame) == frame_end &&
 +        secondary_capacity_eligible(vo, current_rate);
 +    bool headroom = frame_end > now && frame_end - now > work;
-+    int64_t until = result == VO_TRUE && capacity.known && capacity.pending >= 1 &&
++    int swapchain_depth = vo->opts ? MPMAX(vo->opts->swapchain_depth, 1) : 1;
++    int64_t until = result == VO_TRUE && capacity.known &&
++        capacity.pending >= (uint32_t)swapchain_depth &&
 +        still_valid && headroom
 +        ? secondary_capacity_next_wake(&in->secondary_physical, now) : 0;
 +    if (until > 0)
@@ -2670,7 +2672,7 @@ index 72e6c77..94f38ef 100644
 +        in->secondary_capacity_epoch = epoch;
 +    }
 +    mp_mutex_unlock(&in->lock);
-+    MP_INFO(vo, "native-ass-capacity: status=%s known=%d pending=%u"
++    MP_INFO(vo, "native-ass-capacity: status=%s known=%d pending=%u limit=%d"
 +        " submitted=%u displayed=%u present_refresh=%u sync_refresh=%u"
 +        " sync_qpc=%"PRId64" query_begin_ns=%"PRId64" query_end_ns=%"PRId64
 +        " hr=0x%08"PRIx32" current_id=%"PRIu64" queued_id=%"PRIu64
@@ -2678,7 +2680,8 @@ index 72e6c77..94f38ef 100644
 +        " frame_end_ns=%"PRId64" admission_end_ns=%"PRId64
 +        " old_sample_slot=%"PRId64" old_sample_ns=%"PRId64
 +        " valid=%d headroom=%d deferred=%d wake_target_ns=%"PRId64"\n",
-+        capacity.status, capacity.known, capacity.pending, capacity.submitted,
++        capacity.status, capacity.known, capacity.pending, swapchain_depth,
++        capacity.submitted,
 +        capacity.displayed, capacity.present_refresh, capacity.sync_refresh,
 +        capacity.sync_qpc, capacity.query_begin, capacity.query_end, capacity.result,
 +        current_id, queued_id, epoch, current_pts, queued_pts, frame_end, frame_end - work,
@@ -2707,7 +2710,7 @@ index 72e6c77..94f38ef 100644
  static MP_THREAD_VOID vo_thread(void *ptr)
  {
      struct vo *vo = ptr;
-@@ -1252,6 +1825,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1252,6 +1828,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          goto done;
  
      read_opts(vo);
@@ -2718,7 +2721,7 @@ index 72e6c77..94f38ef 100644
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1261,11 +1838,13 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1261,11 +1841,13 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              break;
          stats_event(in->stats, "iterations");
          vo->driver->control(vo, VOCTRL_CHECK_EVENTS, NULL);
@@ -2735,7 +2738,7 @@ index 72e6c77..94f38ef 100644
  
          mp_mutex_lock(&in->lock);
          if (in->wakeup_pts) {
-@@ -1281,12 +1860,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1281,12 +1863,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              wakeup_core(vo);
          }
          if ((!working && !in->rendering && !in->frame_queued) && in->wakeup_on_done) {
@@ -2758,7 +2761,7 @@ index 72e6c77..94f38ef 100644
          }
          vo->want_redraw = false;
          bool redraw = in->request_redraw;
-@@ -1307,9 +1891,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1307,9 +1894,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          mp_mutex_unlock(&in->lock);
  
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
@@ -2772,7 +2775,7 @@ index 72e6c77..94f38ef 100644
              bool affordable = secondary_ass_budget_affordable(secondary_cost,
                  secondary_redraw_cost, secondary_duration, interval);
              // Once per second, allow a bounded recovery sample. A CPU wakeup
-@@ -1317,16 +1903,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1317,16 +1906,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
                  secondary_duration, interval, now, secondary_probe);
              if (affordable || probe) {
@@ -2824,7 +2827,7 @@ index 72e6c77..94f38ef 100644
                  }
              }
          }
-@@ -1339,37 +1959,31 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1339,37 +1962,31 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          }
          if (send_pause)
              vo->driver->control(vo, vo_paused ? VOCTRL_PAUSE : VOCTRL_RESUME, NULL);
@@ -2871,7 +2874,7 @@ index 72e6c77..94f38ef 100644
      }
      forget_frames(vo); // implicitly synchronized
      talloc_free(in->current_frame);
-@@ -1442,6 +2056,7 @@ void vo_seek_reset(struct vo *vo)
+@@ -1442,6 +2059,7 @@ void vo_seek_reset(struct vo *vo)
      in->send_reset = true;
      wakeup_locked(vo);
      mp_mutex_unlock(&in->lock);
