@@ -1,7 +1,8 @@
-From d8b43d2dfa2205e044459c3a9647551455cf1502 Mon Sep 17 00:00:00 2001
+From d5a07db97af92c8cdbe37b75694d2722d2d1070d Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
-Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
+Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
+ markers
 
 ---
  options/options.c                      |   2 +-
@@ -11,12 +12,14 @@ Subject: [PATCH] sub: sample secondary ASS on a continuous presentation clock
  sub/osd_state.h                        |  14 +-
  sub/sd_ass.c                           |   5 +
  sub/secondary_ass_clock.h              | 281 +++++++++++++
- video/out/d3d11/context.c              |  89 ++++-
+ video/out/d3d11/context.c              | 382 +++++++++++++++++-
+ video/out/d3d11/context.h              |   7 +
  video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++
  video/out/secondary_ass_presentation.h |  83 ++++
  video/out/vo.c                         | 524 +++++++++++++++++++++++--
  video/out/vo.h                         |  10 +
- 12 files changed, 1619 insertions(+), 59 deletions(-)
+ video/out/vo_gpu_next.c                |  19 +
+ 14 files changed, 1937 insertions(+), 60 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -635,7 +638,7 @@ index 0000000..bc36b6e
 +
 +#endif
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index fc8802e..da65e2a 100644
+index fc8802e..25a2450 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -15,6 +15,10 @@
@@ -649,18 +652,316 @@ index fc8802e..da65e2a 100644
  #include "common/msg.h"
  #include "options/m_config.h"
  #include "osdep/timer.h"
-@@ -125,6 +129,7 @@ struct priv {
+@@ -43,6 +47,8 @@ struct d3d11_opts {
+     int output_mode;
+ };
+ 
++#define MP_D3D11_GPU_MARKER_RING 64
++
+ #define OPT_BASE_STRUCT struct d3d11_opts
+ const struct m_sub_options d3d11_conf = {
+     .opts = (const struct m_option[]) {
+@@ -125,10 +131,267 @@ struct priv {
      int64_t last_sync_qpc_time;
      int64_t vsync_duration_qpc;
      int64_t last_submit_qpc;
 +    bool secondary_trace;
++
++    // Opt-in, non-blocking GPU completion evidence. This is intentionally
++    // owned by the D3D11 VO thread and never participates in scheduling.
++    ID3D11DeviceContext *gpu_marker_context;
++    bool gpu_marker_active;
++    bool gpu_marker_error;
++    uint64_t gpu_marker_next_seq;
++    uint64_t gpu_marker_generation;
++    int gpu_marker_last;
++    struct d3d11_gpu_marker {
++        ID3D11Query *query;
++        uint64_t seq;
++        uint64_t generation;
++        uint64_t frame_id;
++        int64_t issue_before_ns;
++        int64_t issue_after_ns;
++        int64_t last_not_ready_ns;
++        int64_t ready_lower_ns;
++        int64_t ready_upper_ns;
++        unsigned expected_present;
++        unsigned actual_present;
++        bool in_use;
++        bool completed;
++        bool present_bound;
++        bool present_verified;
++        bool present_count_valid;
++    } gpu_markers[MP_D3D11_GPU_MARKER_RING];
  
      struct mp_dxgi_factory_ctx dxgi_ctx;
  };
-@@ -292,6 +297,17 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
-     IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
+ 
++static const struct ra_swapchain_fns d3d11_swapchain;
++
++static void d3d11_gpu_marker_release_queries(struct priv *p)
++{
++    for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
++        SAFE_RELEASE(p->gpu_markers[n].query);
++        p->gpu_markers[n] = (struct d3d11_gpu_marker) {0};
++    }
++    p->gpu_marker_last = -1;
++    p->gpu_marker_generation++;
++}
++
++static void d3d11_gpu_marker_disable(struct ra_ctx *ctx, HRESULT hr,
++                                     const char *status)
++{
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active)
++        return;
++
++    MP_INFO(ctx, "native-ass-gpu-marker: status=%s hr=0x%08"PRIx32
++            " generation=%"PRIu64"\n", status, (uint32_t)hr,
++            p->gpu_marker_generation);
++    d3d11_gpu_marker_release_queries(p);
++    p->gpu_marker_active = false;
++    p->gpu_marker_error = true;
++}
++
++static bool d3d11_gpu_marker_create_queries(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active)
++        return false;
++
++    if (!p->gpu_marker_context)
++        ID3D11Device_GetImmediateContext(p->device, &p->gpu_marker_context);
++    if (!p->gpu_marker_context) {
++        d3d11_gpu_marker_disable(ctx, E_NOINTERFACE, "no_immediate_context");
++        return false;
++    }
++
++    D3D11_QUERY_DESC desc = {
++        .Query = D3D11_QUERY_EVENT,
++        .MiscFlags = 0,
++    };
++    for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
++        HRESULT hr = ID3D11Device_CreateQuery(p->device, &desc,
++                                               &p->gpu_markers[n].query);
++        if (FAILED(hr)) {
++            d3d11_gpu_marker_disable(ctx, hr, "query_create_error");
++            return false;
++        }
++    }
++    return true;
++}
++
++static void d3d11_gpu_marker_maybe_release(struct priv *p, int n)
++{
++    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
++    if (!m->in_use || !m->completed || !m->present_verified)
++        return;
++    SAFE_RELEASE(m->query);
++    *m = (struct d3d11_gpu_marker) {0};
++    if (p->gpu_marker_last == n)
++        p->gpu_marker_last = -1;
++}
++
++static void d3d11_gpu_marker_poll(struct ra_ctx *ctx, const char *stage)
++{
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active || !p->gpu_marker_context)
++        return;
++
++    for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
++        struct d3d11_gpu_marker *m = &p->gpu_markers[n];
++        if (!m->in_use || m->completed || !m->query)
++            continue;
++
++        int64_t before_ns = mp_time_ns();
++        HRESULT hr = ID3D11DeviceContext_GetData(
++            p->gpu_marker_context, (ID3D11Asynchronous *)m->query,
++            NULL, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
++        int64_t after_ns = mp_time_ns();
++        if (hr == S_FALSE) {
++            m->last_not_ready_ns = after_ns;
++            continue;
++        }
++        if (FAILED(hr)) {
++            MP_INFO(ctx, "native-ass-gpu-marker: status=poll_error"
++                    " seq=%"PRIu64" generation=%"PRIu64
++                    " stage=%s hr=0x%08"PRIx32" before_ns=%"PRId64
++                    " after_ns=%"PRId64"\n", m->seq, m->generation, stage,
++                    (uint32_t)hr, before_ns, after_ns);
++            d3d11_gpu_marker_disable(ctx, hr, "poll_error");
++            return;
++        }
++
++        m->completed = true;
++        m->ready_lower_ns = m->last_not_ready_ns;
++        m->ready_upper_ns = after_ns;
++        MP_INFO(ctx, "native-ass-gpu-marker: status=complete"
++                " seq=%"PRIu64" generation=%"PRIu64
++                " frame_id=%"PRIu64" stage=%s lower_ns=%"PRId64
++                " upper_ns=%"PRId64" present_expected=%u"
++                " present_actual=%u present_bound=%d\n", m->seq,
++                m->generation, m->frame_id, stage, m->ready_lower_ns,
++                m->ready_upper_ns, m->expected_present, m->actual_present,
++                m->present_bound);
++        d3d11_gpu_marker_maybe_release(p, n);
++    }
++}
++
++static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id)
++{
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active || !p->gpu_marker_context)
++        return;
++
++    d3d11_gpu_marker_poll(ctx, "draw_end_before_end");
++    int n = -1;
++    for (int i = 0; i < MP_D3D11_GPU_MARKER_RING; i++) {
++        if (!p->gpu_markers[i].in_use) {
++            n = i;
++            break;
++        }
++    }
++    if (n < 0) {
++        MP_INFO(ctx, "native-ass-gpu-marker: status=ring_full"
++                " generation=%"PRIu64" frame_id=%"PRIu64"\n",
++                p->gpu_marker_generation, frame_id);
++        return;
++    }
++
++    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
++    ID3D11Query *query = m->query;
++    int64_t before_ns = mp_time_ns();
++    ID3D11DeviceContext_End(p->gpu_marker_context,
++                            (ID3D11Asynchronous *)query);
++    int64_t after_ns = mp_time_ns();
++    *m = (struct d3d11_gpu_marker) {
++        .query = query,
++        .seq = ++p->gpu_marker_next_seq,
++        .generation = p->gpu_marker_generation,
++        .frame_id = frame_id,
++        .issue_before_ns = before_ns,
++        .issue_after_ns = after_ns,
++        .in_use = true,
++    };
++    p->gpu_marker_last = n;
++    MP_INFO(ctx, "native-ass-gpu-marker: status=queued"
++            " seq=%"PRIu64" generation=%"PRIu64" frame_id=%"PRIu64
++            " issue_before_ns=%"PRId64" issue_after_ns=%"PRId64"\n",
++            m->seq, m->generation, m->frame_id, before_ns, after_ns);
++}
++
++static void d3d11_gpu_marker_bind_present(struct ra_swapchain *sw)
++{
++    struct ra_ctx *ctx = sw->ctx;
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active)
++        return;
++
++    d3d11_gpu_marker_poll(ctx, "present_before");
++    UINT before = 0;
++    HRESULT hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &before);
++    int n = p->gpu_marker_last;
++    if (FAILED(hr) || n < 0 || n >= MP_D3D11_GPU_MARKER_RING ||
++        !p->gpu_markers[n].in_use)
++    {
++        MP_INFO(ctx, "native-ass-gpu-marker: status=present_unbound"
++                " generation=%"PRIu64" hr=0x%08"PRIx32"\n",
++                p->gpu_marker_generation, (uint32_t)hr);
++        return;
++    }
++
++    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
++    m->expected_present = before + 1;
++    m->present_count_valid = SUCCEEDED(hr);
++    m->present_bound = SUCCEEDED(hr);
++    MP_INFO(ctx, "native-ass-gpu-marker: status=present_bind"
++            " seq=%"PRIu64" generation=%"PRIu64
++            " expected_present=%u count_before=%u\n", m->seq,
++            m->generation, m->expected_present, before);
++}
++
++static void d3d11_gpu_marker_after_present(struct ra_swapchain *sw,
++                                           HRESULT present_hr)
++{
++    struct ra_ctx *ctx = sw->ctx;
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active)
++        return;
++
++    d3d11_gpu_marker_poll(ctx, "present_after");
++    UINT after = 0;
++    HRESULT count_hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &after);
++    int n = p->gpu_marker_last;
++    if (n >= 0 && n < MP_D3D11_GPU_MARKER_RING &&
++        p->gpu_markers[n].in_use && p->gpu_markers[n].present_bound)
++    {
++        struct d3d11_gpu_marker *m = &p->gpu_markers[n];
++        m->actual_present = after;
++        m->present_verified = true;
++        MP_INFO(ctx, "native-ass-gpu-marker: status=present_result"
++                " seq=%"PRIu64" generation=%"PRIu64
++                " expected_present=%u actual_present=%u match=%d"
++                " present_hr=0x%08"PRIx32" count_hr=0x%08"PRIx32"\n",
++                m->seq, m->generation, m->expected_present, after,
++                m->expected_present == after && SUCCEEDED(present_hr),
++                (uint32_t)present_hr, (uint32_t)count_hr);
++        d3d11_gpu_marker_maybe_release(p, n);
++    } else {
++        MP_INFO(ctx, "native-ass-gpu-marker: status=present_result_unbound"
++                " generation=%"PRIu64" present_hr=0x%08"PRIx32
++                " count_hr=0x%08"PRIx32" actual_present=%u\n",
++                p->gpu_marker_generation, (uint32_t)present_hr,
++                (uint32_t)count_hr, after);
++    }
++}
++
++static void d3d11_gpu_marker_reset_priv(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++    if (!p->gpu_marker_active)
++        return;
++    d3d11_gpu_marker_release_queries(p);
++    MP_INFO(ctx, "native-ass-gpu-marker: status=generation_reset"
++            " generation=%"PRIu64"\n", p->gpu_marker_generation);
++}
++
+ static struct ra_tex *get_backbuffer(struct ra_ctx *ctx)
+ {
+     struct priv *p = ctx->priv;
+@@ -159,6 +422,7 @@ static bool resize(struct ra_ctx *ctx)
+         return false;
+     }
+ 
++    d3d11_gpu_marker_reset_priv(ctx);
+     hr = IDXGISwapChain_ResizeBuffers(p->swapchain, 0, ctx->vo->dwidth,
+         ctx->vo->dheight, DXGI_FORMAT_UNKNOWN, 0);
+     if (FAILED(hr)) {
+@@ -166,6 +430,8 @@ static bool resize(struct ra_ctx *ctx)
+         return false;
+     }
+ 
++    if (p->gpu_marker_active)
++        d3d11_gpu_marker_create_queries(ctx);
+     return true;
  }
  
+@@ -284,12 +550,26 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+     struct priv *p = sw->priv;
+ 
+     m_config_cache_update(p->opts_cache);
++    d3d11_gpu_marker_bind_present(sw);
+ 
+     LARGE_INTEGER perf_count;
+     QueryPerformanceCounter(&perf_count);
+     p->last_submit_qpc = perf_count.QuadPart;
+ 
+-    IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
++    HRESULT present_hr = IDXGISwapChain_Present(p->swapchain,
++                                                 p->opts->sync_interval, 0);
++    d3d11_gpu_marker_after_present(sw, present_hr);
++}
++
 +static void d3d11_trace_vsync_status(struct ra_swapchain *sw,
 +                                    const char *status, HRESULT hr)
 +{
@@ -670,12 +971,10 @@ index fc8802e..da65e2a 100644
 +                " sync_interval=%d last_submit_qpc=%"PRId64"\n",
 +                status, (uint32_t)hr, p->opts->sync_interval,
 +                p->last_submit_qpc);
-+}
-+
+ }
+ 
  static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
- {
-     struct priv *p = sw->priv;
-@@ -300,8 +316,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -300,8 +580,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      m_config_cache_update(p->opts_cache);
  
      // The calculations below are only valid if mpv presents on every vsync
@@ -688,7 +987,7 @@ index fc8802e..da65e2a 100644
  
      // They're also only valid for flip model swapchains
      DXGI_SWAP_CHAIN_DESC desc;
-@@ -309,6 +328,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -309,6 +592,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      if (FAILED(hr) || (desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
                         desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
      {
@@ -698,7 +997,7 @@ index fc8802e..da65e2a 100644
          return;
      }
  
-@@ -316,8 +338,12 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -316,8 +602,12 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      // the last call to IDXGISwapChain::Present()
      UINT submit_count;
      hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &submit_count);
@@ -712,7 +1011,7 @@ index fc8802e..da65e2a 100644
  
      // GetFrameStatistics returns two pairs. The first is (PresentCount,
      // PresentRefreshCount) which relates a present ID (on the same timeline as
-@@ -329,9 +355,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -329,9 +619,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
          p->last_sync_refresh_count = 0;
          p->last_sync_qpc_time = 0;
@@ -729,7 +1028,7 @@ index fc8802e..da65e2a 100644
  
      // Detecting skipped vsyncs is possible but not supported yet
      info->skipped_vsyncs = -1;
-@@ -345,17 +377,40 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -345,17 +641,40 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      p->last_sync_refresh_count = stats.SyncRefreshCount;
  
      // Get the elapsed time passed between the above vsyncs
@@ -772,7 +1071,7 @@ index fc8802e..da65e2a 100644
      // If the physical frame rate is known and the other members of
      // DXGI_FRAME_STATISTICS are non-0, estimate the timing of the next frame
      if (p->vsync_duration_qpc && stats.PresentCount &&
-@@ -381,6 +436,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -381,6 +700,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
                  (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
          }
      }
@@ -801,15 +1100,83 @@ index fc8802e..da65e2a 100644
  }
  
  static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
-@@ -507,6 +584,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -477,6 +818,8 @@ static void d3d11_uninit(struct ra_ctx *ctx)
+ 
+     if (ctx->ra)
+         ra_tex_free(ctx->ra, &p->backbuffer);
++    d3d11_gpu_marker_release_queries(p);
++    SAFE_RELEASE(p->gpu_marker_context);
+     SAFE_RELEASE(p->swapchain);
+     if (!ctx->opts.composition) {
+         vo_w32_uninit(ctx->vo);
+@@ -502,11 +845,35 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
+     .get_vsync    = d3d11_get_vsync,
+ };
+ 
++void ra_d3d11_ctx_gpu_marker_draw_begin(struct ra_ctx *ra)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return;
++    struct priv *p = ra->priv;
++    if (p && p->gpu_marker_active)
++        d3d11_gpu_marker_poll(ra, "draw_begin");
++}
++
++void ra_d3d11_ctx_gpu_marker_draw_end(struct ra_ctx *ra, uint64_t frame_id)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return;
++    struct priv *p = ra->priv;
++    if (p && p->gpu_marker_active)
++        d3d11_gpu_marker_end(ra, frame_id);
++}
++
+ static bool d3d11_init(struct ra_ctx *ctx)
+ {
      struct priv *p = ctx->priv = talloc_zero(ctx, struct priv);
      p->opts_cache = m_config_cache_alloc(ctx, ctx->global, &d3d11_conf);
      p->opts = p->opts_cache->opts;
 +    const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
++    const char *marker = getenv("MPV_NATIVE_GPU_MARKER");
 +    p->secondary_trace = trace && strcmp(trace, "1") == 0;
++    p->gpu_marker_active = p->secondary_trace && marker && strcmp(marker, "1") == 0;
++    p->gpu_marker_generation = 1;
++    p->gpu_marker_last = -1;
  
      p->vo_opts_cache = m_config_cache_alloc(ctx, ctx->vo->global, &vo_sub_opts);
      p->vo_opts = p->vo_opts_cache->opts;
+@@ -569,6 +936,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
+     if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
+         goto error;
+ 
++    if (p->gpu_marker_active)
++        d3d11_gpu_marker_create_queries(ctx);
++
+     if (ctx->opts.composition)
+         vo_w32_swapchain(ctx->vo, p->swapchain);
+ 
+diff --git a/video/out/d3d11/context.h b/video/out/d3d11/context.h
+index 640533b..55b896b 100644
+--- a/video/out/d3d11/context.h
++++ b/video/out/d3d11/context.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <dxgi.h>
++#include <stdint.h>
+ 
+ #include "video/out/gpu/context.h"
+ 
+@@ -13,3 +14,9 @@ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
+ struct pl_d3d11_swapchain_params;
+ void ra_d3d11_ctx_set_swapchain_params(struct ra_ctx *ra,
+                                        struct pl_d3d11_swapchain_params *params);
++
++// Opt-in, non-blocking D3D11 GPU completion evidence. These calls are no-ops
++// unless MPV_NATIVE_ASS_TRACE=1 and MPV_NATIVE_GPU_MARKER=1 are both set.
++// They never flush, wait, or affect the rendering scheduler.
++void ra_d3d11_ctx_gpu_marker_draw_begin(struct ra_ctx *ra);
++void ra_d3d11_ctx_gpu_marker_draw_end(struct ra_ctx *ra, uint64_t frame_id);
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
 new file mode 100644
 index 0000000..631a9e6
@@ -2207,6 +2574,64 @@ index f24918d..a3d1d9e 100644
      // Time between 2 vsync events in nanoseconds. The difference should be the
      // from 2 times sampled from the same reference point (it should not be the
      // difference between e.g. the end of scanout and the start of the next one;
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 4d144ec..6d9e50d 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -60,6 +60,7 @@
+ #if HAVE_D3D11 && defined(PL_HAVE_D3D11)
+ #include <libplacebo/d3d11.h>
+ #include "video/out/d3d11/ra_d3d11.h"
++#include "video/out/d3d11/context.h"
+ #include "osdep/windows_utils.h"
+ #endif
+ 
+@@ -150,6 +151,8 @@ struct priv {
+     bool frame_pending;
+     bool paused;
+     bool timing_diagnostics;
++    bool gpu_marker_diagnostics;
++    uint64_t gpu_marker_frame_id;
+     int64_t timing_start;
+     unsigned timing_draw, timing_redraw, timing_flip, timing_mix;
+     uint64_t timing_frame_id;
+@@ -1371,6 +1374,12 @@ static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
+ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ {
+     struct priv *p = vo->priv;
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    if (p->gpu_marker_diagnostics) {
++        ra_d3d11_ctx_gpu_marker_draw_begin(p->ra_ctx);
++        p->gpu_marker_frame_id = frame->frame_id;
++    }
++#endif
+     pl_options pars = p->pars;
+     pl_gpu gpu = p->gpu;
+     update_options(vo);
+@@ -1869,6 +1878,10 @@ done:
+     if (!valid) // clear with purple to indicate error
+         pl_tex_clear(gpu, swframe.fbo, (float[4]){ 0.5, 0.0, 1.0, 1.0 });
+ 
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    if (p->gpu_marker_diagnostics)
++        ra_d3d11_ctx_gpu_marker_draw_end(p->ra_ctx, p->gpu_marker_frame_id);
++#endif
+     pl_gpu_flush(gpu);
+     p->frame_pending = true;
+     return VO_TRUE;
+@@ -2610,6 +2623,12 @@ static int preinit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+     p->timing_diagnostics = getenv("MPV_NATIVE_TIMING") != NULL;
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    const char *gpu_marker = getenv("MPV_NATIVE_GPU_MARKER");
++    const char *ass_trace = getenv("MPV_NATIVE_ASS_TRACE");
++    p->gpu_marker_diagnostics = gpu_marker && strcmp(gpu_marker, "1") == 0 &&
++                                ass_trace && strcmp(ass_trace, "1") == 0;
++#endif
+     p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
+     p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
+     p->next_opts = p->next_opts_cache->opts;
 -- 
 2.54.0.windows.1
 

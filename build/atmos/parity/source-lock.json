@@ -50,7 +50,7 @@
     "build/bluray-menu/patches/0031-secondary-ass-video-deadline.patch": "c213b37f875cf22e12415270426a20c31e5ddd39410266dfa608b2f0969993f1",
     "build/bluray-menu/patches/0032-dovi-rpu-enhancement-metadata.patch": "66806a3e156c2766f2318245bbfc68ce3dbb80d84dd06f246c4814310eb99dec",
     "build/bluray-menu/patches/0033-player-version-brand.patch": "22fb0ede7cb4db7ee22bf2856a27572d0aa31cda130fa9ff23723175cac8e34d",
-    "build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch": "3b52bb2e2484772fac6436c81f2d3a4873408a3d493c040e60dd81ac7ec4c47b"
+    "build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch": "6b638dbe522ead1d683fa72412c6e6c9611292c13cfd098df38fa6eea3004bc6"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
