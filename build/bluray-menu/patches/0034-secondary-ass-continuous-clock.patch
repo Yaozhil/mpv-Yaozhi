@@ -1,4 +1,4 @@
-From 4051afbf1d05dcc229b60cbf6c9e5c7b857a7481 Mon Sep 17 00:00:00 2001
+From 3a211f33c994fed306b8e8893086385d80295d09 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
@@ -7,19 +7,19 @@ Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
 ---
  options/options.c                      |   2 +-
  player/playloop.c                      |   2 +-
- sub/osd.c                              | 157 +++++++-
+ sub/osd.c                              | 157 +++++-
  sub/osd.h                              |  17 +-
  sub/osd_state.h                        |  14 +-
  sub/sd_ass.c                           |   5 +
- sub/secondary_ass_clock.h              | 281 +++++++++++++
- video/out/d3d11/context.c              | 451 ++++++++++++++++++++-
+ sub/secondary_ass_clock.h              | 281 ++++++++++
+ video/out/d3d11/context.c              | 517 ++++++++++++++++++-
  video/out/d3d11/context.h              |   7 +
- video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++
- video/out/secondary_ass_presentation.h |  83 ++++
- video/out/vo.c                         | 524 +++++++++++++++++++++++--
- video/out/vo.h                         |  10 +
+ video/out/secondary_ass_physical.h     | 494 ++++++++++++++++++
+ video/out/secondary_ass_presentation.h |  83 +++
+ video/out/vo.c                         | 689 +++++++++++++++++++++++--
+ video/out/vo.h                         |  21 +
  video/out/vo_gpu_next.c                |  19 +
- 14 files changed, 2006 insertions(+), 60 deletions(-)
+ 14 files changed, 2244 insertions(+), 64 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -638,7 +638,7 @@ index 0000000..bc36b6e
 +
 +#endif
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index fc8802e..47a8fde 100644
+index fc8802e..c5610f8 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -15,6 +15,10 @@
@@ -1123,7 +1123,7 @@ index fc8802e..47a8fde 100644
      // If the physical frame rate is known and the other members of
      // DXGI_FRAME_STATISTICS are non-0, estimate the timing of the next frame
      if (p->vsync_duration_qpc && stats.PresentCount &&
-@@ -381,6 +752,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -381,6 +752,92 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
                  (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
          }
      }
@@ -1149,10 +1149,83 @@ index fc8802e..47a8fde 100644
 +                info->last_queue_display_time, p->opts->sync_interval,
 +                (unsigned)desc.SwapEffect);
 +    }
++}
++
++// Read only. Unlike get_vsync(), an unavailable/disjoint observation here must
++// not mutate the synchronization estimator, learner, or swapchain generation.
++static int d3d11_secondary_capacity(struct ra_ctx *ctx,
++                                    struct voctrl_secondary_capacity *capacity)
++{
++    struct priv *p = ctx->priv;
++    *capacity = (struct voctrl_secondary_capacity) {
++        .status = "unsupported_context", .query_begin = mp_time_ns(),
++    };
++    if (!p->swapchain || p->opts->sync_interval != 1)
++        goto done;
++
++    DXGI_SWAP_CHAIN_DESC desc;
++    HRESULT hr = IDXGISwapChain_GetDesc(p->swapchain, &desc);
++    capacity->result = (uint32_t)hr;
++    if (FAILED(hr)) {
++        capacity->status = "description_error";
++        goto done;
++    }
++    if (desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
++        desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD)
++        goto done;
++
++    UINT submitted = 0;
++    hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &submitted);
++    capacity->result = (uint32_t)hr;
++    capacity->submitted = submitted;
++    if (FAILED(hr)) {
++        capacity->status = "present_count_error";
++        goto done;
++    }
++
++    DXGI_FRAME_STATISTICS stats = {0};
++    hr = IDXGISwapChain_GetFrameStatistics(p->swapchain, &stats);
++    capacity->result = (uint32_t)hr;
++    capacity->displayed = stats.PresentCount;
++    capacity->present_refresh = stats.PresentRefreshCount;
++    capacity->sync_refresh = stats.SyncRefreshCount;
++    capacity->sync_qpc = stats.SyncQPCTime.QuadPart;
++    if (FAILED(hr)) {
++        capacity->status = hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT
++            ? "disjoint" : "statistics_error";
++        goto done;
++    }
++    if (!submitted || !stats.PresentCount || !stats.PresentRefreshCount ||
++        !stats.SyncRefreshCount || stats.SyncQPCTime.QuadPart <= 0)
++    {
++        capacity->status = "zero_statistics";
++        goto done;
++    }
++    // IDs are wrapping UINTs. Reversed/disjoint or implausibly old statistics
++    // are unknown, never guessed queue capacity or a physical phase reset.
++    capacity->pending = (uint32_t)(submitted - stats.PresentCount);
++    if (capacity->pending >= VO_MAX_SWAPCHAIN_DEPTH) {
++        capacity->status = "count_range";
++        goto done;
++    }
++    capacity->known = true;
++    capacity->status = "known";
++done:
++    capacity->query_end = mp_time_ns();
++    return VO_TRUE;
  }
  
  static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
-@@ -477,6 +870,9 @@ static void d3d11_uninit(struct ra_ctx *ctx)
+@@ -423,6 +880,8 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
+     bool fullscreen_switch_needed = false;
+ 
+     switch (request) {
++    case VOCTRL_GET_SECONDARY_CAPACITY:
++        return arg ? d3d11_secondary_capacity(ctx, arg) : VO_NOTAVAIL;
+     case VOCTRL_VO_OPTS_CHANGED: {
+         void *changed_option;
+ 
+@@ -477,6 +936,9 @@ static void d3d11_uninit(struct ra_ctx *ctx)
  
      if (ctx->ra)
          ra_tex_free(ctx->ra, &p->backbuffer);
@@ -1162,7 +1235,7 @@ index fc8802e..47a8fde 100644
      SAFE_RELEASE(p->swapchain);
      if (!ctx->opts.composition) {
          vo_w32_uninit(ctx->vo);
-@@ -502,11 +898,51 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
+@@ -502,11 +964,51 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
      .get_vsync    = d3d11_get_vsync,
  };
  
@@ -1214,7 +1287,7 @@ index fc8802e..47a8fde 100644
  
      p->vo_opts_cache = m_config_cache_alloc(ctx, ctx->vo->global, &vo_sub_opts);
      p->vo_opts = p->vo_opts_cache->opts;
-@@ -569,6 +1005,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -569,6 +1071,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
      if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
          goto error;
  
@@ -1836,7 +1909,7 @@ index 0000000..4d5a21d
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 72e6c77..5f89d98 100644
+index 72e6c77..88a31e0 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -16,6 +16,8 @@
@@ -1880,7 +1953,7 @@ index 72e6c77..5f89d98 100644
  
      bool need_wakeup;
      bool terminate;
-@@ -160,9 +174,14 @@ struct vo_internal {
+@@ -160,9 +174,18 @@ struct vo_internal {
      int64_t flip_queue_offset; // queue flip events at most this much in advance
      int64_t timing_offset;     // same (but from options; not VO configured)
      int64_t secondary_last_draw; // VO thread only
@@ -1888,6 +1961,10 @@ index 72e6c77..5f89d98 100644
 +    struct secondary_ass_physical secondary_physical; // VO thread only
 +    bool secondary_sync_mode_valid, secondary_sync_mode;
 +    bool secondary_trace; // explicitly enabled diagnostic; never on by default
++    bool secondary_capacity_gate; // exact opt-in; no native public option
++    int64_t secondary_capacity_wait, secondary_capacity_decision;
++    uint64_t secondary_capacity_current, secondary_capacity_queued;
++    uint64_t secondary_capacity_epoch;
      int64_t secondary_render_cost;
      int64_t secondary_cost_update; // VO thread only
      int64_t secondary_gpu_cost; // VO thread only
@@ -1895,7 +1972,7 @@ index 72e6c77..5f89d98 100644
      struct secondary_ass_budget secondary_budget; // VO thread only
      int64_t secondary_redraw_cost;
      int64_t secondary_redraw_block_cost;
-@@ -200,14 +219,18 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
+@@ -200,14 +223,18 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
      in->secondary_redraw_budget = (struct secondary_ass_budget){0};
      in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
      in->secondary_render_cost = in->secondary_gpu_cost = in->secondary_cost_update = 0;
@@ -1914,7 +1991,7 @@ index 72e6c77..5f89d98 100644
  static MP_THREAD_VOID vo_thread(void *ptr);
  
  static bool get_desc(struct m_obj_desc *dst, int index)
-@@ -287,6 +310,12 @@ static void dealloc_vo(struct vo *vo)
+@@ -287,6 +314,12 @@ static void dealloc_vo(struct vo *vo)
  
      mp_mutex_destroy(&vo->in->lock);
      mp_cond_destroy(&vo->in->wakeup);
@@ -1927,7 +2004,7 @@ index 72e6c77..5f89d98 100644
      talloc_free(vo);
  }
  
-@@ -573,6 +602,8 @@ static void update_display_fps(struct vo *vo)
+@@ -573,6 +606,8 @@ static void update_display_fps(struct vo *vo)
  
          mp_mutex_lock(&in->lock);
  
@@ -1936,7 +2013,7 @@ index 72e6c77..5f89d98 100644
          in->reported_display_fps = fps;
      }
  
-@@ -737,6 +768,54 @@ static void forget_frames(struct vo *vo)
+@@ -737,6 +772,54 @@ static void forget_frames(struct vo *vo)
      }
  }
  
@@ -1991,7 +2068,7 @@ index 72e6c77..5f89d98 100644
  // VOs which have no special requirements on UI event loops etc. can set the
  // vo_driver.wait_events callback to this (and leave vo_driver.wakeup unset).
  // This function must not be used or called for other purposes.
-@@ -745,8 +824,33 @@ void vo_wait_default(struct vo *vo, int64_t until_time)
+@@ -745,8 +828,33 @@ void vo_wait_default(struct vo *vo, int64_t until_time)
      struct vo_internal *in = vo->in;
  
      mp_mutex_lock(&in->lock);
@@ -2027,7 +2104,7 @@ index 72e6c77..5f89d98 100644
      mp_mutex_unlock(&in->lock);
  }
  
-@@ -763,6 +867,16 @@ static void wait_vo(struct vo *vo, int64_t until_time)
+@@ -763,6 +871,16 @@ static void wait_vo(struct vo *vo, int64_t until_time)
      mp_mutex_lock(&in->lock);
      in->need_wakeup = false;
      mp_mutex_unlock(&in->lock);
@@ -2044,7 +2121,7 @@ index 72e6c77..5f89d98 100644
  }
  
  static void wakeup_locked(struct vo *vo)
-@@ -770,6 +884,10 @@ static void wakeup_locked(struct vo *vo)
+@@ -770,6 +888,10 @@ static void wakeup_locked(struct vo *vo)
      struct vo_internal *in = vo->in;
  
      mp_cond_broadcast(&in->wakeup);
@@ -2055,7 +2132,7 @@ index 72e6c77..5f89d98 100644
      if (vo->driver->wakeup)
          vo->driver->wakeup(vo);
      in->need_wakeup = true;
-@@ -885,9 +1003,13 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+@@ -885,9 +1007,13 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
              in->secondary_redraw_cost, duration, interval);
          bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
              duration, interval, now, in->secondary_next_probe);
@@ -2071,7 +2148,7 @@ index 72e6c77..5f89d98 100644
          next_pts -= lead;
          next_pts -= in->flip_queue_offset;
          if (next_pts > now)
-@@ -951,12 +1073,97 @@ static void wait_until(struct vo *vo, int64_t target)
+@@ -951,12 +1077,97 @@ static void wait_until(struct vo *vo, int64_t target)
      while (target > mp_time_ns()) {
          if (in->queued_events & VO_EVENT_LIVE_RESIZING)
              break;
@@ -2170,7 +2247,7 @@ index 72e6c77..5f89d98 100644
  static bool render_frame(struct vo *vo)
  {
      struct vo_internal *in = vo->in;
-@@ -965,8 +1172,58 @@ static bool render_frame(struct vo *vo)
+@@ -965,8 +1176,58 @@ static bool render_frame(struct vo *vo)
  
      update_display_fps(vo);
  
@@ -2229,7 +2306,7 @@ index 72e6c77..5f89d98 100644
      if (in->frame_queued) {
          talloc_free(in->current_frame);
          in->current_frame = in->frame_queued;
-@@ -1050,10 +1307,69 @@ static bool render_frame(struct vo *vo)
+@@ -1050,10 +1311,69 @@ static bool render_frame(struct vo *vo)
  
          stats_time_start(in->stats, "video-draw");
  
@@ -2302,7 +2379,7 @@ index 72e6c77..5f89d98 100644
  
          in->visible = vo->driver->draw_frame(vo, frame);
  
-@@ -1068,11 +1384,20 @@ static bool render_frame(struct vo *vo)
+@@ -1068,11 +1388,20 @@ static bool render_frame(struct vo *vo)
                      talloc_zero(NULL, struct voctrl_performance_data);
                  if (vo->driver->control(vo, VOCTRL_PERFORMANCE_DATA, perf) == VO_TRUE) {
                      in->secondary_gpu_cost = 0;
@@ -2325,7 +2402,7 @@ index 72e6c77..5f89d98 100644
                  }
                  talloc_free(perf);
                  in->secondary_cost_update = mp_time_ns();
-@@ -1100,6 +1425,7 @@ static bool render_frame(struct vo *vo)
+@@ -1100,6 +1429,7 @@ static bool render_frame(struct vo *vo)
          } else {
              in->secondary_budget = (struct secondary_ass_budget){0};
              in->secondary_gpu_cost = in->secondary_cost_update = 0;
@@ -2333,7 +2410,7 @@ index 72e6c77..5f89d98 100644
              in->secondary_redraw_budget = (struct secondary_ass_budget){0};
              in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
              in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
-@@ -1107,6 +1433,13 @@ static bool render_frame(struct vo *vo)
+@@ -1107,6 +1437,13 @@ static bool render_frame(struct vo *vo)
  
          stats_time_end(in->stats, "video-draw");
  
@@ -2347,7 +2424,7 @@ index 72e6c77..5f89d98 100644
          wait_until(vo, target);
  
          stats_time_start(in->stats, "video-flip");
-@@ -1120,6 +1453,19 @@ static bool render_frame(struct vo *vo)
+@@ -1120,6 +1457,19 @@ static bool render_frame(struct vo *vo)
          if (vo->driver->get_vsync)
              vo->driver->get_vsync(vo, &vsync);
  
@@ -2367,7 +2444,7 @@ index 72e6c77..5f89d98 100644
          // Make up some crap if presentation feedback is missing.
          if (vsync.last_queue_display_time <= 0)
              vsync.last_queue_display_time = mp_time_ns();
-@@ -1173,7 +1519,7 @@ done:
+@@ -1173,7 +1523,7 @@ done:
      return more_frames;
  }
  
@@ -2376,7 +2453,7 @@ index 72e6c77..5f89d98 100644
  {
      struct vo_internal *in = vo->in;
  
-@@ -1181,6 +1527,18 @@ static void do_redraw(struct vo *vo)
+@@ -1181,6 +1531,18 @@ static void do_redraw(struct vo *vo)
          return;
  
      mp_mutex_lock(&in->lock);
@@ -2395,7 +2472,7 @@ index 72e6c77..5f89d98 100644
      in->request_redraw = false;
  
      if (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) {
-@@ -1200,15 +1558,82 @@ static void do_redraw(struct vo *vo)
+@@ -1200,15 +1562,82 @@ static void do_redraw(struct vo *vo)
      frame->still = true;
      frame->pts = 0;
      frame->duration = -1;
@@ -2479,25 +2556,184 @@ index 72e6c77..5f89d98 100644
          int64_t block_cost = mp_time_ns() - in->secondary_last_draw;
          in->secondary_redraw_cpu_cost = secondary_ass_budget_sample(
              &in->secondary_redraw_budget, cpu_cost, 0);
-@@ -1252,6 +1677,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1233,6 +1662,148 @@ static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
+     return vo->driver->get_image(vo, imgfmt, w, h, stride_align, flags);
+ }
+ 
++static bool secondary_capacity_enabled(bool trace, const char *value)
++{
++    return trace && value && strcmp(value, "1") == 0;
++}
++
++static int64_t secondary_capacity_next_wake(
++    const struct secondary_ass_physical *physical, int64_t now)
++{
++    if (physical->phase <= 0 || now <= 0 ||
++        !secondary_ass_physical_interval_valid(physical->interval) ||
++        now > INT64_MAX - physical->interval)
++        return 0;
++    int64_t remaining = physical->phase > now
++        ? MPMIN(physical->phase - now, physical->interval)
++        : physical->interval - (now - physical->phase) % physical->interval;
++    return now + remaining;
++}
++
++// Called only before render_frame/target publication, once per outer VO turn.
++// A deferred turn still processes notifications/reset/pause, then waits using
++// the existing interruptible event/timer path and revalidates on the next turn.
++// Called with in->lock held, before and after the context query.
++static bool secondary_capacity_eligible(struct vo *vo, double rate)
++{
++    struct vo_internal *in = vo->in;
++    struct vo_frame *current = in->current_frame;
++    struct vo_frame *fresh = in->frame_queued ? in->frame_queued : current;
++    return rate > 0 && vo->config_ok && in->visible && in->hasframe && current && fresh &&
++        !in->terminate && !in->paused && !in->rendering && !in->dropped_frame &&
++        !in->send_reset && !in->request_redraw && !vo->want_redraw &&
++        !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++        !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) &&
++        !current->still && !current->display_synced && !fresh->display_synced &&
++        in->secondary_physical.phase > 0 &&
++        fresh->duration >= in->secondary_physical.interval &&
++        secondary_ass_budget_affordable(in->secondary_render_cost,
++            in->secondary_redraw_cost, fresh->duration,
++            MPMAX(MP_TIME_S_TO_NS(1.0 / rate), in->secondary_physical.interval));
++}
++
++static int64_t secondary_capacity_frame_end(const struct vo_frame *frame)
++{
++    if (!frame || frame->pts <= 0 || frame->duration <= 0 ||
++        frame->pts > INT64_MAX - frame->duration)
++        return 0;
++    return frame->pts + frame->duration;
++}
++
++static int64_t secondary_capacity_defer(struct vo *vo)
++{
++    struct vo_internal *in = vo->in;
++    if (!in->secondary_capacity_gate || strcmp(vo->driver->name, "gpu-next"))
++        return 0;
++    double rate = osd_get_secondary_refresh(vo->osd);
++    mp_mutex_lock(&in->lock);
++    struct vo_frame *current = in->current_frame;
++    struct vo_frame *queued = in->frame_queued;
++    bool eligible = secondary_capacity_eligible(vo, rate);
++    uint64_t current_id = current ? current->frame_id : 0;
++    uint64_t queued_id = queued ? queued->frame_id : 0;
++    uint64_t epoch = in->secondary_physical.epoch;
++    int64_t current_pts = current ? current->pts : 0;
++    int64_t queued_pts = queued ? queued->pts : 0;
++    int64_t frame_end = secondary_capacity_frame_end(queued ? queued : current);
++    int64_t work = in->secondary_render_cost;
++    int64_t checked_now = mp_time_ns();
++    mp_mutex_unlock(&in->lock);
++    if (!eligible)
++        return 0;
++    // Repeated bounded turns must never accumulate past this frame's original
++    // media deadline. The original render/drop path retains the final decision.
++    if (frame_end <= checked_now || work < 0 ||
++        frame_end - checked_now <= work)
++    {
++        MP_INFO(vo, "native-ass-capacity: status=deadline_expired queried=0"
++            " current_id=%"PRIu64" queued_id=%"PRIu64" epoch=%"PRIu64
++            " frame_end_ns=%"PRId64" now_ns=%"PRId64" work_ns=%"PRId64"\n",
++            current_id, queued_id, epoch, frame_end, checked_now, work);
++        return 0;
++    }
++
++    struct secondary_ass_physical_point old_sample = secondary_next_sample(vo);
++    struct voctrl_secondary_capacity capacity = {.status = "unsupported_context"};
++    int result = vo->driver->control(vo, VOCTRL_GET_SECONDARY_CAPACITY, &capacity);
++    int64_t now = mp_time_ns();
++    double current_rate = osd_get_secondary_refresh(vo->osd);
++    mp_mutex_lock(&in->lock);
++    bool still_valid = in->current_frame &&
++        in->current_frame->frame_id == current_id &&
++        (in->frame_queued ? in->frame_queued->frame_id : 0) == queued_id &&
++        in->secondary_physical.epoch == epoch && current_rate == rate &&
++        secondary_capacity_frame_end(in->frame_queued ? in->frame_queued :
++            in->current_frame) == frame_end &&
++        secondary_capacity_eligible(vo, current_rate);
++    bool headroom = frame_end > now && frame_end - now > work;
++    int64_t until = result == VO_TRUE && capacity.known && capacity.pending >= 1 &&
++        still_valid && headroom
++        ? secondary_capacity_next_wake(&in->secondary_physical, now) : 0;
++    if (until > 0)
++        until = MPMIN(until, frame_end - work);
++    if (until > 0) {
++        in->secondary_capacity_wait = until;
++        in->secondary_capacity_decision = now;
++        in->secondary_capacity_current = current_id;
++        in->secondary_capacity_queued = queued_id;
++        in->secondary_capacity_epoch = epoch;
++    }
++    mp_mutex_unlock(&in->lock);
++    MP_INFO(vo, "native-ass-capacity: status=%s known=%d pending=%u"
++        " submitted=%u displayed=%u present_refresh=%u sync_refresh=%u"
++        " sync_qpc=%"PRId64" query_begin_ns=%"PRId64" query_end_ns=%"PRId64
++        " hr=0x%08"PRIx32" current_id=%"PRIu64" queued_id=%"PRIu64
++        " epoch=%"PRIu64" current_pts_ns=%"PRId64" queued_pts_ns=%"PRId64
++        " frame_end_ns=%"PRId64" admission_end_ns=%"PRId64
++        " old_sample_slot=%"PRId64" old_sample_ns=%"PRId64
++        " valid=%d headroom=%d deferred=%d wake_target_ns=%"PRId64"\n",
++        capacity.status, capacity.known, capacity.pending, capacity.submitted,
++        capacity.displayed, capacity.present_refresh, capacity.sync_refresh,
++        capacity.sync_qpc, capacity.query_begin, capacity.query_end, capacity.result,
++        current_id, queued_id, epoch, current_pts, queued_pts, frame_end, frame_end - work,
++        old_sample.slot, old_sample.wall, still_valid, headroom, until > 0, until);
++    return until;
++}
++
++static void secondary_capacity_woke(struct vo *vo, bool wait_called)
++{
++    struct vo_internal *in = vo->in;
++    int64_t woke = mp_time_ns();
++    mp_mutex_lock(&in->lock);
++    uint64_t current = in->current_frame ? in->current_frame->frame_id : 0;
++    uint64_t queued = in->frame_queued ? in->frame_queued->frame_id : 0;
++    mp_mutex_unlock(&in->lock);
++    MP_INFO(vo, "native-ass-capacity-wake: decision_ns=%"PRId64
++        " target_ns=%"PRId64" wake_ns=%"PRId64" wait_called=%d"
++        " current_id=%"PRIu64" queued_id=%"PRIu64" epoch=%"PRIu64
++        " current_after=%"PRIu64" queued_after=%"PRIu64" epoch_after=%"PRIu64"\n",
++        in->secondary_capacity_decision, in->secondary_capacity_wait, woke, wait_called,
++        in->secondary_capacity_current, in->secondary_capacity_queued,
++        in->secondary_capacity_epoch, current, queued, in->secondary_physical.epoch);
++    in->secondary_capacity_wait = 0;
++}
++
+ static MP_THREAD_VOID vo_thread(void *ptr)
+ {
+     struct vo *vo = ptr;
+@@ -1252,6 +1823,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          goto done;
  
      read_opts(vo);
 +    const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
 +    in->secondary_trace = trace && strcmp(trace, "1") == 0;
++    in->secondary_capacity_gate = secondary_capacity_enabled(in->secondary_trace,
++        in->secondary_trace ? getenv("MPV_NATIVE_CAPACITY_GATE") : NULL);
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1264,8 +1691,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-         bool working = render_frame(vo);
+@@ -1261,11 +1836,13 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             break;
+         stats_event(in->stats, "iterations");
+         vo->driver->control(vo, VOCTRL_CHECK_EVENTS, NULL);
+-        bool working = render_frame(vo);
++        int64_t capacity_until = secondary_capacity_defer(vo);
++        bool capacity_deferred = capacity_until > 0;
++        bool working = capacity_deferred ? false : render_frame(vo);
          int64_t now = mp_time_ns();
          int64_t wait_until = now + MP_TIME_S_TO_NS(working ? 0 : 1000);
 -        bool wakeup_on_done = false;
 -        int64_t wakeup_core_after = 0;
++        if (capacity_deferred)
++            wait_until = capacity_until;
  
          mp_mutex_lock(&in->lock);
          if (in->wakeup_pts) {
-@@ -1281,12 +1706,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1281,12 +1858,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              wakeup_core(vo);
          }
          if ((!working && !in->rendering && !in->frame_queued) && in->wakeup_on_done) {
@@ -2520,9 +2756,12 @@ index 72e6c77..5f89d98 100644
          }
          vo->want_redraw = false;
          bool redraw = in->request_redraw;
-@@ -1309,7 +1739,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1307,9 +1889,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         mp_mutex_unlock(&in->lock);
+ 
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
-         if (!working && secondary_eligible && secondary_rate > 0) {
+-        if (!working && secondary_eligible && secondary_rate > 0) {
++        if (!capacity_deferred && !working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
 -            interval = MPMAX(interval, in->vsync_interval);
 +            interval = MPMAX(interval, in->secondary_physical.phase &&
@@ -2531,7 +2770,7 @@ index 72e6c77..5f89d98 100644
              bool affordable = secondary_ass_budget_affordable(secondary_cost,
                  secondary_redraw_cost, secondary_duration, interval);
              // Once per second, allow a bounded recovery sample. A CPU wakeup
-@@ -1317,16 +1749,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1317,16 +1901,50 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
                  secondary_duration, interval, now, secondary_probe);
              if (affordable || probe) {
@@ -2583,7 +2822,14 @@ index 72e6c77..5f89d98 100644
                  }
              }
          }
-@@ -1345,10 +1811,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1339,37 +1957,31 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         }
+         if (send_pause)
+             vo->driver->control(vo, vo_paused ? VOCTRL_PAUSE : VOCTRL_RESUME, NULL);
+-        if (wait_until > now && redraw) {
++        if (!capacity_deferred && wait_until > now && redraw) {
+             // Allow manual redraws at most at display fps.
+             int64_t max_interval = in->vsync_interval > 1 ? in->vsync_interval : 0;
              // Some windowing platforms break if we submit frames too fast.
              if (vo->previous_redraw_time + max_interval <= now) {
                  vo->driver->control(vo, VOCTRL_REDRAW, NULL);
@@ -2596,10 +2842,16 @@ index 72e6c77..5f89d98 100644
              }
              continue;
          }
-@@ -1358,17 +1824,6 @@ static MP_THREAD_VOID vo_thread(void *ptr)
-         if (wait_until <= now)
-             continue;
+-        if (vo->want_redraw) // might have been set by VOCTRLs
++        if (!capacity_deferred && vo->want_redraw) // might have been set by VOCTRLs
+             wait_until = 0;
  
+-        if (wait_until <= now)
++        if (wait_until <= now) {
++            if (capacity_deferred)
++                secondary_capacity_woke(vo, false);
+             continue;
+-
 -        if (wakeup_on_done) {
 -            // At this point wait_until should be longer than frame duration
 -            if (wakeup_core_after >= 0 && wait_until >= wakeup_core_after) {
@@ -2609,12 +2861,15 @@ index 72e6c77..5f89d98 100644
 -                mp_mutex_unlock(&in->lock);
 -            }
 -            wakeup_core(vo);
--        }
--
+         }
+ 
          wait_vo(vo, wait_until);
++        if (capacity_deferred)
++            secondary_capacity_woke(vo, true);
      }
      forget_frames(vo); // implicitly synchronized
-@@ -1442,6 +1897,7 @@ void vo_seek_reset(struct vo *vo)
+     talloc_free(in->current_frame);
+@@ -1442,6 +2054,7 @@ void vo_seek_reset(struct vo *vo)
      in->send_reset = true;
      wakeup_locked(vo);
      mp_mutex_unlock(&in->lock);
@@ -2623,10 +2878,35 @@ index 72e6c77..5f89d98 100644
  
  // Whether at least 1 frame was queued or rendered since last seek or reconfig.
 diff --git a/video/out/vo.h b/video/out/vo.h
-index f24918d..a3d1d9e 100644
+index f24918d..0de836f 100644
 --- a/video/out/vo.h
 +++ b/video/out/vo.h
-@@ -294,6 +294,16 @@ struct vo_vsync_info {
+@@ -133,6 +133,9 @@ enum mp_voctrl {
+     // Clipboard
+     VOCTRL_GET_CLIPBOARD,               // struct voctrl_clipboard*
+     VOCTRL_SET_CLIPBOARD,
++
++    // Diagnostic-only read of identified submitted/displayed Present counts.
++    VOCTRL_GET_SECONDARY_CAPACITY,      // struct voctrl_secondary_capacity*
+ };
+ 
+ // Helper to expose what kind of content is currently playing to the VO.
+@@ -179,6 +182,14 @@ struct voctrl_performance_data {
+     struct mp_frame_perf fresh, redraw;
+ };
+ 
++struct voctrl_secondary_capacity {
++    bool known;
++    const char *status;
++    uint32_t submitted, displayed, pending;
++    uint32_t present_refresh, sync_refresh, result;
++    int64_t sync_qpc, query_begin, query_end;
++};
++
+ struct voctrl_screenshot {
+     bool scaled, subs, osd, high_bit_depth, native_csp;
+     struct mp_image *res;
+@@ -294,6 +305,16 @@ struct vo_vsync_info {
      // This implies the latency of the output.
      int64_t last_queue_display_time;
  
