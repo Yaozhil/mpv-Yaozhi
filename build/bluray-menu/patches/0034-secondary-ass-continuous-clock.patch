@@ -1,4 +1,4 @@
-From 19edd7843c7e70b6552e2f364b34b78d21f50e05 Mon Sep 17 00:00:00 2001
+From f9e1f7706ce84d4ff2d1fe94ec2d8e094bed6a70 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 12:17:50 +0800
 Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
@@ -12,14 +12,14 @@ Subject: [PATCH] vo: preserve continuous ASS clock with opt-in GPU readiness
  sub/osd_state.h                        |  14 +-
  sub/sd_ass.c                           |   5 +
  sub/secondary_ass_clock.h              | 281 +++++++++++++
- video/out/d3d11/context.c              | 398 ++++++++++++++++++-
+ video/out/d3d11/context.c              | 397 ++++++++++++++++++-
  video/out/d3d11/context.h              |   7 +
  video/out/secondary_ass_physical.h     | 494 +++++++++++++++++++++++
  video/out/secondary_ass_presentation.h |  83 ++++
  video/out/vo.c                         | 524 +++++++++++++++++++++++--
  video/out/vo.h                         |  10 +
  video/out/vo_gpu_next.c                |  19 +
- 14 files changed, 1953 insertions(+), 60 deletions(-)
+ 14 files changed, 1952 insertions(+), 60 deletions(-)
  create mode 100644 sub/secondary_ass_clock.h
  create mode 100644 video/out/secondary_ass_physical.h
  create mode 100644 video/out/secondary_ass_presentation.h
@@ -638,7 +638,7 @@ index 0000000..bc36b6e
 +
 +#endif
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index fc8802e..8940c63 100644
+index fc8802e..4edb0ef 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -15,6 +15,10 @@
@@ -661,7 +661,7 @@ index fc8802e..8940c63 100644
  #define OPT_BASE_STRUCT struct d3d11_opts
  const struct m_sub_options d3d11_conf = {
      .opts = (const struct m_option[]) {
-@@ -125,10 +131,281 @@ struct priv {
+@@ -125,10 +131,280 @@ struct priv {
      int64_t last_sync_qpc_time;
      int64_t vsync_duration_qpc;
      int64_t last_submit_qpc;
@@ -833,8 +833,7 @@ index fc8802e..8940c63 100644
 +    struct d3d11_gpu_marker *m = &p->gpu_markers[n];
 +    if (!m->query) {
 +        MP_INFO(ctx, "native-ass-gpu-marker: status=marker_unavailable"
-+                " generation=%"PRIu64" frame_id=%"PRIu64"
-+",
++                " generation=%"PRIu64" frame_id=%"PRIu64"\n",
 +                p->gpu_marker_generation, frame_id);
 +        return;
 +    }
@@ -943,7 +942,7 @@ index fc8802e..8940c63 100644
  static struct ra_tex *get_backbuffer(struct ra_ctx *ctx)
  {
      struct priv *p = ctx->priv;
-@@ -159,13 +436,18 @@ static bool resize(struct ra_ctx *ctx)
+@@ -159,13 +435,18 @@ static bool resize(struct ra_ctx *ctx)
          return false;
      }
  
@@ -962,7 +961,7 @@ index fc8802e..8940c63 100644
      return true;
  }
  
-@@ -284,12 +566,26 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+@@ -284,12 +565,26 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
      struct priv *p = sw->priv;
  
      m_config_cache_update(p->opts_cache);
@@ -990,7 +989,7 @@ index fc8802e..8940c63 100644
  }
  
  static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
-@@ -300,8 +596,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -300,8 +595,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      m_config_cache_update(p->opts_cache);
  
      // The calculations below are only valid if mpv presents on every vsync
@@ -1003,7 +1002,7 @@ index fc8802e..8940c63 100644
  
      // They're also only valid for flip model swapchains
      DXGI_SWAP_CHAIN_DESC desc;
-@@ -309,6 +608,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -309,6 +607,9 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      if (FAILED(hr) || (desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
                         desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
      {
@@ -1013,7 +1012,7 @@ index fc8802e..8940c63 100644
          return;
      }
  
-@@ -316,8 +618,12 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -316,8 +617,12 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      // the last call to IDXGISwapChain::Present()
      UINT submit_count;
      hr = IDXGISwapChain_GetLastPresentCount(p->swapchain, &submit_count);
@@ -1027,7 +1026,7 @@ index fc8802e..8940c63 100644
  
      // GetFrameStatistics returns two pairs. The first is (PresentCount,
      // PresentRefreshCount) which relates a present ID (on the same timeline as
-@@ -329,9 +635,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -329,9 +634,15 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
          p->last_sync_refresh_count = 0;
          p->last_sync_qpc_time = 0;
@@ -1044,7 +1043,7 @@ index fc8802e..8940c63 100644
  
      // Detecting skipped vsyncs is possible but not supported yet
      info->skipped_vsyncs = -1;
-@@ -345,17 +657,40 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -345,17 +656,40 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
      p->last_sync_refresh_count = stats.SyncRefreshCount;
  
      // Get the elapsed time passed between the above vsyncs
@@ -1087,7 +1086,7 @@ index fc8802e..8940c63 100644
      // If the physical frame rate is known and the other members of
      // DXGI_FRAME_STATISTICS are non-0, estimate the timing of the next frame
      if (p->vsync_duration_qpc && stats.PresentCount &&
-@@ -381,6 +716,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -381,6 +715,28 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
                  (qpc_to_ns(sw, last_queue_display_time_qpc) - qpc_ns_now(sw));
          }
      }
@@ -1116,7 +1115,7 @@ index fc8802e..8940c63 100644
  }
  
  static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
-@@ -477,6 +834,8 @@ static void d3d11_uninit(struct ra_ctx *ctx)
+@@ -477,6 +833,8 @@ static void d3d11_uninit(struct ra_ctx *ctx)
  
      if (ctx->ra)
          ra_tex_free(ctx->ra, &p->backbuffer);
@@ -1125,7 +1124,7 @@ index fc8802e..8940c63 100644
      SAFE_RELEASE(p->swapchain);
      if (!ctx->opts.composition) {
          vo_w32_uninit(ctx->vo);
-@@ -502,11 +861,35 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
+@@ -502,11 +860,35 @@ static const struct ra_swapchain_fns d3d11_swapchain = {
      .get_vsync    = d3d11_get_vsync,
  };
  
@@ -1161,7 +1160,7 @@ index fc8802e..8940c63 100644
  
      p->vo_opts_cache = m_config_cache_alloc(ctx, ctx->vo->global, &vo_sub_opts);
      p->vo_opts = p->vo_opts_cache->opts;
-@@ -569,6 +952,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -569,6 +951,9 @@ static bool d3d11_init(struct ra_ctx *ctx)
      if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
          goto error;
  
