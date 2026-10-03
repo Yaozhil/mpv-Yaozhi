@@ -1,6 +1,6 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From b4e26a6c50496e823275767fc766e4a31b9f632b Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
-Date: Sat, 3 Oct 2026 20:00:00 +0800
+Date: Sat, 3 Oct 2026 21:50:00 +0800
 Subject: [PATCH] vo: preserve FIFO phase when fresh GPU work finishes early
 
 Record successful Sync1 submissions and use a real refresh-count lower
@@ -229,7 +229,7 @@ index 1943e411916f69a707d74965c5773cee6b27b070..f892f9c504ee3979e073cc4c5922a3f6
      struct secondary_ass_physical *p, bool invalid, uint64_t submitted_id,
      struct secondary_ass_physical_point intended, int64_t sync_qpc_ns,
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 3f888082578670770f82fa710684f0ea1398acd5..09683d255e00f4156f1699f90d10d53383554a2b 100644
+index 3f888082578670770f82fa710684f0ea1398acd5..5a2403bf59180831788af8de443e16945ebf8f70 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -179,6 +179,7 @@ struct vo_internal {
@@ -270,7 +270,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..09683d255e00f4156f1699f90d10d533
 +            early_present = true;
 +            if (in->secondary_trace)
 +                MP_INFO(vo, "native-ass-early-present: target_slot=%"PRId64
-+                    " fifo_lower_slot=%"PRId64" generation=%"PRIu64"
++                    " fifo_lower_slot=%"PRId64" generation=%"PRIu64
 +                    " original_submit_ns=%"PRId64"\n",
 +                    physical_point.slot, fifo_lower,
 +                    in->secondary_physical.success_generation, target);
