@@ -1,17 +1,14 @@
-From b4e26a6c50496e823275767fc766e4a31b9f632b Mon Sep 17 00:00:00 2001
-From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
-Date: Sat, 3 Oct 2026 21:50:00 +0800
-Subject: [PATCH] vo: preserve FIFO phase when fresh GPU work finishes early
-
-Record successful Sync1 submissions and use a real refresh-count lower
-bound to skip only the redundant wait before a fresh Present.
+From fc9b73871dbf2b8c34daefc262061e225b6c79d0 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 3 Oct 2026 22:30:00 +0800
+Subject: [PATCH] vo: preserve FIFO phase with shared swapchain lifecycle guards
 
 ---
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a59bce45f 100644
+index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..c6c8b6128880be91bc76886f094818d7d1b5b35c 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
-@@ -131,6 +131,16 @@ struct priv {
+@@ -131,6 +131,19 @@ struct priv {
      int64_t last_sync_qpc_time;
      int64_t vsync_duration_qpc;
      int64_t last_submit_qpc;
@@ -21,6 +18,9 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
 +    HRESULT last_present_hr;
 +    int last_present_sync_interval;
 +    bool last_present_valid;
++    DXGI_SWAP_CHAIN_DESC last_present_desc;
++    bool last_present_desc_valid;
++    bool early_statistics_disjoint;
 +    uint64_t reported_present_generation;
 +    uint64_t early_present_generation;
 +    int64_t early_present_target;
@@ -28,23 +28,78 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
      bool secondary_trace;
  
      // Opt-in, non-blocking GPU completion evidence. This is intentionally
-@@ -473,6 +483,15 @@ static bool resize(struct ra_ctx *ctx)
-     }
+@@ -462,6 +475,62 @@ done:
+     return tex;
+ }
  
-     d3d11_gpu_marker_reset_priv(ctx);
++static void d3d11_present_generation_invalidate(struct priv *p)
++{
 +    p->last_present_valid = false;
++    p->last_present_desc_valid = false;
 +    p->last_present_generation = 0;
 +    if (p->present_generation == UINT64_MAX) {
-+        // Do not wrap a generation back into a value that could look like a
-+        // fresh swapchain epoch after an unreachable but unsafe lifetime.
 +        p->present_generation_exhausted = true;
 +    } else if (!p->present_generation_exhausted) {
 +        p->present_generation++;
 +    }
++}
++
++static bool d3d11_same_swapchain_desc(const DXGI_SWAP_CHAIN_DESC *a,
++                                      const DXGI_SWAP_CHAIN_DESC *b)
++{
++    // Compare fields, not padding. libplacebo may resize this shared chain
++    // during colorspace_hint without passing through the RA resize callback.
++    return a->BufferDesc.Width == b->BufferDesc.Width &&
++        a->BufferDesc.Height == b->BufferDesc.Height &&
++        a->BufferDesc.RefreshRate.Numerator == b->BufferDesc.RefreshRate.Numerator &&
++        a->BufferDesc.RefreshRate.Denominator == b->BufferDesc.RefreshRate.Denominator &&
++        a->BufferDesc.Format == b->BufferDesc.Format &&
++        a->BufferDesc.ScanlineOrdering == b->BufferDesc.ScanlineOrdering &&
++        a->BufferDesc.Scaling == b->BufferDesc.Scaling &&
++        a->SampleDesc.Count == b->SampleDesc.Count &&
++        a->SampleDesc.Quality == b->SampleDesc.Quality &&
++        a->BufferUsage == b->BufferUsage &&
++        a->BufferCount == b->BufferCount &&
++        a->OutputWindow == b->OutputWindow &&
++        a->Windowed == b->Windowed && a->SwapEffect == b->SwapEffect &&
++        a->Flags == b->Flags;
++}
++
++static bool d3d11_fifo_queue_unchanged(struct priv *p)
++{
++    if (!p->last_present_desc_valid)
++        return false;
++    DXGI_SWAP_CHAIN_DESC desc;
++    HRESULT hr = IDXGISwapChain_GetDesc(p->swapchain, &desc);
++    if (hr != S_OK)
++        return false;
++    if (!d3d11_same_swapchain_desc(&p->last_present_desc, &desc)) {
++        // This is observed lifecycle change, not refresh-timing jitter.
++        d3d11_present_generation_invalidate(p);
++        return false;
++    }
++    DXGI_FRAME_STATISTICS stats;
++    hr = IDXGISwapChain_GetFrameStatistics(p->swapchain, &stats);
++    if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
++        p->early_statistics_disjoint = true;
++    // A pre-Present read can consume the first DISJOINT result. Retain that
++    // evidence for get_vsync rather than concealing the real discontinuity.
++    return hr == S_OK && !p->early_statistics_disjoint &&
++        stats.PresentCount && stats.SyncRefreshCount && stats.SyncQPCTime.QuadPart;
++}
++
+ static bool resize(struct ra_ctx *ctx)
+ {
+     struct priv *p = ctx->priv;
+@@ -473,6 +542,7 @@ static bool resize(struct ra_ctx *ctx)
+     }
+ 
+     d3d11_gpu_marker_reset_priv(ctx);
++    d3d11_present_generation_invalidate(p);
      hr = IDXGISwapChain_ResizeBuffers(p->swapchain, 0, ctx->vo->dwidth,
          ctx->vo->dheight, DXGI_FORMAT_UNKNOWN, 0);
      if (FAILED(hr)) {
-@@ -602,14 +621,35 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+@@ -602,14 +672,37 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
      struct priv *p = sw->priv;
  
      m_config_cache_update(p->opts_cache);
@@ -56,7 +111,8 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
 +            p->present_generation == p->early_present_generation &&
 +            p->last_present_valid &&
 +            p->last_present_generation == p->early_present_generation &&
-+            p->last_present_sync_interval == 1;
++            p->last_present_sync_interval == 1 &&
++            d3d11_fifo_queue_unchanged(p);
 +        if (!still_valid)
 +            p->early_present_wait(sw->ctx->vo, p->early_present_target);
 +        p->early_present_wait = NULL;
@@ -67,6 +123,7 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
      QueryPerformanceCounter(&perf_count);
      p->last_submit_qpc = perf_count.QuadPart;
 +    p->last_present_valid = false;
++    p->last_present_desc_valid = false;
 +    p->last_present_generation = 0;
 +    p->last_present_sync_interval = p->opts->sync_interval;
  
@@ -80,7 +137,19 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
      d3d11_gpu_marker_after_present(sw, present_hr);
  }
  
-@@ -660,6 +700,20 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+@@ -649,6 +742,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+                                  "unsupported_swap_effect", hr);
+         return;
+     }
++    // This existing GetDesc read follows the successful Present, so capturing
++    // its descriptor adds no extra query to the ordinary submission path.
++    p->last_present_desc_valid = p->last_present_valid;
++    if (p->last_present_desc_valid)
++        p->last_present_desc = desc;
+ 
+     // GetLastPresentCount returns a sequential ID for the frame submitted by
+     // the last call to IDXGISwapChain::Present()
+@@ -660,6 +758,20 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
          return;
      }
      info->secondary_submit_id = submit_count;
@@ -101,7 +170,23 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
  
      // GetFrameStatistics returns two pairs. The first is (PresentCount,
      // PresentRefreshCount) which relates a present ID (on the same timeline as
-@@ -941,6 +995,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -668,10 +780,14 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+     // to a timestamp on the same clock as QueryPerformanceCounter.
+     DXGI_FRAME_STATISTICS stats;
+     hr = IDXGISwapChain_GetFrameStatistics(p->swapchain, &stats);
+-    if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
++    bool known_disjoint = hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT ||
++        p->early_statistics_disjoint;
++    p->early_statistics_disjoint = false;
++    if (known_disjoint) {
+         p->last_sync_refresh_count = 0;
+         p->last_sync_qpc_time = 0;
+         p->vsync_duration_qpc = 0;
++        info->secondary_phase_reset = true;
+     }
+     if (FAILED(hr)) {
+         info->secondary_phase_reset = true;
+@@ -941,6 +1057,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
      p->secondary_trace = trace && strcmp(trace, "1") == 0;
      p->gpu_marker_active = p->secondary_trace && marker && strcmp(marker, "1") == 0;
      p->gpu_marker_generation = 1;
@@ -110,7 +195,7 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
      p->gpu_marker_last = -1;
      p->gpu_marker_bound = -1;
  
-@@ -1025,6 +1081,30 @@ static void d3d11_update_render_opts(struct ra_ctx *ctx)
+@@ -1025,6 +1143,32 @@ static void d3d11_update_render_opts(struct ra_ctx *ctx)
      vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
  }
  
@@ -131,6 +216,8 @@ index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a
 +    // update changes SyncInterval, the FIFO lower bound no longer applies.
 +    m_config_cache_update(p->opts_cache);
 +    if (p->opts->sync_interval != 1 || p->early_present_wait)
++        return false;
++    if (!d3d11_fifo_queue_unchanged(p))
 +        return false;
 +    p->early_present_generation = generation;
 +    p->early_present_target = original_target;
@@ -349,6 +436,5 @@ index 6d9e50dec22b2e1a22cc661b100a7b435f8f9871..44e66ea22c2900eff1fe4a61d9f78726
      .get_vsync = get_vsync,
      .wait_events = wait_events,
      .wakeup = wakeup,
-
 -- 
-2.46.0
+2.51.0
