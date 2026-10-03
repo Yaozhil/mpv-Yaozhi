@@ -56,8 +56,9 @@ if not args.inspect_existing:
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0032-dovi-rpu-enhancement-metadata.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0033-player-version-brand.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch'))
+    git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0035-secondary-ass-fifo-early-present.patch'))
     git('am','--3way',str(here/'mpv-9100-omniphony-parity.patch'))
-assert git('rev-list','--count','HEAD').strip()=='47'
+assert git('rev-list','--count','HEAD').strip()=='48'
 assert 'Add current Omniphony renderer and ASIO' in git('log','-1','--format=%s')
 assert not git('status','--porcelain').strip()
 text=(source/'filters/f_swresample.c').read_text(encoding='utf-8')
@@ -73,7 +74,7 @@ assert 'secondary_ass_clock_anchor' in (source/'sub/secondary_ass_clock.h').read
 assert 'secondary_ass_sampler_update' in (source/'sub/secondary_ass_clock.h').read_text(encoding='utf-8')
 assert 'secondary_ass_predict_present' in (source/'video/out/secondary_ass_presentation.h').read_text(encoding='utf-8')
 assert 'frame->ideal_frame_vsync' in (source/'video/out/vo.c').read_text(encoding='utf-8')
-result={'result':'PASS','scope':'fresh exact source + 17 main patches + HDMV video-ready, title/context, late-EL and menu audio queue, audio rate, ASS utilization/deadline fixes, continuous ASS clock and divided refresh scheduling, decoded Dolby Vision identification and common player branding + 29-patch renderer delta',
+result={'result':'PASS','scope':'fresh exact source + 17 main patches + HDMV video-ready, title/context, late-EL and menu audio queue, audio rate, ASS utilization/deadline fixes, continuous ASS clock and divided refresh scheduling, decoded Dolby Vision identification and common player branding + 30-patch renderer delta',
         'source':str(source),'compiled':False}
 (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 print(json.dumps(result))
