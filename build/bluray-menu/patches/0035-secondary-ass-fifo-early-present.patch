@@ -1,0 +1,354 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 20:00:00 +0800
+Subject: [PATCH] vo: preserve FIFO phase when fresh GPU work finishes early
+
+Record successful Sync1 submissions and use a real refresh-count lower
+bound to skip only the redundant wait before a fresh Present.
+
+---
+diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
+index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..011f3ad2b1869ce541988459f2cafd3a59bce45f 100644
+--- a/video/out/d3d11/context.c
++++ b/video/out/d3d11/context.c
+@@ -131,6 +131,16 @@ struct priv {
+     int64_t last_sync_qpc_time;
+     int64_t vsync_duration_qpc;
+     int64_t last_submit_qpc;
++    uint64_t present_generation;
++    bool present_generation_exhausted;
++    uint64_t last_present_generation;
++    HRESULT last_present_hr;
++    int last_present_sync_interval;
++    bool last_present_valid;
++    uint64_t reported_present_generation;
++    uint64_t early_present_generation;
++    int64_t early_present_target;
++    void (*early_present_wait)(struct vo *, int64_t);
+     bool secondary_trace;
+ 
+     // Opt-in, non-blocking GPU completion evidence. This is intentionally
+@@ -473,6 +483,15 @@ static bool resize(struct ra_ctx *ctx)
+     }
+ 
+     d3d11_gpu_marker_reset_priv(ctx);
++    p->last_present_valid = false;
++    p->last_present_generation = 0;
++    if (p->present_generation == UINT64_MAX) {
++        // Do not wrap a generation back into a value that could look like a
++        // fresh swapchain epoch after an unreachable but unsafe lifetime.
++        p->present_generation_exhausted = true;
++    } else if (!p->present_generation_exhausted) {
++        p->present_generation++;
++    }
+     hr = IDXGISwapChain_ResizeBuffers(p->swapchain, 0, ctx->vo->dwidth,
+         ctx->vo->dheight, DXGI_FORMAT_UNKNOWN, 0);
+     if (FAILED(hr)) {
+@@ -602,14 +621,35 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+     struct priv *p = sw->priv;
+ 
+     m_config_cache_update(p->opts_cache);
++    if (p->early_present_wait) {
++        // Options and swapchain state are checked again at the actual API
++        // call site. A change after the VO decision restores the old wait;
++        // it must never turn a guarded Sync1 submission into an early Sync0.
++        bool still_valid = p->opts->sync_interval == 1 &&
++            p->present_generation == p->early_present_generation &&
++            p->last_present_valid &&
++            p->last_present_generation == p->early_present_generation &&
++            p->last_present_sync_interval == 1;
++        if (!still_valid)
++            p->early_present_wait(sw->ctx->vo, p->early_present_target);
++        p->early_present_wait = NULL;
++    }
+     d3d11_gpu_marker_bind_present(sw);
+ 
+     LARGE_INTEGER perf_count;
+     QueryPerformanceCounter(&perf_count);
+     p->last_submit_qpc = perf_count.QuadPart;
++    p->last_present_valid = false;
++    p->last_present_generation = 0;
++    p->last_present_sync_interval = p->opts->sync_interval;
+ 
+     HRESULT present_hr = IDXGISwapChain_Present(p->swapchain,
+                                                  p->opts->sync_interval, 0);
++    p->last_present_hr = present_hr;
++    p->last_present_valid = present_hr == S_OK &&
++        !p->present_generation_exhausted;
++    p->last_present_generation = p->last_present_valid
++        ? p->present_generation : 0;
+     d3d11_gpu_marker_after_present(sw, present_hr);
+ }
+ 
+@@ -660,6 +700,20 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+         return;
+     }
+     info->secondary_submit_id = submit_count;
++    info->secondary_submit_valid = p->last_present_valid &&
++        !p->present_generation_exhausted &&
++        p->last_present_generation == p->present_generation &&
++        p->last_present_sync_interval == 1;
++    if (p->present_generation_exhausted)
++        info->secondary_phase_reset = true;
++    info->secondary_submit_sync_interval = p->last_present_sync_interval;
++    info->secondary_submit_generation = p->last_present_generation;
++    if (info->secondary_submit_valid &&
++        p->reported_present_generation &&
++        p->reported_present_generation != p->last_present_generation)
++        info->secondary_phase_reset = true;
++    if (info->secondary_submit_valid)
++        p->reported_present_generation = p->last_present_generation;
+ 
+     // GetFrameStatistics returns two pairs. The first is (PresentCount,
+     // PresentRefreshCount) which relates a present ID (on the same timeline as
+@@ -941,6 +995,8 @@ static bool d3d11_init(struct ra_ctx *ctx)
+     p->secondary_trace = trace && strcmp(trace, "1") == 0;
+     p->gpu_marker_active = p->secondary_trace && marker && strcmp(marker, "1") == 0;
+     p->gpu_marker_generation = 1;
++    p->present_generation = 1;
++    p->last_present_hr = E_FAIL;
+     p->gpu_marker_last = -1;
+     p->gpu_marker_bound = -1;
+ 
+@@ -1025,6 +1081,30 @@ static void d3d11_update_render_opts(struct ra_ctx *ctx)
+     vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
+ }
+ 
++bool ra_d3d11_ctx_can_present_early(struct ra_ctx *ra, uint64_t generation,
++                                    int64_t original_target,
++                                    void (*wait)(struct vo *, int64_t))
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return false;
++    struct priv *p = ra->priv;
++    if (!p || p->present_generation_exhausted || !generation ||
++        original_target <= 0 || !wait ||
++        p->present_generation != generation ||
++        !p->last_present_valid || p->last_present_generation != generation ||
++        p->last_present_sync_interval != 1)
++        return false;
++    // Re-read the current option immediately before the decision. If a config
++    // update changes SyncInterval, the FIFO lower bound no longer applies.
++    m_config_cache_update(p->opts_cache);
++    if (p->opts->sync_interval != 1 || p->early_present_wait)
++        return false;
++    p->early_present_generation = generation;
++    p->early_present_target = original_target;
++    p->early_present_wait = wait;
++    return true;
++}
++
+ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
+ {
+     if (ra->swapchain->fns != &d3d11_swapchain)
+diff --git a/video/out/d3d11/context.h b/video/out/d3d11/context.h
+index 55b896becd4cfc4903f2256d379b78240a899750..e976bcb0b9e53d2ada03f924e0ec7ff9be5f1ef0 100644
+--- a/video/out/d3d11/context.h
++++ b/video/out/d3d11/context.h
+@@ -9,6 +9,12 @@
+ // refcounted and must be released by the caller.
+ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
+ 
++// Returns true only when the current swapchain generation still permits a
++// fail-closed early Sync1 Present.
++bool ra_d3d11_ctx_can_present_early(struct ra_ctx *ra, uint64_t generation,
++                                    int64_t original_target,
++                                    void (*wait)(struct vo *, int64_t));
++
+ // Sets pl_d3d11_swapchain_params according to requested d3d11-output-format for
+ // an RA context.
+ struct pl_d3d11_swapchain_params;
+diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
+index 1943e411916f69a707d74965c5773cee6b27b070..f892f9c504ee3979e073cc4c5922a3f6c4a661c6 100644
+--- a/video/out/secondary_ass_physical.h
++++ b/video/out/secondary_ass_physical.h
+@@ -25,6 +25,8 @@ struct secondary_ass_physical {
+     unsigned period_count, period_next;
+     uint64_t historical_id;
+     uint64_t last_submit_id;
++    uint64_t success_first_id, success_last_id, success_generation;
++    bool success_contiguous;
+     int delay, delay_samples[3], delay_count, delay_next;
+     struct { uint64_t id; int64_t base, base_slot, target_slot; } submitted[32];
+     unsigned next;
+@@ -593,6 +595,56 @@ static inline void secondary_ass_physical_update(
+     secondary_ass_physical_feedback(p, actual, interval, historical_id);
+ }
+ 
++static inline void secondary_ass_physical_record_present(
++    struct secondary_ass_physical *p, bool valid, uint64_t id,
++    uint64_t generation, int sync_interval)
++{
++    // A wrapped/exhausted physical epoch must never revive from a late
++    // backend callback.  The reset path normally clears this state, but keep
++    // the recorder fail-closed on its own as well.
++    if (p->epoch_exhausted || !valid || !id || !generation ||
++        sync_interval != 1) {
++        p->success_contiguous = false;
++        return;
++    }
++    if (!p->success_contiguous) {
++        p->success_contiguous = true;
++        p->success_first_id = id;
++        p->success_last_id = id;
++        p->success_generation = generation;
++        return;
++    }
++    if (p->success_generation != generation ||
++        p->success_last_id == UINT64_MAX ||
++        id != p->success_last_id + 1) {
++        p->success_contiguous = false;
++        return;
++    }
++    p->success_last_id = id;
++}
++
++// Lower bound for the next FIFO scanout derived only from identified
++// historical refresh counts and a contiguous run of successful Sync1 Presents.
++// This is deliberately a lower bound, not a predicted display timestamp.
++static inline int64_t secondary_ass_physical_fifo_lower_bound(
++    const struct secondary_ass_physical *p)
++{
++    if (p->epoch_exhausted || !p->success_contiguous || p->delay != 0 ||
++        p->outlier_pending ||
++        !p->sync_segment_consistent || !p->success_generation ||
++        !p->success_first_id || p->historical_id == 0 ||
++        p->success_last_id <= p->historical_id ||
++        (p->historical_id != UINT64_MAX &&
++            p->success_first_id > p->historical_id + 1) ||
++        p->phase_slot <= 0)
++        return 0;
++    uint64_t delta = p->success_last_id - p->historical_id;
++    if (delta > 8 || delta > INT64_MAX - 1 ||
++        p->phase_slot > INT64_MAX - (int64_t)delta - 1)
++        return 0;
++    return p->phase_slot + (int64_t)delta + 1;
++}
++
+ static inline void secondary_ass_physical_update_observed(
+     struct secondary_ass_physical *p, bool invalid, uint64_t submitted_id,
+     struct secondary_ass_physical_point intended, int64_t sync_qpc_ns,
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 3f888082578670770f82fa710684f0ea1398acd5..09683d255e00f4156f1699f90d10d53383554a2b 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -179,6 +179,7 @@ struct vo_internal {
+     bool secondary_sync_mode_valid, secondary_sync_mode;
+     bool secondary_trace; // explicitly enabled diagnostic; never on by default
+     bool secondary_present_grid; // opt-in cadence experiment, not a default
++    bool secondary_fifo_present; // isolated opt-in FIFO submission experiment
+     int64_t secondary_render_cost;
+     int64_t secondary_cost_update; // VO thread only
+     int64_t secondary_gpu_cost; // VO thread only
+@@ -1165,6 +1166,10 @@ static void secondary_physical_feedback(struct vo *vo,
+         vsync->secondary_sync_qpc_ns, vsync->secondary_sync_time,
+         vsync->secondary_sync_refresh_count, vsync->secondary_present_refresh_count,
+         vsync->secondary_present_id, seed);
++    secondary_ass_physical_record_present(&in->secondary_physical,
++        !vsync->secondary_phase_reset && vsync->secondary_submit_valid,
++        vsync->secondary_submit_id, vsync->secondary_submit_generation,
++        vsync->secondary_submit_sync_interval);
+     if (in->secondary_trace && in->secondary_physical.historical_id ==
+             vsync->secondary_present_id) {
+         struct secondary_ass_physical *p = &in->secondary_physical;
+@@ -1521,7 +1526,26 @@ static bool render_frame(struct vo *vo)
+                 in->secondary_last_draw, mp_time_ns(), cpu_cost,
+                 in->secondary_gpu_cost, in->secondary_gpu_peak);
+ 
+-        wait_until(vo, target);
++        bool early_present = false;
++        int64_t fifo_lower = secondary_ass_physical_fifo_lower_bound(
++            &in->secondary_physical);
++        if (in->secondary_fifo_present && in->visible && !frame->repeat &&
++            physical_phase &&
++            secondary_target_updated && fifo_lower > 0 && target > mp_time_ns() &&
++            fifo_lower == physical_point.slot &&
++            vo->driver->can_present_early &&
++            vo->driver->can_present_early(vo,
++                in->secondary_physical.success_generation, target, wait_until))
++        {
++            early_present = true;
++            if (in->secondary_trace)
++                MP_INFO(vo, "native-ass-early-present: target_slot=%"PRId64
++                    " fifo_lower_slot=%"PRId64" generation=%"PRIu64"
++                    " original_submit_ns=%"PRId64"\n",
++                    physical_point.slot, fifo_lower,
++                    in->secondary_physical.success_generation, target);
++        }
++        wait_until(vo, early_present ? 0 : target);
+ 
+         stats_time_start(in->stats, "video-flip");
+ 
+@@ -1853,6 +1877,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+     read_opts(vo);
+     const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
+     in->secondary_trace = trace && strcmp(trace, "1") == 0;
++    const char *fifo_present = getenv("MPV_NATIVE_FIFO_PRESENT");
++    in->secondary_fifo_present = in->secondary_trace && fifo_present &&
++        strcmp(fifo_present, "1") == 0;
+     const char *present_grid = getenv("MPV_NATIVE_PRESENT_GRID");
+     in->secondary_present_grid = in->secondary_trace && present_grid &&
+         strcmp(present_grid, "1") == 0;
+diff --git a/video/out/vo.h b/video/out/vo.h
+index a3d1d9ee97d96a777c12c53b177e87f793300872..ec343826cdbb12f9f738391eec25eabff2c35cdd 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -301,6 +301,9 @@ struct vo_vsync_info {
+     uint32_t secondary_sync_refresh_count, secondary_present_refresh_count;
+     uint64_t secondary_present_id;
+     uint64_t secondary_submit_id;
++    bool secondary_submit_valid;
++    int secondary_submit_sync_interval;
++    uint64_t secondary_submit_generation;
+     // Explicit invalidity resets phase/history; temporary zero statistics do not.
+     bool secondary_phase_reset;
+ 
+@@ -422,6 +425,13 @@ struct vo_driver {
+      */
+     void (*flip_page)(struct vo *vo);
+ 
++    // Optional fail-closed gate for submitting a fresh frame before its
++    // original wait target. The callback must validate the current swapchain
++    // generation and sync policy at the final decision point.
++    bool (*can_present_early)(struct vo *vo, uint64_t generation,
++                              int64_t original_target,
++                              void (*wait)(struct vo *, int64_t));
++
+     /*
+      * Return presentation feedback. The implementation should not touch fields
+      * it doesn't support; the info fields are preinitialized to neutral values.
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 6d9e50dec22b2e1a22cc661b100a7b435f8f9871..44e66ea22c2900eff1fe4a61d9f78726d7b6e158 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -1887,6 +1887,19 @@ done:
+     return VO_TRUE;
+ }
+ 
++static bool can_present_early(struct vo *vo, uint64_t generation,
++                              int64_t original_target,
++                              void (*wait)(struct vo *, int64_t))
++{
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    struct priv *p = vo->priv;
++    return ra_d3d11_ctx_can_present_early(p->ra_ctx, generation,
++                                        original_target, wait);
++#else
++    return false;
++#endif
++}
++
+ static void flip_page(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+@@ -3117,6 +3130,7 @@ const struct vo_driver video_out_gpu_next = {
+     .get_image_ts = get_image,
+     .draw_frame = draw_frame,
+     .flip_page = flip_page,
++    .can_present_early = can_present_early,
+     .get_vsync = get_vsync,
+     .wait_events = wait_events,
+     .wakeup = wakeup,
+
+-- 
+2.46.0
