@@ -1,0 +1,145 @@
+From 5d9c4946cfe0a510a6f513fe26c1630bca4aec7b Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 19:34:33 +0800
+Subject: [PATCH] video: quarantine single physical refresh outlier
+
+---
+ test/meson.build                   |  6 +++
+ test/secondary_ass_physical.c      | 60 ++++++++++++++++++++++++++++++
+ video/out/secondary_ass_physical.h | 27 ++++++++++----
+ 3 files changed, 85 insertions(+), 8 deletions(-)
+ create mode 100644 test/secondary_ass_physical.c
+
+diff --git a/test/meson.build b/test/meson.build
+index ed20640..2014e4a 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -99,6 +99,12 @@ test('linked-list', linked_list)
+ timer = executable('timer', files('timer.c'), include_directories: incdir, link_with: test_utils)
+ test('timer', timer)
+ 
++secondary_ass_physical = executable('secondary-ass-physical',
++                                    files('secondary_ass_physical.c'),
++                                    include_directories: incdir,
++                                    link_with: test_utils)
++test('secondary-ass-physical', secondary_ass_physical)
++
+ format = executable('format', files('format.c'), include_directories: incdir, link_with: test_utils)
+ test('format', format)
+ 
+diff --git a/test/secondary_ass_physical.c b/test/secondary_ass_physical.c
+new file mode 100644
+index 0000000..c01cc59
+--- /dev/null
++++ b/test/secondary_ass_physical.c
+@@ -0,0 +1,60 @@
++#include <stdint.h>
++
++#include "test_utils.h"
++#include "video/out/secondary_ass_physical.h"
++
++static struct secondary_ass_physical make_physical(void)
++{
++    return (struct secondary_ass_physical){
++        .phase = INT64_C(1000000000),
++        .interval = INT64_C(10000000),
++        .phase_slot = 100,
++        .sync_slot = 100,
++        .sync_qpc_ns = INT64_C(1000000000),
++        .sync_count = 100,
++        .sync_segment_consistent = true,
++        .epoch = 1,
++    };
++}
++
++int main(void)
++{
++    struct secondary_ass_physical p = make_physical();
++
++    // One residual outlier with a repeated hardware count is quarantined. It
++    // must not discard the trusted ASS phase or turn into a video reset.
++    assert_false(secondary_ass_physical_observe(
++        &p, INT64_C(1016000000), 100, INT64_C(10000000)));
++    assert_true(p.outlier_pending);
++    assert_int_equal(p.phase, INT64_C(1000000000));
++    assert_int_equal(p.phase_slot, 100);
++    assert_int_equal(p.sync_qpc_ns, INT64_C(1000000000));
++    assert_int_equal(p.sync_count, 100);
++    assert_int_equal(p.sync_slot, 100);
++
++    // Repeated delivery of the same sample is still one observation.
++    assert_false(secondary_ass_physical_observe(
++        &p, INT64_C(1016000000), 100, INT64_C(10000000)));
++    assert_int_equal(p.phase, INT64_C(1000000000));
++    assert_int_equal(p.phase_slot, 100);
++
++    // A count-consistent sample recovers the segment without rebuilding phase.
++    assert_true(secondary_ass_physical_observe(
++        &p, INT64_C(1020000000), 102, INT64_C(10000000)));
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.phase, INT64_C(1000000000));
++    assert_int_equal(p.phase_slot, 100);
++
++    // Two distinct residual outliers are sufficient to invalidate a stale
++    // segment even when the raw counter remains stalled.
++    p = make_physical();
++    assert_false(secondary_ass_physical_observe(
++        &p, INT64_C(1016000000), 100, INT64_C(10000000)));
++    assert_false(secondary_ass_physical_observe(
++        &p, INT64_C(1026000000), 100, INT64_C(10000000)));
++    assert_true(p.outlier_pending);
++    assert_int_equal(p.phase, 0);
++    assert_int_equal(p.phase_slot, 0);
++
++    return 0;
++}
+diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
+index ca618dc..92de413 100644
+--- a/video/out/secondary_ass_physical.h
++++ b/video/out/secondary_ass_physical.h
+@@ -184,23 +184,34 @@ static inline bool secondary_ass_physical_observe(
+         steps > INT64_MAX / p->interval)
+         return false;
+     int64_t residual = elapsed - steps * p->interval;
+-    // Reject ambiguous timing without treating a single forward-count jitter
+-    // as a mode change. Keep the last trusted phase, but only predict through
+-    // the next base refresh supported by the independently observed count.
+-    // A distinct second bad sample must also advance the count to invalidate it.
++    // Reject ambiguous timing without treating a single scheduler/driver
++    // jitter as a mode change. Keep the last trusted phase, but only predict
++    // through the next base refresh supported by the independently observed
++    // count. A distinct second bad sample is enough to invalidate the phase;
++    // requiring the raw count to advance would let a stalled counter keep an
++    // already inconsistent segment alive indefinitely.
+     if (residual > p->interval / 4 || residual < -p->interval / 4) {
+         uint32_t forward = count - p->sync_count;
+         bool advanced = forward && forward < UINT32_C(0x80000000);
+         if (!advanced) {
+-            p->phase = p->phase_slot = 0;
++            // A single QPC residual with a stalled/repeated refresh count is
++            // ambiguous, not proof of a mode change. Quarantine this sample
++            // and hold the last trusted phase until a count-consistent sample
++            // arrives. A second distinct bad sample is handled below and may
++            // invalidate the phase; one scheduler/driver jitter must not do so.
++            if (!p->outlier_pending) {
++                p->outlier_pending = true;
++                p->outlier_qpc_ns = qpc_ns;
++                p->outlier_count = count;
++            } else if (qpc_ns != p->outlier_qpc_ns) {
++                p->phase = p->phase_slot = 0;
++            }
+         } else if (!p->outlier_pending) {
+             p->outlier_pending = true;
+             p->outlier_qpc_ns = qpc_ns;
+             p->outlier_count = count;
+         } else {
+-            uint32_t another = count - p->outlier_count;
+-            if (qpc_ns != p->outlier_qpc_ns && another &&
+-                another < UINT32_C(0x80000000))
++            if (qpc_ns != p->outlier_qpc_ns)
+                 p->phase = p->phase_slot = 0;
+         }
+         p->sync_segment_consistent = false;
+-- 
+2.54.0.windows.1
+

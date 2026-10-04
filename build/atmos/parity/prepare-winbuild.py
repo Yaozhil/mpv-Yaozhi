@@ -70,6 +70,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0032-dovi-rpu-enhancement-metada
 shutil.copyfile(root/'build/bluray-menu/patches/0033-player-version-brand.patch', packages/'mpv-9027-player-version-brand.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch', packages/'mpv-9028-secondary-ass-continuous-clock.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0035-secondary-ass-fifo-early-present.patch', packages/'mpv-9029-secondary-ass-fifo-early-present.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0036-secondary-ass-phase-quarantine.patch', packages/'mpv-9030-secondary-ass-phase-quarantine.patch')
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
