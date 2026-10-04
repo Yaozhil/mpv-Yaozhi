@@ -1,3 +1,59 @@
+diff --git a/player/core.h b/player/core.h
+index 2889d35..099b6b2 100644
+--- a/player/core.h
++++ b/player/core.h
+@@ -389,6 +389,12 @@ typedef struct MPContext {
+     // For logging only.
+     double logged_async_diff;
+ 
++    // Repeated/non-monotonic decoder PTS can be produced by damaged or live
++    // sources. Keep the diagnostic useful without synchronously flooding the
++    // terminal and delaying the playback loop.
++    int64_t invalid_video_timestamp_last_log_ns;
++    unsigned int invalid_video_timestamp_suppressed;
++
+     int last_chapter;
+ 
+     // Past timestamps etc.
+diff --git a/player/video.c b/player/video.c
+index 6043022..08490c0 100644
+--- a/player/video.c
++++ b/player/video.c
+@@ -114,6 +114,8 @@ void reset_video_state(struct MPContext *mpctx)
+     mpctx->time_frame = 0;
+     mpctx->video_pts = MP_NOPTS_VALUE;
+     mpctx->last_frame_duration = 0;
++    mpctx->invalid_video_timestamp_last_log_ns = 0;
++    mpctx->invalid_video_timestamp_suppressed = 0;
+     mpctx->num_past_frames = 0;
+     mpctx->total_avsync_change = 0;
+     mpctx->last_av_difference = 0;
+@@ -392,8 +394,23 @@ static void handle_new_frame(struct MPContext *mpctx)
+                            !is_sparse ? 5 : 1e4;
+         if (frame_time <= 0 || frame_time >= tolerance) {
+             // Assume a discontinuity.
+-            MP_WARN(mpctx, "Invalid video timestamp: %f -> %f\n",
+-                    mpctx->video_pts, pts);
++            int64_t now = mp_time_ns();
++            if (!mpctx->invalid_video_timestamp_last_log_ns ||
++                now - mpctx->invalid_video_timestamp_last_log_ns >= MP_TIME_S_TO_NS(1)) {
++                if (mpctx->invalid_video_timestamp_suppressed) {
++                    MP_WARN(mpctx, "Invalid video timestamp: %f -> %f "
++                            "(suppressed %u similar warnings)\n",
++                            mpctx->video_pts, pts,
++                            mpctx->invalid_video_timestamp_suppressed);
++                } else {
++                    MP_WARN(mpctx, "Invalid video timestamp: %f -> %f\n",
++                            mpctx->video_pts, pts);
++                }
++                mpctx->invalid_video_timestamp_last_log_ns = now;
++                mpctx->invalid_video_timestamp_suppressed = 0;
++            } else {
++                mpctx->invalid_video_timestamp_suppressed++;
++            }
+             frame_time = 0;
+         }
+     }
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
 index 47a8fde..9019b22 100644
 --- a/video/out/d3d11/context.c
