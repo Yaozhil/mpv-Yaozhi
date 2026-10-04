@@ -1,3 +1,9 @@
+From d297ca69cb767af38d75fd0448afa01a7c39702d Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 15:51:15 +0800
+Subject: [PATCH] vo: split flip budget and rate-limit timestamp diagnostics
+
+
 diff --git a/player/core.h b/player/core.h
 index 2889d352bdd53a91d072097e96fe35ea4804ecb0..099b6b206ebf9946c9caf0448ec007cd26f80538 100644
 --- a/player/core.h
@@ -1612,3 +1618,6 @@ index 6d9e50dec22b2e1a22cc661b100a7b435f8f9871..44e66ea22c2900eff1fe4a61d9f78726
      .get_vsync = get_vsync,
      .wait_events = wait_events,
      .wakeup = wakeup,
+-- 
+2.54.0.windows.1
+
