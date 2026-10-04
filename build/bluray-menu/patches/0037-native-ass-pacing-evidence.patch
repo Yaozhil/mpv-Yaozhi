@@ -1,0 +1,2523 @@
+From d721edd215b760d53991bcf205e695397adadad2 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 00:12:49 +0800
+Subject: [PATCH] video: add low-perturbation Native ASS pacing evidence
+
+---
+ common/ass_pacing_record.c         | 432 +++++++++++++++++++++++++++++
+ common/ass_pacing_record.h         |  87 ++++++
+ common/global.h                    |   2 +
+ meson.build                        |   1 +
+ player/main.c                      |   8 +
+ sub/dec_sub.c                      |  11 +
+ sub/dec_sub.h                      |   4 +
+ sub/osd.c                          |  57 +++-
+ sub/osd.h                          |   4 +
+ sub/osd_state.h                    |   2 +
+ sub/sd.h                           |   2 +
+ sub/sd_ass.c                       |  13 +
+ test/meson.build                   |   5 +
+ test/secondary_ass_physical.c      | 370 ++++++++++++++++++++++++
+ video/out/d3d11/context.c          | 199 +++++++++++--
+ video/out/d3d11/context.h          |   7 +-
+ video/out/secondary_ass_physical.h | 116 +++++++-
+ video/out/vo.c                     | 248 ++++++++++++++++-
+ video/out/vo.h                     |   3 +
+ video/out/vo_gpu_next.c            |  65 ++++-
+ 20 files changed, 1580 insertions(+), 56 deletions(-)
+ create mode 100644 common/ass_pacing_record.c
+ create mode 100644 common/ass_pacing_record.h
+ create mode 100644 test/secondary_ass_physical.c
+
+diff --git a/common/ass_pacing_record.c b/common/ass_pacing_record.c
+new file mode 100644
+index 0000000..b364826
+--- /dev/null
++++ b/common/ass_pacing_record.c
+@@ -0,0 +1,432 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or modify it under the
++ * terms of the GNU Lesser General Public License, version 2.1 or later.
++ */
++
++#include <errno.h>
++#include <limits.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#include <winnls.h>
++#else
++#include <stdatomic.h>
++#include <fcntl.h>
++#include <unistd.h>
++#endif
++
++#include "ass_pacing_record.h"
++#include "global.h"
++#include "osdep/timer.h"
++
++#ifdef _WIN32
++// Existing UTF-8 environment accessor (osdep/io.c). Avoid its broad I/O macro
++// wrappers here: this file uses an exclusive native handle, not stdio sinks.
++char *mp_getenv(const char *name);
++#define pacing_getenv mp_getenv
++#else
++#define pacing_getenv getenv
++#endif
++
++// Windows Interlocked operations are lock-free native 64-bit operations; this
++// also lets the exact Windows implementation run in small native C fixtures.
++#ifdef _WIN32
++typedef volatile LONG64 pacing_atomic;
++static void counter_init(pacing_atomic *value)
++{
++    *value = 0;
++}
++static uint64_t counter_next(pacing_atomic *value)
++{
++    LONG64 old = InterlockedCompareExchange64(value, 0, 0);
++    for (;;) {
++        LONG64 next = (LONG64)((uint64_t)old + 1);
++        LONG64 previous = InterlockedCompareExchange64(value, next, old);
++        if (previous == old)
++            return (uint64_t)next;
++        old = previous;
++    }
++}
++static uint64_t counter_read(pacing_atomic *value)
++{
++    return (uint64_t)InterlockedCompareExchange64(value, 0, 0);
++}
++static void counter_publish(pacing_atomic *value, uint64_t data)
++{
++    InterlockedExchange64(value, (LONG64)data);
++}
++#else
++typedef _Atomic uint64_t pacing_atomic;
++static void counter_init(pacing_atomic *value)
++{
++    atomic_init(value, 0);
++}
++static uint64_t counter_next(pacing_atomic *value)
++{
++    return atomic_fetch_add_explicit(value, 1, memory_order_relaxed) + 1;
++}
++static uint64_t counter_read(pacing_atomic *value)
++{
++    return atomic_load_explicit(value, memory_order_acquire);
++}
++static void counter_publish(pacing_atomic *value, uint64_t data)
++{
++    atomic_store_explicit(value, data, memory_order_release);
++}
++#endif
++
++struct pacing_slot {
++    pacing_atomic published;
++    uint32_t kind, producer;
++    struct mp_ass_pacing_record record;
++};
++
++struct mp_ass_pacing_state {
++    struct pacing_slot *slots;
++    uint64_t capacity;
++    pacing_atomic attempted, vo_seq, draw_seq, sample_seq, invalid;
++    uint64_t pid, nonce, frequency, raw_at_init, mp_at_init, raw_offset, clock_kind;
++#ifdef _WIN32
++    HANDLE sink;
++#else
++    int sink;
++#endif
++};
++
++static bool absolute_path(const char *path)
++{
++#ifdef _WIN32
++    if (((path[0] >= 'A' && path[0] <= 'Z') ||
++         (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' &&
++        (path[2] == '/' || path[2] == '\\'))
++        return true;
++    // Reject device/pipe namespaces; only a complete server/share UNC path.
++    if (path[0] != '\\' || path[1] != '\\' || !path[2] ||
++        path[2] == '?' || path[2] == '.')
++        return false;
++    const char *share = strchr(path + 2, '\\');
++    if (!share || share == path + 2 || !share[1])
++        return false;
++    const char *file = strchr(share + 1, '\\');
++    return file && file > share + 1 && file[1];
++#else
++    return path[0] == '/';
++#endif
++}
++
++static bool parse_capacity(uint64_t *capacity)
++{
++    const char *value = pacing_getenv("MPV_NATIVE_ASS_RECORD_CAPACITY");
++    *capacity = MP_ASS_PACING_DEFAULT_CAPACITY;
++    if (!value || !value[0])
++        return true;
++    uint64_t result = 0;
++    for (const char *p = value; *p; p++) {
++        if (*p < '0' || *p > '9' || result > MP_ASS_PACING_MAX_CAPACITY / 10)
++            return false;
++        result = result * 10 + (*p - '0');
++        if (result > MP_ASS_PACING_MAX_CAPACITY)
++            return false;
++    }
++    if (result < MP_ASS_PACING_MIN_CAPACITY)
++        return false;
++    *capacity = result;
++    return true;
++}
++
++static bool open_sink(struct mp_ass_pacing_state *state, const char *path)
++{
++#ifdef _WIN32
++    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
++                                   NULL, 0);
++    if (length <= 0 || length > 32000)
++        return false;
++    wchar_t *wide = malloc((size_t)length * sizeof(*wide));
++    if (!wide)
++        return false;
++    bool converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
++                                       wide, length) == length;
++    state->sink = converted ? CreateFileW(wide, GENERIC_WRITE, 0, NULL,
++                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL)
++                            : INVALID_HANDLE_VALUE;
++    free(wide);
++    return state->sink != INVALID_HANDLE_VALUE;
++#else
++    int flags = O_WRONLY | O_CREAT | O_EXCL;
++#ifdef O_CLOEXEC
++    flags |= O_CLOEXEC;
++#endif
++    state->sink = open(path, flags, 0600);
++    return state->sink >= 0;
++#endif
++}
++
++static bool initialize_clock(struct mp_ass_pacing_state *state)
++{
++#ifdef _WIN32
++    LARGE_INTEGER frequency, qpc;
++    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0 ||
++        frequency.QuadPart >= INT64_C(2900000000) ||
++        !QueryPerformanceCounter(&qpc) || qpc.QuadPart <= 0)
++        return false;
++    state->frequency = frequency.QuadPart;
++    state->raw_at_init = qpc.QuadPart;
++    uint64_t raw_ns = state->raw_at_init / state->frequency * UINT64_C(1000000000)
++        + state->raw_at_init % state->frequency * UINT64_C(1000000000)
++          / state->frequency;
++    state->pid = GetCurrentProcessId();
++    state->clock_kind = 1; // raw_at_init is QPC units.
++#else
++    uint64_t raw_ns = mp_raw_time_ns();
++    state->raw_at_init = raw_ns;
++    state->frequency = UINT64_C(1000000000);
++    state->pid = getpid();
++    state->clock_kind = 2; // raw_at_init is raw monotonic nanoseconds.
++#endif
++    state->mp_at_init = mp_time_ns_from_raw_time(raw_ns);
++    state->raw_offset = raw_ns - state->mp_at_init;
++    state->nonce = state->raw_at_init ^ (state->pid << 32);
++    return true;
++}
++
++bool mp_ass_pacing_init(struct mpv_global *global)
++{
++    if (!global || global->ass_pacing)
++        return false;
++    const char *path = pacing_getenv("MPV_NATIVE_ASS_RECORD");
++    if (!path || !path[0])
++        return true;
++    uint64_t capacity;
++    if (!absolute_path(path) || !parse_capacity(&capacity) ||
++        capacity > SIZE_MAX / sizeof(struct pacing_slot))
++        return false;
++    struct mp_ass_pacing_state *state = calloc(1, sizeof(*state));
++    if (!state)
++        return false;
++    state->capacity = capacity;
++    counter_init(&state->attempted);
++    counter_init(&state->vo_seq);
++    counter_init(&state->draw_seq);
++    counter_init(&state->sample_seq);
++    counter_init(&state->invalid);
++    state->slots = calloc((size_t)capacity, sizeof(*state->slots));
++    if (!state->slots || !initialize_clock(state)) {
++        free(state->slots);
++        free(state);
++        return false;
++    }
++    // Commit the buffer pages before playback; do not defer first page faults
++    // to the measured producer path. No producer exists until init returns.
++    volatile unsigned char *pages = (volatile unsigned char *)state->slots;
++    size_t bytes = (size_t)capacity * sizeof(*state->slots);
++    for (size_t n = 0; n < bytes; n += 4096)
++        pages[n] = 0;
++    pages[bytes - 1] = 0;
++    for (uint64_t n = 0; n < capacity; n++)
++        counter_init(&state->slots[n].published);
++    if (!open_sink(state, path)) {
++        free(state->slots);
++        free(state);
++        return false;
++    }
++    // Instance ownership is immutable until all producers have stopped.
++    global->ass_pacing = state;
++    return true;
++}
++
++bool mp_ass_pacing_enabled(struct mpv_global *global)
++{
++    return global && global->ass_pacing;
++}
++
++uint64_t mp_ass_pacing_next_vo(struct mpv_global *global)
++{
++    return mp_ass_pacing_enabled(global)
++        ? counter_next(&global->ass_pacing->vo_seq) : 0;
++}
++
++uint64_t mp_ass_pacing_next_draw(struct mpv_global *global)
++{
++    return mp_ass_pacing_enabled(global)
++        ? counter_next(&global->ass_pacing->draw_seq) : 0;
++}
++
++uint64_t mp_ass_pacing_next_sample(struct mpv_global *global)
++{
++    return mp_ass_pacing_enabled(global)
++        ? counter_next(&global->ass_pacing->sample_seq) : 0;
++}
++
++void mp_ass_pacing_record(struct mpv_global *global, uint32_t kind,
++                         const struct mp_ass_pacing_record *record)
++{
++    if (!mp_ass_pacing_enabled(global))
++        return;
++    struct mp_ass_pacing_state *state = global->ass_pacing;
++    if (!record || !kind || kind >= MP_ASS_PACING_KIND_LIMIT) {
++        counter_next(&state->invalid);
++        return;
++    }
++    uint64_t seq = counter_next(&state->attempted);
++    if (seq > state->capacity)
++        return; // Keep monotonic attempted count; never recycle/overwrite.
++    struct pacing_slot *slot = &state->slots[seq - 1];
++    slot->kind = kind;
++#ifdef _WIN32
++    slot->producer = GetCurrentThreadId();
++#else
++    slot->producer = 0; // No guessed portable thread identity.
++#endif
++    slot->record = *record;
++    counter_publish(&slot->published, seq);
++}
++
++struct pacing_writer {
++    struct mp_ass_pacing_state *state;
++    unsigned char buffer[16384];
++    size_t used;
++    bool failed;
++};
++
++static bool sink_write(struct mp_ass_pacing_state *state,
++                       const unsigned char *data, size_t size)
++{
++    while (size) {
++#ifdef _WIN32
++        DWORD written = 0;
++        DWORD chunk = size > UINT32_MAX ? UINT32_MAX : (DWORD)size;
++        if (!WriteFile(state->sink, data, chunk, &written, NULL) || !written)
++            return false;
++#else
++        ssize_t written = write(state->sink, data, size);
++        if (written < 0 && errno == EINTR)
++            continue;
++        if (written <= 0)
++            return false;
++#endif
++        data += written;
++        size -= written;
++    }
++    return true;
++}
++
++static void writer_flush(struct pacing_writer *writer)
++{
++    if (!writer->failed && writer->used)
++        writer->failed = !sink_write(writer->state, writer->buffer, writer->used);
++    writer->used = 0;
++}
++
++static void writer_bytes(struct pacing_writer *writer,
++                         const unsigned char *data, size_t size)
++{
++    while (size && !writer->failed) {
++        size_t available = sizeof(writer->buffer) - writer->used;
++        size_t chunk = size < available ? size : available;
++        memcpy(writer->buffer + writer->used, data, chunk);
++        writer->used += chunk;
++        data += chunk;
++        size -= chunk;
++        if (writer->used == sizeof(writer->buffer))
++            writer_flush(writer);
++    }
++}
++
++static void store_u32(unsigned char *out, uint32_t value)
++{
++    for (unsigned n = 0; n < 4; n++)
++        out[n] = value >> (n * 8);
++}
++
++static void store_u64(unsigned char *out, uint64_t value)
++{
++    for (unsigned n = 0; n < 8; n++)
++        out[n] = value >> (n * 8);
++}
++
++bool mp_ass_pacing_flush(struct mpv_global *global)
++{
++    if (!mp_ass_pacing_enabled(global))
++        return true;
++    struct mp_ass_pacing_state *state = global->ass_pacing;
++    // Owner calls only after producer joins/OSD teardown. No live IPC flush.
++    global->ass_pacing = NULL;
++    struct pacing_writer writer = {.state = state};
++    unsigned char header[MP_ASS_PACING_HEADER_BYTES] = {0};
++    memcpy(header, "YASSREC1", 8);
++    store_u32(header + 8, MP_ASS_PACING_FORMAT_VERSION);
++    store_u32(header + 12, sizeof(header));
++    store_u32(header + 16, MP_ASS_PACING_RECORD_BYTES);
++    store_u32(header + 20, MP_ASS_PACING_FOOTER_BYTES);
++    store_u64(header + 24, state->capacity);
++    store_u64(header + 32, state->pid);
++    store_u64(header + 40, state->nonce);
++    store_u64(header + 48, state->frequency);
++    store_u64(header + 56, state->raw_at_init);
++    store_u64(header + 64, state->mp_at_init);
++    store_u64(header + 72, state->raw_offset);
++    store_u64(header + 80, state->clock_kind);
++    store_u64(header + 88, 1); // little-endian, complete footer required
++    writer_bytes(&writer, header, sizeof(header));
++
++    uint64_t attempted = counter_read(&state->attempted);
++    uint64_t rows = attempted < state->capacity ? attempted : state->capacity;
++    uint64_t overflow = attempted - rows;
++    uint64_t published = 0, checksum = UINT64_C(14695981039346656037);
++    for (uint64_t n = 0; n < rows; n++) {
++        struct pacing_slot *slot = &state->slots[n];
++        unsigned char wire[MP_ASS_PACING_RECORD_BYTES] = {0};
++        store_u64(wire, n + 1);
++        if (counter_read(&slot->published) == n + 1) {
++            published++;
++            store_u32(wire + 8, slot->kind);
++            store_u32(wire + 12, slot->producer);
++            const struct mp_ass_pacing_record *r = &slot->record;
++            uint64_t fields[] = {(uint64_t)r->event_ns, r->vo_seq, r->draw_seq,
++                r->frame_id, r->sample_seq, r->generation, r->epoch, r->flags};
++            for (unsigned k = 0; k < 8; k++)
++                store_u64(wire + 16 + k * 8, fields[k]);
++            for (unsigned k = 0; k < 16; k++)
++                store_u64(wire + 80 + k * 8, (uint64_t)r->v[k]);
++        } // Unpublished reserved slot stays a kind=0 tombstone, not omitted.
++        for (size_t k = 0; k < sizeof(wire); k++) {
++            checksum ^= wire[k];
++            checksum *= UINT64_C(1099511628211);
++        }
++        writer_bytes(&writer, wire, sizeof(wire));
++    }
++    uint64_t invalid = counter_read(&state->invalid);
++    uint64_t partial = rows - published;
++    bool complete = !overflow && !partial && !invalid;
++    unsigned char footer[MP_ASS_PACING_FOOTER_BYTES] = {0};
++    memcpy(footer, "YASSEND1", 8);
++    store_u32(footer + 8, MP_ASS_PACING_FORMAT_VERSION);
++    store_u32(footer + 12, sizeof(footer));
++    store_u64(footer + 16, attempted);
++    store_u64(footer + 24, rows);
++    store_u64(footer + 32, published);
++    store_u64(footer + 40, overflow);
++    store_u64(footer + 48, partial);
++    store_u64(footer + 56, counter_read(&state->draw_seq));
++    store_u64(footer + 64, counter_read(&state->sample_seq));
++    store_u64(footer + 72, counter_read(&state->vo_seq));
++    store_u64(footer + 80, checksum);
++    store_u64(footer + 88, complete);
++    store_u64(footer + 96, invalid);
++    writer_bytes(&writer, footer, sizeof(footer));
++    writer_flush(&writer);
++#ifdef _WIN32
++    bool closed = CloseHandle(state->sink) != 0;
++#else
++    bool closed = close(state->sink) == 0;
++#endif
++    bool success = complete && !writer.failed && closed;
++    free(state->slots);
++    free(state);
++    return success;
++}
+diff --git a/common/ass_pacing_record.h b/common/ass_pacing_record.h
+new file mode 100644
+index 0000000..309b6a4
+--- /dev/null
++++ b/common/ass_pacing_record.h
+@@ -0,0 +1,87 @@
++#ifndef MP_ASS_PACING_RECORD_H
++#define MP_ASS_PACING_RECORD_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++struct mpv_global;
++
++// Internal diagnostic schema. Every v[]/flags interpretation is kind-local.
++// Recording is independent of all scheduling/quality/presentation policies.
++enum mp_ass_pacing_kind {
++    MP_ASS_PACING_CONFIG = 1,
++    MP_ASS_PACING_QUEUE,
++    MP_ASS_PACING_PLAN,
++    MP_ASS_PACING_DRAW,
++    MP_ASS_PACING_SAMPLE,
++    MP_ASS_PACING_ASS_TS,
++    MP_ASS_PACING_CPU,
++    MP_ASS_PACING_SUBMIT,
++    MP_ASS_PACING_FEEDBACK,
++    MP_ASS_PACING_LIFECYCLE,
++    MP_ASS_PACING_MISS,
++    MP_ASS_PACING_PREPASS,
++    MP_ASS_PACING_SCHEDULE,
++    MP_ASS_PACING_FLIP_BUDGET,
++    MP_ASS_PACING_PHYSICAL,
++    MP_ASS_PACING_REGISTER,
++    MP_ASS_PACING_CACHE_EXECUTION,
++    MP_ASS_PACING_WAIT,
++    MP_ASS_PACING_CACHE_RESCHEDULE,
++    MP_ASS_PACING_GPU_STAGE,
++    MP_ASS_PACING_GUARD,
++    MP_ASS_PACING_DXGI,
++    MP_ASS_PACING_GPU_MARKER,
++    MP_ASS_PACING_ANCHOR,
++    MP_ASS_PACING_KIND_LIMIT = 64,
++};
++
++struct mp_ass_pacing_record {
++    int64_t event_ns;
++    uint64_t vo_seq;
++    uint64_t draw_seq;
++    uint64_t frame_id;
++    uint64_t sample_seq;
++    uint64_t generation;
++    uint64_t epoch;
++    uint64_t flags;
++    int64_t v[16];
++};
++
++// A compile-time size assertion also works in small C99 native fixtures.
++typedef char mp_ass_pacing_double_is_64_bits[
++    sizeof(double) == 8 && sizeof(int64_t) == 8 ? 1 : -1];
++
++// Bit-preserving storage includes NaN/unknown values; never coerce to integer PTS.
++static inline int64_t mp_ass_pacing_double_bits(double value)
++{
++    int64_t bits;
++    memcpy(&bits, &value, sizeof(bits));
++    return bits;
++}
++
++// Init/flush belong to the instance owner, before/after all producers exist.
++// An absent environment variable is a successful no-op. A requested invalid,
++// conflicting or unwritable sink returns false and leaves recording disabled.
++bool mp_ass_pacing_init(struct mpv_global *global);
++bool mp_ass_pacing_flush(struct mpv_global *global);
++bool mp_ass_pacing_enabled(struct mpv_global *global);
++
++// No timestamp sampling, allocation, locks, formatting or I/O in these calls.
++// IDs are instance-unique. The caller explicitly carries VO/draw/sample scopes.
++uint64_t mp_ass_pacing_next_vo(struct mpv_global *global);
++uint64_t mp_ass_pacing_next_draw(struct mpv_global *global);
++uint64_t mp_ass_pacing_next_sample(struct mpv_global *global);
++void mp_ass_pacing_record(struct mpv_global *global, uint32_t kind,
++                         const struct mp_ass_pacing_record *record);
++
++#define MP_ASS_PACING_FORMAT_VERSION 1
++#define MP_ASS_PACING_HEADER_BYTES 128
++#define MP_ASS_PACING_RECORD_BYTES 208
++#define MP_ASS_PACING_FOOTER_BYTES 128
++#define MP_ASS_PACING_DEFAULT_CAPACITY 200000
++#define MP_ASS_PACING_MIN_CAPACITY 1024
++#define MP_ASS_PACING_MAX_CAPACITY 1048576
++
++#endif
+diff --git a/common/global.h b/common/global.h
+index 6cdbea5..96c6349 100644
+--- a/common/global.h
++++ b/common/global.h
+@@ -12,6 +12,8 @@ struct mpv_global {
+     struct stats_base *stats;
+     struct demux_packet_pool *packet_pool;
+     struct curl_ctx *curl;
++    // Per-instance, opt-in diagnostics; immutable while producer threads run.
++    struct mp_ass_pacing_state *ass_pacing;
+ };
+ 
+ #endif
+diff --git a/meson.build b/meson.build
+index 5a34384..149109b 100644
+--- a/meson.build
++++ b/meson.build
+@@ -78,6 +78,7 @@ sources = files(
+     'audio/out/buffer.c',
+ 
+     ## Core
++    'common/ass_pacing_record.c',
+     'common/av_common.c',
+     'common/av_log.c',
+     'common/codecs.c',
+diff --git a/player/main.c b/player/main.c
+index 0ef3d7f..9fadbcd 100644
+--- a/player/main.c
++++ b/player/main.c
+@@ -39,6 +39,7 @@
+ #include "osdep/main-fn.h"
+ 
+ #include "common/av_log.h"
++#include "common/ass_pacing_record.h"
+ #include "common/codecs.h"
+ #include "common/encode.h"
+ #include "options/m_config.h"
+@@ -196,6 +197,11 @@ void mp_destroy(struct MPContext *mpctx)
+ 
+     osd_free(mpctx->osd);
+ 
++    // Clients, VO/backend and OSD/subtitle producers have all stopped. Never
++    // flush records while a presentation, rendering lock or playback is live.
++    if (!mp_ass_pacing_flush(mpctx->global))
++        MP_WARN(mpctx, "Native ASS pacing record incomplete or sink failed.\n");
++
+ #if HAVE_COCOA
+     cocoa_set_input_context(NULL);
+ #endif
+@@ -299,6 +305,8 @@ struct MPContext *mp_create(void)
+     // Nothing must call mp_msg*() and related before this
+     mp_msg_init(mpctx->global);
+     mpctx->log = mp_log_new(mpctx, mpctx->global->log, "!cplayer");
++    if (!mp_ass_pacing_init(mpctx->global))
++        MP_WARN(mpctx, "Native ASS pacing record initialization failed.\n");
+     mpctx->statusline = mp_log_new(mpctx, mpctx->log, "!statusline");
+ 
+     mpctx->stats = stats_ctx_create(mpctx, mpctx->global, "main");
+diff --git a/sub/dec_sub.c b/sub/dec_sub.c
+index 33b3878..6feafa6 100644
+--- a/sub/dec_sub.c
++++ b/sub/dec_sub.c
+@@ -421,6 +421,13 @@ void sub_redecode_cached_packets(struct dec_sub *sub)
+ // Unref sub_bitmaps.rc to free the result. May return NULL.
+ struct sub_bitmaps *sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim,
+                                     int format, double pts)
++{
++    return sub_get_bitmaps_paced(sub, dim, format, pts, NULL);
++}
++
++struct sub_bitmaps *sub_get_bitmaps_paced(struct dec_sub *sub,
++    struct mp_osd_res dim, int format, double pts,
++    const struct mp_ass_pacing_record *scope)
+ {
+     mp_mutex_lock(&sub->lock);
+ 
+@@ -431,9 +438,13 @@ struct sub_bitmaps *sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim,
+ 
+     struct sub_bitmaps *res = NULL;
+ 
++    // update_segment may replace the driver; set scope only on the actual
++    // driver used by this serialized invocation and clear before unlocking.
++    sub->sd->pacing_scope = scope;
+     if (!(sub->end != MP_NOPTS_VALUE && pts >= sub->end) &&
+         sub->sd->driver->get_bitmaps)
+         res = sub->sd->driver->get_bitmaps(sub->sd, dim, format, pts);
++    sub->sd->pacing_scope = NULL;
+ 
+     mp_mutex_unlock(&sub->lock);
+     return res;
+diff --git a/sub/dec_sub.h b/sub/dec_sub.h
+index 8b590d5..67dd08e 100644
+--- a/sub/dec_sub.h
++++ b/sub/dec_sub.h
+@@ -14,6 +14,7 @@ struct demux_packet;
+ struct mp_recorder_sink;
+ struct dec_sub;
+ struct sd;
++struct mp_ass_pacing_record;
+ 
+ enum sd_ctrl {
+     SD_CTRL_SUB_STEP,
+@@ -64,6 +65,9 @@ void sub_read_packets(struct dec_sub *sub, double video_pts, bool force,
+                       bool *packets_read, bool *sub_updated);
+ struct sub_bitmaps *sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim,
+                                     int format, double pts);
++struct sub_bitmaps *sub_get_bitmaps_paced(struct dec_sub *sub,
++    struct mp_osd_res dim, int format, double pts,
++    const struct mp_ass_pacing_record *scope);
+ char *sub_get_text(struct dec_sub *sub, double pts, enum sd_text_type type);
+ char *sub_ass_get_extradata(struct dec_sub *sub);
+ struct sd_times sub_get_times(struct dec_sub *sub, double pts);
+diff --git a/sub/osd.c b/sub/osd.c
+index 5fc2c03..e5bf7da 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -23,6 +23,7 @@
+ #include <libavutil/common.h>
+ 
+ #include "common/common.h"
++#include "common/ass_pacing_record.h"
+ 
+ #include "stream/stream.h"
+ 
+@@ -460,6 +461,19 @@ void osd_hold_secondary_sample(struct osd_state *osd)
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++void osd_set_ass_pacing_scope(struct osd_state *osd, uint64_t vo_seq,
++                            uint64_t draw_seq, uint64_t frame_id)
++{
++    if (!mp_ass_pacing_enabled(osd->global))
++        return;
++    mp_mutex_lock(&osd->lock);
++    osd->pacing_vo_seq = vo_seq;
++    osd->pacing_draw_seq = draw_seq;
++    osd->pacing_frame_id = frame_id;
++    osd->pacing_thread = mp_thread_current_id();
++    mp_mutex_unlock(&osd->lock);
++}
++
+ void osd_reset_secondary_clock(struct osd_state *osd)
+ {
+     mp_mutex_lock(&osd->lock);
+@@ -490,6 +504,8 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+         if (obj->sub && sub_is_primary_visible(obj->sub))
+             res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
+     } else if (obj->type == OSDTYPE_SUB2) {
++        bool pacing = mp_ass_pacing_enabled(osd->global);
++        bool changed_sample = false;
+         if (osd->secondary_sample_held) {
+             struct secondary_ass_sampler *sampler = &osd->secondary_sampler;
+             if (sampler->valid)
+@@ -515,6 +531,7 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+                 &osd->secondary_clock, osd->secondary_rate, sample_wall,
+                 osd->secondary_vsync_interval,
+                 MPMAX(osd->secondary_submit_wall, mp_time_ns()));
++            changed_sample = changed;
+             if (osd->secondary_sampler.valid)
+                 video_pts = osd->secondary_sampler.pts;
+             if (osd->secondary_clock_trace) {
+@@ -532,9 +549,45 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+                         osd->secondary_submit_wall);
+             }
+         }
++        struct mp_ass_pacing_record scope = {0};
++        if (pacing) {
++            struct secondary_ass_sampler *sampler = &osd->secondary_sampler;
++            struct secondary_ass_clock *clock = &osd->secondary_clock;
++            bool draw_scope = osd->pacing_draw_seq &&
++                mp_thread_id_equal(osd->pacing_thread, mp_thread_current_id());
++            scope = (struct mp_ass_pacing_record){
++                .event_ns = mp_time_ns(),
++                .vo_seq = draw_scope ? osd->pacing_vo_seq : 0,
++                .draw_seq = draw_scope ? osd->pacing_draw_seq : 0,
++                .frame_id = draw_scope ? osd->pacing_frame_id : 0,
++                .sample_seq = mp_ass_pacing_next_sample(osd->global),
++                .epoch = sampler->epoch,
++                .flags = (uint64_t)sampler->valid |
++                    ((uint64_t)osd->secondary_sample_held << 1) |
++                    ((uint64_t)changed_sample << 2) |
++                    ((uint64_t)sampler->force << 3) |
++                    ((uint64_t)sampler->physical_slots << 4) |
++                    ((uint64_t)clock->display_synced << 5) |
++                    ((uint64_t)draw_scope << 6),
++                .v = {sampler->sample_wall, (int64_t)sampler->tick,
++                    mp_ass_pacing_double_bits(video_pts), clock->wall,
++                    mp_ass_pacing_double_bits(clock->pts),
++                    mp_ass_pacing_double_bits(clock->speed),
++                    mp_ass_pacing_double_bits(clock->phase_rate),
++                    mp_ass_pacing_double_bits(osd->secondary_rate),
++                    osd->secondary_submit_wall, osd->secondary_present_wall,
++                    osd->secondary_target_slot, osd->secondary_phase_slot,
++                    osd->secondary_phase_wall, osd->secondary_vsync_interval,
++                    sampler->divisor, sampler->origin_slot},
++            };
++            mp_ass_pacing_record(osd->global, MP_ASS_PACING_SAMPLE, &scope);
++        }
+         if ((!osd->secondary_sample_held || osd->secondary_sampler.valid) &&
+-            obj->sub && sub_is_secondary_visible(obj->sub))
+-            res = sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
++            obj->sub && sub_is_secondary_visible(obj->sub)) {
++            res = pacing ? sub_get_bitmaps_paced(obj->sub, obj->vo_res,
++                format, video_pts, &scope) :
++                sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts);
++        }
+         osd->secondary_has_output = res && res->num_parts > 0 && !res->static_image;
+     } else if (obj->type == OSDTYPE_EXTERNAL2 ||
+                obj->type == OSDTYPE_DISC_MENU) {
+diff --git a/sub/osd.h b/sub/osd.h
+index dd6bb4b..fd2c33e 100644
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -231,6 +231,10 @@ void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
+                                         int64_t vsync_interval, int64_t submit_wall,
+                                         bool physical_phase);
+ void osd_hold_secondary_sample(struct osd_state *osd);
++// Opt-in recording scope, never a clock authority. Only the calling draw
++// thread may use it; unrelated OSD/filter calls keep an invalid draw identity.
++void osd_set_ass_pacing_scope(struct osd_state *osd, uint64_t vo_seq,
++                            uint64_t draw_seq, uint64_t frame_id);
+ void osd_reset_secondary_clock(struct osd_state *osd);
+ 
+ struct osd_progbar_state {
+diff --git a/sub/osd_state.h b/sub/osd_state.h
+index 95a8e21..7481d3b 100644
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -88,6 +88,8 @@ struct osd_state {
+     uint64_t secondary_physical_epoch;
+     bool secondary_clock_trace;
+     bool secondary_has_output;
++    uint64_t pacing_vo_seq, pacing_draw_seq, pacing_frame_id;
++    mp_thread_id pacing_thread;
+ 
+     bool want_redraw;
+     bool want_redraw_notification;
+diff --git a/sub/sd.h b/sub/sd.h
+index d7cea26..03e1d7d 100644
+--- a/sub/sd.h
++++ b/sub/sd.h
+@@ -26,6 +26,8 @@ struct sd {
+     const struct sd_functions *driver;
+     void *priv;
+     int order;
++    // Borrowed only while dec_sub holds its decoder lock for one bitmap call.
++    const struct mp_ass_pacing_record *pacing_scope;
+ 
+     struct attachment_list *attachments;
+     struct mp_codec_params *codec;
+diff --git a/sub/sd_ass.c b/sub/sd_ass.c
+index fd7552d..0e8f9f3 100644
+--- a/sub/sd_ass.c
++++ b/sub/sd_ass.c
+@@ -31,6 +31,7 @@
+ #include "options/options.h"
+ #include "options/path.h"
+ #include "common/common.h"
++#include "common/ass_pacing_record.h"
+ #include "common/msg.h"
+ #include "demux/demux.h"
+ #include "demux/packet_pool.h"
+@@ -858,6 +859,18 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
+         ass_set_storage_size(renderer, 0, 0);
+     }
+     long long ts = find_timestamp(sd, pts);
++    if (sd->order == 1 && mp_ass_pacing_enabled(sd->global)) {
++        // This is the exact timestamp passed to libass, after subtitle speed
++        // and offset conversion. An unrelated caller has no draw/sample scope.
++        struct mp_ass_pacing_record record = sd->pacing_scope
++            ? *sd->pacing_scope : (struct mp_ass_pacing_record){0};
++        record.event_ns = mp_time_ns();
++        record.flags = (uint64_t)(sd->pacing_scope != NULL);
++        record.v[0] = ts;
++        record.v[1] = mp_ass_pacing_double_bits(pts);
++        record.v[2] = sd->order;
++        mp_ass_pacing_record(sd->global, MP_ASS_PACING_ASS_TS, &record);
++    }
+     if (sd->order == 1 && ctx->clock_trace)
+         MP_INFO(sd, "native-ass-sample: pts=%.9f ass_ms=%lld\n", pts, ts);
+ 
+diff --git a/test/meson.build b/test/meson.build
+index ed20640..7502865 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -99,6 +99,11 @@ test('linked-list', linked_list)
+ timer = executable('timer', files('timer.c'), include_directories: incdir, link_with: test_utils)
+ test('timer', timer)
+ 
++secondary_ass_physical = executable('secondary-ass-physical',
++    'secondary_ass_physical.c', include_directories: incdir,
++    link_with: test_utils)
++test('secondary-ass-physical', secondary_ass_physical)
++
+ format = executable('format', files('format.c'), include_directories: incdir, link_with: test_utils)
+ test('format', format)
+ 
+diff --git a/test/secondary_ass_physical.c b/test/secondary_ass_physical.c
+new file mode 100644
+index 0000000..a7491e1
+--- /dev/null
++++ b/test/secondary_ass_physical.c
+@@ -0,0 +1,370 @@
++#include <stdint.h>
++
++#include "test_utils.h"
++#include "video/out/secondary_ass_physical.h"
++
++static const int64_t origin = INT64_C(1000000000);
++
++static struct secondary_ass_physical make_state(int64_t interval)
++{
++    return (struct secondary_ass_physical){
++        .phase = origin, .phase_slot = 100, .interval = interval, .epoch = 7,
++        .sync_qpc_ns = origin, .sync_count = 100, .sync_slot = 100,
++        .sync_segment_consistent = true,
++        .measure_qpc_ns = origin, .measure_count = 100,
++        .periods = {interval, interval, interval},
++        .period_count = 3, .period_next = 3,
++        .historical_id = 10, .last_submit_id = 10,
++        .delay = 1, .delay_samples = {1, 1, 2}, .delay_count = 3,
++    };
++}
++
++static bool observe(struct secondary_ass_physical *p, int64_t step,
++                    uint32_t count)
++{
++    return secondary_ass_physical_observe(p, origin + step * p->interval,
++                                          count, p->interval);
++}
++
++static bool bad(struct secondary_ass_physical *p, int64_t step, uint32_t count)
++{
++    return secondary_ass_physical_observe(p,
++        origin + step * p->interval - p->interval * 2 / 5, count, p->interval);
++}
++
++static struct secondary_ass_physical_point point(int64_t interval, int64_t slot)
++{
++    return (struct secondary_ass_physical_point){
++        .slot = slot, .wall = origin + (slot - 100) * interval,
++    };
++}
++
++static void phase_kept(const struct secondary_ass_physical *p)
++{
++    assert_int_equal(p->phase, origin);
++    assert_int_equal(p->phase_slot, 100);
++    assert_int_equal(p->epoch, 7);
++}
++
++static void learner_kept(const struct secondary_ass_physical *p)
++{
++    assert_int_equal(p->delay, 1);
++    assert_int_equal(p->delay_count, 3);
++    assert_int_equal(p->delay_next, 0);
++    assert_int_equal(p->delay_samples[0], 1);
++    assert_int_equal(p->delay_samples[1], 1);
++    assert_int_equal(p->delay_samples[2], 2);
++    assert_int_equal(p->period_count, 3);
++    assert_int_equal(p->period_next, 3);
++    for (unsigned n = 0; n < 3; n++)
++        assert_int_equal(p->periods[n], p->interval);
++}
++
++static void test_single_bad(int64_t interval)
++{
++    const uint32_t first_counts[] = {100, 102};
++    for (unsigned k = 0; k < 2; k++) {
++        struct secondary_ass_physical p = make_state(interval);
++        assert_false(bad(&p, 2, first_counts[k]));
++        phase_kept(&p);
++        learner_kept(&p);
++        assert_true(p.outlier_pending);
++        assert_false(p.sync_segment_consistent);
++        assert_int_equal(p.sync_slot, 100);
++        assert_int_equal(p.sync_qpc_ns, origin);
++        assert_int_equal(p.sync_count, 100);
++        for (unsigned n = 0; n < 20; n++)
++            assert_false(bad(&p, 2, first_counts[k]));
++        phase_kept(&p);
++        assert_false(bad(&p, 3, first_counts[k]));
++        phase_kept(&p); // Different QPC with the same raw count is not proof.
++        learner_kept(&p);
++        if (first_counts[k] == 100) {
++            assert_false(secondary_ass_physical_sample_available(&p,
++                         point(interval, 101).wall));
++        } else {
++            assert_int_equal(secondary_ass_physical_point_at(&p, 104).slot, 104);
++            assert_int_equal(secondary_ass_physical_point_at(&p, 105).slot, 0);
++        }
++        // Recovering the original raw count agreement skips gap feedback.
++        assert_false(observe(&p, 3, 103));
++        assert_false(p.outlier_pending);
++        assert_false(p.sync_segment_consistent);
++        assert_int_equal(p.history_floor_slot, 103);
++        assert_int_equal(p.measure_qpc_ns, origin + 3 * interval);
++        assert_int_equal(p.measure_count, 103);
++        phase_kept(&p);
++        learner_kept(&p);
++        assert_true(observe(&p, 4, 104));
++        assert_true(p.sync_segment_consistent);
++        assert_true(secondary_ass_physical_sample_available(&p,
++                    point(interval, 105).wall));
++    }
++
++    struct secondary_ass_physical p = make_state(interval);
++    assert_false(bad(&p, 2, 102));
++    assert_false(bad(&p, 3, 103));
++    assert_int_equal(p.phase, 0); // Preserve the old independently advanced rule.
++    assert_int_equal(p.phase_slot, 0);
++    assert_int_equal(p.epoch, 7);
++}
++
++static void test_lost_count_recovery(int64_t interval)
++{
++    struct secondary_ass_physical p = make_state(interval);
++    assert_false(bad(&p, 2, 100));
++    for (unsigned n = 0; n < 20; n++)
++        assert_false(observe(&p, 2, 101));
++    assert_true(p.outlier_pending);
++    assert_int_equal(p.recovery_slot, 102);
++    assert_int_equal(p.sync_slot, 100);
++    assert_false(secondary_ass_physical_sample_available(&p,
++                 point(interval, 104).wall));
++    assert_false(observe(&p, 3, 102));
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.sync_qpc_ns, origin + 3 * interval);
++    assert_int_equal(p.sync_slot, 103);
++    assert_int_equal(p.sync_count, 102);
++    assert_int_equal(p.recovery_qpc_ns, 0);
++    assert_int_equal(p.history_floor_slot, 103);
++    assert_false(p.sync_segment_consistent);
++    phase_kept(&p);
++    learner_kept(&p);
++    assert_true(secondary_ass_physical_sample_available(&p,
++                point(interval, 104).wall));
++    // The one-count loss stays permanent; availability cannot wait for it.
++    for (int n = 4; n < 10004; n++) {
++        assert_true(observe(&p, n, (uint32_t)(100 + n - 1)));
++        assert_false(p.outlier_pending);
++        assert_int_equal(p.sync_slot, 100 + n);
++        assert_true(secondary_ass_physical_sample_available(&p,
++                    point(interval, 101 + n).wall));
++    }
++    phase_kept(&p);
++
++    p = make_state(interval);
++    assert_false(bad(&p, 2, 100));
++    assert_false(observe(&p, 2, 101));
++    assert_false(observe(&p, 3, 101)); // A stalled candidate is not recovery.
++    assert_true(p.outlier_pending);
++    assert_int_equal(p.recovery_slot, 103);
++    assert_false(observe(&p, 4, 102));
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.sync_slot, 104);
++    phase_kept(&p);
++
++    p = make_state(interval);
++    p.sync_count = UINT32_MAX - 1;
++    assert_false(bad(&p, 2, UINT32_MAX - 1));
++    assert_false(observe(&p, 2, UINT32_MAX));
++    assert_false(observe(&p, 3, 0));
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.sync_slot, 103);
++    assert_true(observe(&p, 4, 1));
++    phase_kept(&p);
++}
++
++static void test_threshold_and_stale(int64_t interval)
++{
++    struct secondary_ass_physical p = make_state(interval);
++    assert_false(bad(&p, 2, 100));
++    int64_t first = origin + 2 * interval + interval / 4;
++    assert_false(secondary_ass_physical_observe(&p, first, 101, interval));
++    assert_true(p.outlier_pending);
++    // Both original-lattice residuals pass T/4, but their relative residual
++    // must independently pass the same threshold; do not widen it to T/2.
++    int64_t second = origin + 3 * interval - interval / 4;
++    assert_false(secondary_ass_physical_observe(&p, second, 102, interval));
++    assert_true(p.outlier_pending);
++    assert_false(secondary_ass_physical_observe(&p, first, 101, interval));
++    assert_int_equal(p.recovery_qpc_ns, second); // Stale anchor cannot replace it.
++    assert_false(secondary_ass_physical_observe(&p,
++                 origin + 4 * interval - interval / 4, 103, interval));
++    assert_false(p.outlier_pending);
++    phase_kept(&p);
++
++    p = make_state(interval);
++    assert_false(secondary_ass_physical_observe(&p, origin - interval, 99,
++                                               interval));
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.sync_slot, 100);
++    phase_kept(&p);
++    p.sync_qpc_ns = 1;
++    assert_false(secondary_ass_physical_observe(&p, INT64_MAX, 102, interval));
++    assert_int_equal(p.sync_slot, 100); // Checked rounding overflow.
++    phase_kept(&p);
++}
++
++static void update(struct secondary_ass_physical *p, int64_t step,
++                   uint32_t count, uint32_t present_count, uint64_t historical_id)
++{
++    secondary_ass_physical_update_observed(p, false, 0,
++        (struct secondary_ass_physical_point){0}, origin + step * p->interval,
++        origin + step * p->interval, count, present_count, historical_id,
++        p->interval);
++}
++
++static void test_gap_history(int64_t interval)
++{
++    struct secondary_ass_physical p = make_state(interval);
++    secondary_ass_physical_submit_point(&p, 11, point(interval, 102));
++    assert_int_equal(p.submitted[0].base_slot, 101);
++    assert_false(bad(&p, 2, 100));
++    assert_true(p.submitted[0].gap_excluded);
++    secondary_ass_physical_submit_point(&p, 12, point(interval, 104));
++    assert_true(p.submitted[1].gap_excluded);
++    update(&p, 2, 101, 101, 11);
++    update(&p, 3, 102, 102, 11);
++    assert_false(p.outlier_pending);
++    assert_false(p.sync_segment_consistent);
++    assert_int_equal(p.historical_id, 10); // Recovery call does not feed history.
++    phase_kept(&p);
++    learner_kept(&p);
++    assert_int_equal(p.submitted[0].base_slot, 101);
++    assert_int_equal(p.submitted[0].target_slot, 102);
++    assert_int_equal(p.submitted[1].base_slot, 103);
++    assert_int_equal(p.submitted[1].target_slot, 104);
++
++    update(&p, 4, 103, 102, 11); // Old/gap ID cannot cross new count segment.
++    phase_kept(&p);
++    learner_kept(&p);
++    assert_int_equal(p.historical_id, 10);
++    update(&p, 4, 103, 102, 999); // Unregistered history cannot extrapolate.
++    phase_kept(&p);
++    update(&p, 4, 103, 103, 11); // Exact pair has a real current physical point.
++    assert_int_equal(p.phase, origin + 4 * interval);
++    assert_int_equal(p.phase_slot, 104);
++    assert_int_equal(p.historical_id, 11);
++    learner_kept(&p); // Same ID still cannot synthesize a cross-gap delay.
++    update(&p, 5, 104, 104, 11);
++    learner_kept(&p); // A repeated historical ID is not another observation.
++    update(&p, 5, 104, 104, 12);
++    learner_kept(&p); // Submitted during quarantine is also excluded.
++
++    secondary_ass_physical_submit_point(&p, 13, point(interval, 103));
++    assert_false(p.submitted[2].gap_excluded);
++    assert_int_equal(p.submitted[2].base_slot, 102);
++    update(&p, 6, 105, 106, 13); // New ID with pre-floor base is still ambiguous.
++    learner_kept(&p);
++    assert_int_equal(p.historical_id, 12);
++
++    secondary_ass_physical_submit_point(&p, 14, point(interval, 106));
++    assert_int_equal(p.submitted[3].base_slot, 105);
++    assert_int_equal(p.submitted[3].target_slot, 106);
++    update(&p, 7, 106, 106, 14);
++    assert_int_equal(p.phase_slot, 107);
++    assert_int_equal(p.phase - (p.phase_slot - 100) * interval, origin);
++    assert_int_equal(p.delay_samples[0], 2); // Actual slot minus saved base.
++    assert_int_equal(p.delay, 2);
++    assert_int_equal(p.delay_next, 1);
++    assert_int_equal(p.submitted[3].base_slot, 105); // Median cannot rewrite it.
++    assert_int_equal(p.submitted[3].target_slot, 106);
++    update(&p, 8, 107, 107, 14);
++    assert_int_equal(p.delay_next, 1);
++    assert_int_equal(p.delay_samples[0], 2);
++    int64_t kept_phase = p.phase;
++    secondary_ass_physical_feedback_point(&p, point(interval, 102), 15);
++    assert_int_equal(p.phase, kept_phase); // Explicit history floor is checked.
++    assert_int_equal(p.historical_id, 14);
++}
++
++static void test_cleared_phase_bootstrap(int64_t interval)
++{
++    struct secondary_ass_physical p = make_state(interval);
++    secondary_ass_physical_submit_point(&p, 11, point(interval, 102));
++    assert_false(bad(&p, 2, 102));
++    assert_false(bad(&p, 3, 103));
++    assert_int_equal(p.phase, 0);
++    update(&p, 4, 103, 103, 11);
++    update(&p, 5, 104, 104, 11);
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.phase, 0); // Recovery itself remains history-isolated.
++    update(&p, 6, 105, 105, 11);
++    assert_int_equal(p.phase, origin + 6 * interval);
++    assert_int_equal(p.phase_slot, 106);
++    assert_int_equal(p.epoch, 7);
++    learner_kept(&p);
++    assert_true(secondary_ass_physical_sample_available(&p,
++                point(interval, 107).wall));
++    secondary_ass_physical_reset(&p);
++    assert_int_equal(p.epoch, 8);
++    assert_int_equal(p.history_floor_slot, 0);
++    assert_int_equal(p.recovery_qpc_ns, 0);
++    assert_false(p.submitted[0].gap_excluded);
++    p.epoch = UINT64_MAX;
++    secondary_ass_physical_reset(&p);
++    assert_true(p.epoch_exhausted);
++    assert_false(observe(&p, 1, 1));
++}
++
++static void test_planned_base_and_clock_domains(int64_t interval)
++{
++    struct secondary_ass_physical p = make_state(interval);
++    const int64_t qpc_origin = origin + INT64_C(100000000000);
++    p.sync_qpc_ns = p.measure_qpc_ns = qpc_origin;
++    assert_true(secondary_ass_physical_submit_planned_point(&p, 11, p.epoch,
++                point(interval, 101), point(interval, 104)));
++    assert_false(secondary_ass_physical_observe(&p,
++                 qpc_origin + 2 * interval - interval * 2 / 5, 100, interval));
++    assert_true(p.submitted[0].gap_excluded);
++    for (int n = 2; n <= 3; n++) {
++        secondary_ass_physical_update_observed(&p, false, 0,
++            (struct secondary_ass_physical_point){0}, qpc_origin + n * interval,
++            origin + n * interval, (uint32_t)(99 + n), (uint32_t)(99 + n),
++            11, interval);
++    }
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.sync_qpc_ns, qpc_origin + 3 * interval);
++    phase_kept(&p); // A raw QPC must never be copied into the wall/ASS phase.
++    learner_kept(&p);
++    secondary_ass_physical_update_observed(&p, false, 0,
++        (struct secondary_ass_physical_point){0}, qpc_origin + 4 * interval,
++        origin + 4 * interval, 103, 103, 11, interval);
++    learner_kept(&p);
++    assert_int_equal(p.phase, origin + 4 * interval);
++    assert_true(secondary_ass_physical_submit_planned_point(&p, 12, p.epoch,
++                point(interval, 105), point(interval, 109)));
++    // The API history refers to slot 107; learning is 107-105, never 107-109.
++    secondary_ass_physical_update_observed(&p, false, 0,
++        (struct secondary_ass_physical_point){0}, qpc_origin + 6 * interval,
++        origin + 6 * interval, 105, 106, 12, interval);
++    assert_int_equal(p.phase_slot, 107);
++    assert_int_equal(p.phase, origin + 7 * interval);
++    assert_int_equal(p.delay, 2);
++    assert_int_equal(p.delay_samples[0], 2);
++    assert_int_equal(p.submitted[1].base_slot, 105);
++    assert_int_equal(p.submitted[1].target_slot, 109);
++    assert_false(secondary_ass_physical_submit_planned_point(&p, 12, p.epoch,
++                 point(interval, 107), point(interval, 110)));
++    assert_int_equal(p.submitted[1].base_slot, 105); // Same ID is immutable.
++    assert_int_equal(p.submitted[1].target_slot, 109);
++    assert_int_equal(p.epoch, 7);
++
++    // A reused ring entry loses its previous gap exclusion only upon a new
++    // identified submission; legacy coordinates cannot survive the overwrite.
++    p = make_state(interval);
++    p.submitted[0].gap_excluded = true;
++    secondary_ass_physical_submit_point(&p, 20, point(interval, 106));
++    assert_false(p.submitted[0].gap_excluded);
++    p.next = 0;
++    p.phase_slot = 0;
++    secondary_ass_physical_submit(&p, 21, point(interval, 107).wall);
++    assert_int_equal(p.submitted[0].base_slot, 0);
++    assert_int_equal(p.submitted[0].target_slot, 0);
++    assert_false(p.submitted[0].gap_excluded);
++}
++
++int main(void)
++{
++    const int rates[] = {60, 120, 144, 165, 240, 360, 480};
++    for (unsigned n = 0; n < sizeof(rates) / sizeof(rates[0]); n++) {
++        int64_t interval = INT64_C(1000000000) / rates[n];
++        test_single_bad(interval);
++        test_lost_count_recovery(interval);
++        test_threshold_and_stale(interval);
++        test_gap_history(interval);
++        test_cleared_phase_bootstrap(interval);
++        test_planned_base_and_clock_domains(interval);
++    }
++    return 0;
++}
+diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
+index 9019b22..3a44dca 100644
+--- a/video/out/d3d11/context.c
++++ b/video/out/d3d11/context.c
+@@ -20,6 +20,7 @@
+ #include <string.h>
+ 
+ #include "common/msg.h"
++#include "common/ass_pacing_record.h"
+ #include "options/m_config.h"
+ #include "osdep/timer.h"
+ #include "osdep/windows_utils.h"
+@@ -161,6 +162,8 @@ struct priv {
+         uint64_t seq;
+         uint64_t generation;
+         uint64_t frame_id;
++        uint64_t vo_seq, draw_seq, swapchain_generation;
++        uint32_t stage;
+         int64_t issue_before_ns;
+         int64_t issue_after_ns;
+         int64_t last_not_ready_ns;
+@@ -168,6 +171,8 @@ struct priv {
+         int64_t ready_upper_ns;
+         unsigned expected_present;
+         unsigned actual_present;
++        HRESULT actual_present_hr;
++        bool actual_present_count_valid;
+         bool in_use;
+         bool completed;
+         bool present_bound;
+@@ -180,12 +185,60 @@ struct priv {
+ 
+ static const struct ra_swapchain_fns d3d11_swapchain;
+ 
++static void d3d11_gpu_marker_record(struct ra_ctx *ctx,
++    const struct d3d11_gpu_marker *m, uint32_t status, HRESULT hr)
++{
++    if (!mp_ass_pacing_enabled(ctx->global))
++        return;
++    struct priv *p = ctx->priv;
++    struct mp_ass_pacing_record record = {
++        // Only queued/completed records carry an observed time. Error/result
++        // rows retain marker identity; Present time belongs to SUBMIT, not End.
++        .event_ns = m ? (status == 1 ? m->ready_upper_ns :
++                        status == 0 ? m->issue_after_ns : 0) : 0,
++        .vo_seq = m ? m->vo_seq : ctx->vo->pacing_vo_seq,
++        .draw_seq = m ? m->draw_seq : ctx->vo->pacing_draw_seq,
++        .frame_id = m ? m->frame_id : ctx->vo->pacing_frame_id,
++        .generation = m ? m->swapchain_generation : p->present_generation,
++        .flags = status,
++        .v = {m ? (int64_t)m->seq : 0, m ? m->stage : 0,
++            m ? m->issue_before_ns : 0, m ? m->issue_after_ns : 0,
++            m ? m->ready_lower_ns : 0, m ? m->ready_upper_ns : 0,
++            m ? m->expected_present : 0, m ? m->actual_present : 0,
++            m ? m->present_bound : 0, m ? m->present_verified : 0,
++            (uint32_t)hr, m ? (int64_t)m->generation :
++                (int64_t)p->gpu_marker_generation,
++            m ? (uint32_t)m->actual_present_hr : 0,
++            m ? m->actual_present_count_valid : 0,
++            m ? status == 6 && m->actual_present_count_valid && m->present_bound &&
++                m->expected_present == m->actual_present && SUCCEEDED(hr) : 0,
++            m ? m->present_count_valid : 0},
++    };
++    mp_ass_pacing_record(ctx->global, MP_ASS_PACING_GPU_MARKER, &record);
++}
++
++static void d3d11_gpu_marker_issue_error(struct ra_ctx *ctx, uint64_t frame_id,
++                                        uint32_t stage, uint32_t status,
++                                        HRESULT hr)
++{
++    struct priv *p = ctx->priv;
++    struct d3d11_gpu_marker unknown = {
++        .frame_id = frame_id, .stage = stage,
++        .vo_seq = ctx->vo->pacing_vo_seq, .draw_seq = ctx->vo->pacing_draw_seq,
++        .swapchain_generation = p->present_generation,
++        .generation = p->gpu_marker_generation,
++    };
++    d3d11_gpu_marker_record(ctx, &unknown, status, hr);
++}
++
+ static void d3d11_gpu_marker_release_queries(struct ra_ctx *ctx)
+ {
+     struct priv *p = ctx->priv;
+     for (int n = 0; n < MP_D3D11_GPU_MARKER_RING; n++) {
+         struct d3d11_gpu_marker *m = &p->gpu_markers[n];
+         if (p->gpu_marker_active && m->in_use)
++            d3d11_gpu_marker_record(ctx, m, 2, S_OK);
++        if (p->secondary_trace && p->gpu_marker_active && m->in_use)
+             MP_INFO(ctx, "native-ass-gpu-marker: status=discard"
+                     " seq=%"PRIu64" generation=%"PRIu64"\n",
+                     m->seq, m->generation);
+@@ -204,7 +257,9 @@ static void d3d11_gpu_marker_disable(struct ra_ctx *ctx, HRESULT hr,
+     if (!p->gpu_marker_active)
+         return;
+ 
+-    MP_INFO(ctx, "native-ass-gpu-marker: status=%s hr=0x%08"PRIx32
++    d3d11_gpu_marker_record(ctx, NULL, 5, hr);
++    if (p->secondary_trace)
++        MP_INFO(ctx, "native-ass-gpu-marker: status=%s hr=0x%08"PRIx32
+             " generation=%"PRIu64"\n", status, (uint32_t)hr,
+             p->gpu_marker_generation);
+     d3d11_gpu_marker_release_queries(ctx);
+@@ -278,7 +333,9 @@ static void d3d11_gpu_marker_poll(struct ra_ctx *ctx, const char *stage)
+             continue;
+         }
+         if (FAILED(hr)) {
+-            MP_INFO(ctx, "native-ass-gpu-marker: status=poll_error"
++            d3d11_gpu_marker_record(ctx, m, 5, hr);
++            if (p->secondary_trace)
++                MP_INFO(ctx, "native-ass-gpu-marker: status=poll_error"
+                     " seq=%"PRIu64" generation=%"PRIu64
+                     " stage=%s hr=0x%08"PRIx32" before_ns=%"PRId64
+                     " after_ns=%"PRId64"\n", m->seq, m->generation, stage,
+@@ -290,7 +347,9 @@ static void d3d11_gpu_marker_poll(struct ra_ctx *ctx, const char *stage)
+         m->completed = true;
+         m->ready_lower_ns = m->last_not_ready_ns;
+         m->ready_upper_ns = after_ns;
+-        MP_INFO(ctx, "native-ass-gpu-marker: status=complete"
++        d3d11_gpu_marker_record(ctx, m, 1, hr);
++        if (p->secondary_trace)
++            MP_INFO(ctx, "native-ass-gpu-marker: status=complete"
+                 " seq=%"PRIu64" generation=%"PRIu64
+                 " frame_id=%"PRIu64" stage=%s"
+                 " evidence=gpu_completion_bracket lower_ns=%"PRId64
+@@ -303,16 +362,21 @@ static void d3d11_gpu_marker_poll(struct ra_ctx *ctx, const char *stage)
+     }
+ }
+ 
+-static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id)
++static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id,
++                               uint32_t stage)
+ {
+     struct priv *p = ctx->priv;
+     if (!p->gpu_marker_active || !p->gpu_marker_context)
+         return;
+ 
+-    d3d11_gpu_marker_poll(ctx, "draw_end_before_end");
++    // Intermediate probes only enqueue End; repeated polling at every stage
++    // would add observer work to the CPU critical path.
++    if (!stage)
++        d3d11_gpu_marker_poll(ctx, "draw_end_before_end");
+     if (!p->gpu_marker_active)
+         return;
+-    p->gpu_marker_last = -1;
++    if (!stage)
++        p->gpu_marker_last = -1;
+     int n = -1;
+     for (int i = 0; i < MP_D3D11_GPU_MARKER_RING; i++) {
+         if (!p->gpu_markers[i].in_use) {
+@@ -321,7 +385,9 @@ static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id)
+         }
+     }
+     if (n < 0) {
+-        MP_INFO(ctx, "native-ass-gpu-marker: status=ring_full"
++        d3d11_gpu_marker_issue_error(ctx, frame_id, stage, 3, S_FALSE);
++        if (p->secondary_trace)
++            MP_INFO(ctx, "native-ass-gpu-marker: status=ring_full"
+                 " generation=%"PRIu64" frame_id=%"PRIu64"\n",
+                 p->gpu_marker_generation, frame_id);
+         return;
+@@ -329,7 +395,9 @@ static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id)
+ 
+     struct d3d11_gpu_marker *m = &p->gpu_markers[n];
+     if (!m->query) {
+-        MP_INFO(ctx, "native-ass-gpu-marker: status=marker_unavailable"
++        d3d11_gpu_marker_issue_error(ctx, frame_id, stage, 4, E_FAIL);
++        if (p->secondary_trace)
++            MP_INFO(ctx, "native-ass-gpu-marker: status=marker_unavailable"
+                 " generation=%"PRIu64" frame_id=%"PRIu64"\n",
+                 p->gpu_marker_generation, frame_id);
+         return;
+@@ -344,13 +412,21 @@ static void d3d11_gpu_marker_end(struct ra_ctx *ctx, uint64_t frame_id)
+         .seq = ++p->gpu_marker_next_seq,
+         .generation = p->gpu_marker_generation,
+         .frame_id = frame_id,
++        .vo_seq = ctx->vo->pacing_vo_seq,
++        .draw_seq = ctx->vo->pacing_draw_seq,
++        .swapchain_generation = p->present_generation,
++        .stage = stage,
++        .present_verified = stage != 0, // stage probes do not consume a Present
+         .issue_before_ns = before_ns,
+         .issue_after_ns = after_ns,
+         .last_not_ready_ns = before_ns,
+         .in_use = true,
+     };
+-    p->gpu_marker_last = n;
+-    MP_INFO(ctx, "native-ass-gpu-marker: status=queued"
++    if (!stage)
++        p->gpu_marker_last = n;
++    d3d11_gpu_marker_record(ctx, m, 0, S_OK);
++    if (p->secondary_trace)
++        MP_INFO(ctx, "native-ass-gpu-marker: status=queued"
+             " seq=%"PRIu64" generation=%"PRIu64" frame_id=%"PRIu64
+             " issue_before_ns=%"PRId64" issue_after_ns=%"PRId64"\n",
+             m->seq, m->generation, m->frame_id, before_ns, after_ns);
+@@ -382,7 +458,8 @@ static void d3d11_gpu_marker_bind_present(struct ra_swapchain *sw)
+             p->gpu_markers[n].present_verified = true;
+             d3d11_gpu_marker_maybe_release(p, n);
+         }
+-        MP_INFO(ctx, "native-ass-gpu-marker: status=present_unbound"
++        if (p->secondary_trace)
++            MP_INFO(ctx, "native-ass-gpu-marker: status=present_unbound"
+                 " generation=%"PRIu64" hr=0x%08"PRIx32"\n",
+                 p->gpu_marker_generation, (uint32_t)hr);
+         return;
+@@ -394,7 +471,8 @@ static void d3d11_gpu_marker_bind_present(struct ra_swapchain *sw)
+     m->present_bound = SUCCEEDED(hr);
+     if (m->present_bound)
+         p->gpu_marker_bound = n;
+-    MP_INFO(ctx, "native-ass-gpu-marker: status=present_bind"
++    if (p->secondary_trace)
++        MP_INFO(ctx, "native-ass-gpu-marker: status=present_bind"
+             " seq=%"PRIu64" generation=%"PRIu64
+             " expected_present=%u count_before=%u\n", m->seq,
+             m->generation, m->expected_present, before);
+@@ -419,10 +497,14 @@ static void d3d11_gpu_marker_after_present(struct ra_swapchain *sw,
+         p->gpu_markers[n].in_use && p->gpu_markers[n].present_bound)
+     {
+         struct d3d11_gpu_marker *m = &p->gpu_markers[n];
++        m->actual_present_hr = count_hr;
++        m->actual_present_count_valid = SUCCEEDED(count_hr);
+         if (SUCCEEDED(count_hr))
+             m->actual_present = after;
+         m->present_verified = true;
+-        MP_INFO(ctx, "native-ass-gpu-marker: status=present_result"
++        d3d11_gpu_marker_record(ctx, m, 6, present_hr);
++        if (p->secondary_trace)
++            MP_INFO(ctx, "native-ass-gpu-marker: status=present_result"
+                 " seq=%"PRIu64" generation=%"PRIu64
+                 " expected_present=%u actual_present=%u match=%d"
+                 " present_hr=0x%08"PRIx32" count_hr=0x%08"PRIx32"\n",
+@@ -432,7 +514,8 @@ static void d3d11_gpu_marker_after_present(struct ra_swapchain *sw,
+                 (uint32_t)present_hr, (uint32_t)count_hr);
+         d3d11_gpu_marker_maybe_release(p, n);
+     } else {
+-        MP_INFO(ctx, "native-ass-gpu-marker: status=present_result_unbound"
++        if (p->secondary_trace)
++            MP_INFO(ctx, "native-ass-gpu-marker: status=present_result_unbound"
+                 " generation=%"PRIu64" present_hr=0x%08"PRIx32
+                 " count_hr=0x%08"PRIx32" actual_present=%u\n",
+                 p->gpu_marker_generation, (uint32_t)present_hr,
+@@ -452,7 +535,8 @@ static void d3d11_gpu_marker_reset_priv(struct ra_ctx *ctx)
+     if (!p->gpu_marker_active)
+         return;
+     d3d11_gpu_marker_release_queries(ctx);
+-    MP_INFO(ctx, "native-ass-gpu-marker: status=generation_reset"
++    if (p->secondary_trace)
++        MP_INFO(ctx, "native-ass-gpu-marker: status=generation_reset"
+             " generation=%"PRIu64"\n", p->gpu_marker_generation);
+ }
+ 
+@@ -673,11 +757,13 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+     struct priv *p = sw->priv;
+ 
+     bool trace = p->schedule_trace;
+-    bool guard_armed = trace && p->early_present_wait;
++    bool recording = mp_ass_pacing_enabled(sw->ctx->global);
++    bool capture = trace || recording;
++    bool guard_armed = capture && p->early_present_wait;
+     bool guard_valid = false, guard_waited = false;
+     int64_t guard_target = guard_armed ? p->early_present_target : 0;
+     int64_t guard_begin = 0, guard_end = 0;
+-    uint64_t generation_before = trace ? p->present_generation : 0;
++    uint64_t generation_before = capture ? p->present_generation : 0;
+     m_config_cache_update(p->opts_cache);
+     if (p->early_present_wait) {
+         // Options and swapchain state are checked again at the actual API
+@@ -689,14 +775,14 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+             p->last_present_generation == p->early_present_generation &&
+             p->last_present_sync_interval == 1 &&
+             d3d11_fifo_queue_unchanged(p);
+-        if (trace) {
++        if (capture) {
+             guard_valid = still_valid;
+             guard_waited = !still_valid;
+             guard_begin = mp_time_ns();
+         }
+         if (!still_valid)
+             p->early_present_wait(sw->ctx->vo, p->early_present_target);
+-        if (trace)
++        if (capture)
+             guard_end = mp_time_ns();
+         p->early_present_wait = NULL;
+     }
+@@ -711,11 +797,11 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+     p->last_present_sync_interval = p->opts->sync_interval;
+ 
+     LARGE_INTEGER api_begin = {0}, api_end = {0};
+-    if (trace)
++    if (capture)
+         QueryPerformanceCounter(&api_begin);
+     HRESULT present_hr = IDXGISwapChain_Present(p->swapchain,
+                                                  p->opts->sync_interval, 0);
+-    if (trace)
++    if (capture)
+         QueryPerformanceCounter(&api_end);
+     p->last_present_hr = present_hr;
+     p->last_present_valid = present_hr == S_OK &&
+@@ -723,6 +809,21 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+     p->last_present_generation = p->last_present_valid
+         ? p->present_generation : 0;
+     d3d11_gpu_marker_after_present(sw, present_hr);
++    if (recording) {
++        struct vo *vo = sw->ctx->vo;
++        struct mp_ass_pacing_record record = {
++            .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
++            .frame_id = vo->pacing_frame_id, .generation = p->present_generation,
++            .flags = (uint64_t)guard_armed | ((uint64_t)guard_valid << 1) |
++                ((uint64_t)guard_waited << 2) |
++                ((uint64_t)p->last_present_valid << 3),
++            .v = {api_begin.QuadPart, api_end.QuadPart, p->last_submit_qpc,
++                p->perf_freq, p->last_present_sync_interval, (uint32_t)present_hr,
++                guard_target, guard_begin, guard_end, (int64_t)generation_before,
++                (int64_t)p->present_generation},
++        };
++        mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_SUBMIT, &record);
++    }
+     if (trace)
+         MP_INFO(sw->ctx, "native-ass-submit-trace: api_call_qpc=%"PRId64
+             " api_return_qpc=%"PRId64" envelope_qpc=%"PRId64" perf_freq=%"PRId64
+@@ -742,6 +843,20 @@ static void d3d11_trace_vsync_status(struct ra_swapchain *sw,
+                                     const char *status, HRESULT hr)
+ {
+     struct priv *p = sw->priv;
++    if (mp_ass_pacing_enabled(sw->ctx->global)) {
++        struct vo *vo = sw->ctx->vo;
++        uint32_t tag = UINT32_C(2166136261);
++        for (const char *s = status; *s; s++)
++            tag = (tag ^ (uint8_t)*s) * UINT32_C(16777619);
++        struct mp_ass_pacing_record record = {
++            .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
++            .frame_id = vo->pacing_frame_id, .generation = p->present_generation,
++            .flags = UINT64_C(1) << 63, // error/unsupported; no raw stats
++            .v = {(uint32_t)hr, tag, p->opts->sync_interval,
++                p->last_submit_qpc, p->perf_freq},
++        };
++        mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
++    }
+     if (p->secondary_trace)
+         MP_INFO(sw->ctx, "native-ass-dxgi: status=%s hr=0x%08"PRIx32
+                 " sync_interval=%d last_submit_qpc=%"PRId64"\n",
+@@ -904,10 +1019,29 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+     // Opt-in diagnostics only: retain the existing estimator and expose the
+     // two independent DXGI timelines instead of calling its queue guess an
+     // actual timestamp for the most recently submitted Present ID.
+-    if (p->secondary_trace) {
++    bool recording = mp_ass_pacing_enabled(sw->ctx->global);
++    if (p->secondary_trace || recording) {
+         LARGE_INTEGER now_qpc;
+         QueryPerformanceCounter(&now_qpc);
+         int64_t now_ns = mp_time_ns();
++        if (recording) {
++            struct vo *vo = sw->ctx->vo;
++            struct mp_ass_pacing_record record = {
++                .event_ns = now_ns, .vo_seq = vo->pacing_vo_seq,
++                .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++                .generation = p->present_generation,
++                .flags = (uint64_t)info->secondary_submit_valid |
++                    ((uint64_t)info->secondary_phase_reset << 1),
++                .v = {submit_count, stats.PresentCount, stats.PresentRefreshCount,
++                    stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart,
++                    p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
++                    now_qpc.QuadPart, now_ns, info->last_queue_display_time,
++                    p->opts->sync_interval, desc.SwapEffect,
++                    info->secondary_sync_time, info->secondary_display_time},
++            };
++            mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
++        }
++        if (p->secondary_trace)
+         MP_INFO(sw->ctx, "native-ass-dxgi: status=ok submit_count=%u"
+                 " present_count=%u present_refresh_count=%u"
+                 " sync_refresh_count=%u sync_qpc=%"PRId64
+@@ -1059,7 +1193,8 @@ void ra_d3d11_ctx_gpu_marker_draw_begin(struct ra_ctx *ra)
+             p->gpu_markers[n].in_use)
+         {
+             struct d3d11_gpu_marker *m = &p->gpu_markers[n];
+-            MP_INFO(ra, "native-ass-gpu-marker: status=draw_unpresented"
++            if (p->secondary_trace)
++                MP_INFO(ra, "native-ass-gpu-marker: status=draw_unpresented"
+                     " seq=%"PRIu64" generation=%"PRIu64"\n",
+                     m->seq, m->generation);
+             m->present_verified = true;
+@@ -1076,7 +1211,18 @@ void ra_d3d11_ctx_gpu_marker_draw_end(struct ra_ctx *ra, uint64_t frame_id)
+         return;
+     struct priv *p = ra->priv;
+     if (p && p->gpu_marker_active)
+-        d3d11_gpu_marker_end(ra, frame_id);
++        d3d11_gpu_marker_end(ra, frame_id, 0);
++}
++
++void ra_d3d11_ctx_gpu_marker_stage(struct ra_ctx *ra, uint64_t frame_id,
++                                 uint32_t stage)
++{
++    if (!stage || !ra || !ra->swapchain ||
++        ra->swapchain->fns != &d3d11_swapchain)
++        return;
++    struct priv *p = ra->priv;
++    if (p && p->gpu_marker_active)
++        d3d11_gpu_marker_end(ra, frame_id, stage);
+ }
+ 
+ static bool d3d11_init(struct ra_ctx *ctx)
+@@ -1087,10 +1233,13 @@ static bool d3d11_init(struct ra_ctx *ctx)
+     const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
+     const char *marker = getenv("MPV_NATIVE_GPU_MARKER");
+     p->secondary_trace = trace && strcmp(trace, "1") == 0;
++    const char *diagnostic_env = getenv("MPV_NATIVE_ASS_DIAGNOSTIC");
++    bool diagnostic = p->secondary_trace ||
++        (diagnostic_env && strcmp(diagnostic_env, "1") == 0);
+     const char *schedule_trace = getenv("MPV_NATIVE_SCHEDULE_TRACE");
+     p->schedule_trace = p->secondary_trace && schedule_trace &&
+         strcmp(schedule_trace, "1") == 0;
+-    p->gpu_marker_active = p->secondary_trace && marker && strcmp(marker, "1") == 0;
++    p->gpu_marker_active = diagnostic && marker && strcmp(marker, "1") == 0;
+     p->gpu_marker_generation = 1;
+     p->present_generation = 1;
+     p->last_present_hr = E_FAIL;
+diff --git a/video/out/d3d11/context.h b/video/out/d3d11/context.h
+index e976bcb..e89b52c 100644
+--- a/video/out/d3d11/context.h
++++ b/video/out/d3d11/context.h
+@@ -22,7 +22,12 @@ void ra_d3d11_ctx_set_swapchain_params(struct ra_ctx *ra,
+                                        struct pl_d3d11_swapchain_params *params);
+ 
+ // Opt-in, non-blocking D3D11 GPU completion evidence. These calls are no-ops
+-// unless MPV_NATIVE_ASS_TRACE=1 and MPV_NATIVE_GPU_MARKER=1 are both set.
++// unless MPV_NATIVE_GPU_MARKER=1 and either MPV_NATIVE_ASS_DIAGNOSTIC=1
++// or MPV_NATIVE_ASS_TRACE=1 are set. Text logs additionally require TRACE=1.
+ // They never flush, wait, or affect the rendering scheduler.
+ void ra_d3d11_ctx_gpu_marker_draw_begin(struct ra_ctx *ra);
+ void ra_d3d11_ctx_gpu_marker_draw_end(struct ra_ctx *ra, uint64_t frame_id);
++// Stage probes are observations, never readiness/Display authority. 0 is the
++// legacy draw-end marker; positive stages do not consume a Present binding.
++void ra_d3d11_ctx_gpu_marker_stage(struct ra_ctx *ra, uint64_t frame_id,
++                                 uint32_t stage);
+diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
+index ca618dc..d944199 100644
+--- a/video/out/secondary_ass_physical.h
++++ b/video/out/secondary_ass_physical.h
+@@ -19,6 +19,9 @@ struct secondary_ass_physical {
+     bool outlier_pending;
+     int64_t outlier_qpc_ns;
+     uint32_t outlier_count;
++    int64_t recovery_qpc_ns, recovery_slot;
++    uint32_t recovery_count;
++    int64_t history_floor_slot;
+     int64_t measure_qpc_ns;
+     uint32_t measure_count;
+     int64_t periods[5];
+@@ -28,7 +31,11 @@ struct secondary_ass_physical {
+     uint64_t success_first_id, success_last_id, success_generation;
+     bool success_contiguous;
+     int delay, delay_samples[3], delay_count, delay_next;
+-    struct { uint64_t id; int64_t base, base_slot, target_slot; } submitted[32];
++    struct {
++        uint64_t id;
++        int64_t base, base_slot, target_slot;
++        bool gap_excluded;
++    } submitted[32];
+     unsigned next;
+ };
+ 
+@@ -133,6 +140,32 @@ static inline void secondary_ass_physical_measure_anchor(
+     p->measure_count = count;
+ }
+ 
++static inline void secondary_ass_physical_clear_recovery(
++    struct secondary_ass_physical *p)
++{
++    p->recovery_qpc_ns = p->recovery_slot = 0;
++    p->recovery_count = 0;
++}
++
++// A recovered count segment does not authorize history from the gap. Keep the
++// phase and immutable submission coordinates; exclude only ambiguous feedback,
++// leaving the existing period median and delay learner values untouched.
++static inline void secondary_ass_physical_recover(
++    struct secondary_ass_physical *p, int64_t qpc_ns, uint32_t count,
++    int64_t slot)
++{
++    p->sync_qpc_ns = qpc_ns;
++    p->sync_count = count;
++    p->sync_slot = slot;
++    p->sync_segment_consistent = false;
++    p->history_floor_slot = slot;
++    p->outlier_pending = false;
++    p->outlier_qpc_ns = 0;
++    p->outlier_count = 0;
++    secondary_ass_physical_clear_recovery(p);
++    secondary_ass_physical_measure_anchor(p, qpc_ns, count);
++}
++
+ // Display-sync submits one frame per refresh. Pending Present IDs therefore
+ // locate the next queued scanout from identified display history; they are not
+ // an elapsed wall oscillator or a guess about independent audio redraws.
+@@ -184,25 +217,26 @@ static inline bool secondary_ass_physical_observe(
+         steps > INT64_MAX / p->interval)
+         return false;
+     int64_t residual = elapsed - steps * p->interval;
+-    // Reject ambiguous timing without treating a single forward-count jitter
++    // Reject ambiguous timing without treating a single scheduler/driver jitter
+     // as a mode change. Keep the last trusted phase, but only predict through
+     // the next base refresh supported by the independently observed count.
+     // A distinct second bad sample must also advance the count to invalidate it.
+     if (residual > p->interval / 4 || residual < -p->interval / 4) {
+         uint32_t forward = count - p->sync_count;
+         bool advanced = forward && forward < UINT32_C(0x80000000);
+-        if (!advanced) {
+-            p->phase = p->phase_slot = 0;
+-        } else if (!p->outlier_pending) {
++        if (!p->outlier_pending) {
+             p->outlier_pending = true;
+             p->outlier_qpc_ns = qpc_ns;
+             p->outlier_count = count;
+-        } else {
++            for (unsigned n = 0; n < 32; n++)
++                p->submitted[n].gap_excluded = true;
++        } else if (advanced) {
+             uint32_t another = count - p->outlier_count;
+             if (qpc_ns != p->outlier_qpc_ns && another &&
+                 another < UINT32_C(0x80000000))
+                 p->phase = p->phase_slot = 0;
+         }
++        secondary_ass_physical_clear_recovery(p);
+         p->sync_segment_consistent = false;
+         p->measure_qpc_ns = 0;
+         return false;
+@@ -210,11 +244,44 @@ static inline bool secondary_ass_physical_observe(
+     uint32_t passed = count - p->sync_count;
+     bool consistent = passed < UINT32_C(0x80000000) &&
+                       (uint64_t)steps == passed;
+-    // QPC landing on the old grid is insufficient if the independently
+-    // observed count did not advance with it. A repeated/stalled statistic
+-    // must not remove the count horizon or enter the delay learner.
+-    if (p->outlier_pending && !consistent)
++    if (p->outlier_pending) {
++        int64_t slot = p->sync_slot + steps;
++        if (consistent) {
++            secondary_ass_physical_recover(p, qpc_ns, count, slot);
++            // Commit the trusted segment, but skip this mixed-gap history.
++            return false;
++        }
++        // A permanently lost raw count can never agree with the old anchor.
++        // Require two distinct observations on its retained QPC lattice whose
++        // *relative* count/time deltas agree, instead of running a wall clock
++        // or waiting forever for the lost count. The first anchor grants no
++        // additional point horizon and neither observation enters the learner.
++        if (p->recovery_qpc_ns) {
++            if (qpc_ns <= p->recovery_qpc_ns)
++                return false;
++            int64_t delta = qpc_ns - p->recovery_qpc_ns;
++            if (delta > INT64_MAX - p->interval / 2)
++                return false;
++            int64_t recovery_steps = (delta + p->interval / 2) / p->interval;
++            if (recovery_steps > 0 &&
++                recovery_steps <= INT64_MAX / p->interval) {
++                int64_t recovery_residual = delta - recovery_steps * p->interval;
++                uint32_t recovery_passed = count - p->recovery_count;
++                if (recovery_passed && recovery_passed < UINT32_C(0x80000000) &&
++                    (uint64_t)recovery_steps == recovery_passed &&
++                    recovery_steps == slot - p->recovery_slot &&
++                    recovery_residual <= p->interval / 4 &&
++                    recovery_residual >= -p->interval / 4) {
++                    secondary_ass_physical_recover(p, qpc_ns, count, slot);
++                    return false;
++                }
++            }
++        }
++        p->recovery_qpc_ns = qpc_ns;
++        p->recovery_count = count;
++        p->recovery_slot = slot;
+         return false;
++    }
+     p->outlier_pending = false;
+     p->outlier_qpc_ns = 0;
+     p->outlier_count = 0;
+@@ -274,7 +341,8 @@ static inline void secondary_ass_physical_feedback_point(
+     struct secondary_ass_physical *p, struct secondary_ass_physical_point actual,
+     uint64_t historical_id)
+ {
+-    if (p->epoch_exhausted || actual.wall <= 0 || actual.slot <= 0 ||
++    if (p->epoch_exhausted || p->outlier_pending || actual.wall <= 0 ||
++        actual.slot <= 0 || actual.slot < p->history_floor_slot ||
+         !historical_id || historical_id == p->historical_id)
+         return;
+     p->phase = actual.wall;
+@@ -283,6 +351,10 @@ static inline void secondary_ass_physical_feedback_point(
+     for (unsigned n = 0; n < 32; n++) {
+         if (p->submitted[n].id != historical_id)
+             continue;
++        if (p->submitted[n].gap_excluded ||
++            (p->history_floor_slot &&
++             p->submitted[n].base_slot < p->history_floor_slot))
++            break;
+         int64_t delta;
+         if (p->submitted[n].base_slot > 0) {
+             delta = actual.slot - p->submitted[n].base_slot;
+@@ -389,6 +461,7 @@ static inline void secondary_ass_physical_submit_point(
+     p->submitted[p->next].base = base;
+     p->submitted[p->next].base_slot = base_slot;
+     p->submitted[p->next].target_slot = intended.slot;
++    p->submitted[p->next].gap_excluded = p->outlier_pending;
+     p->next = (p->next + 1) % 32;
+     if (base_slot > p->last_base_slot) {
+         p->last_base_slot = base_slot;
+@@ -416,6 +489,7 @@ static inline bool secondary_ass_physical_submit_planned_point(
+     p->submitted[p->next].base = base.wall;
+     p->submitted[p->next].base_slot = base.slot;
+     p->submitted[p->next].target_slot = target.slot;
++    p->submitted[p->next].gap_excluded = p->outlier_pending;
+     p->next = (p->next + 1) % 32;
+     if (base.slot > p->last_base_slot) {
+         p->last_base_slot = base.slot;
+@@ -449,6 +523,9 @@ static inline void secondary_ass_physical_submit(
+     int64_t base = intended - p->delay * p->interval;
+     p->submitted[p->next].id = id;
+     p->submitted[p->next].base = base;
++    p->submitted[p->next].base_slot = 0;
++    p->submitted[p->next].target_slot = 0;
++    p->submitted[p->next].gap_excluded = p->outlier_pending;
+     p->next = (p->next + 1) % 32;
+     p->last_base = base;
+ }
+@@ -701,6 +778,23 @@ static inline void secondary_ass_physical_update_observed(
+         (offset > 0 && p->sync_slot > INT64_MAX - offset) ||
+         (offset < 0 && p->sync_slot <= -offset))
+         return;
++    if (offset && p->history_floor_slot) {
++        // A raw offset may only cross the newly established count segment for
++        // an identified post-recovery submission. Old/gap IDs (including an
++        // unregistered one) cannot move phase or invent a delay sample. Exact
++        // Sync/Present pairs remain usable to bootstrap a cleared phase.
++        bool post_recovery = false;
++        for (unsigned n = 0; n < 32; n++) {
++            if (p->submitted[n].id == historical_id &&
++                !p->submitted[n].gap_excluded &&
++                p->submitted[n].base_slot >= p->history_floor_slot) {
++                post_recovery = true;
++                break;
++            }
++        }
++        if (!post_recovery)
++            return;
++    }
+     int64_t adjustment = offset * p->interval;
+     if ((adjustment > 0 && sync_wall > INT64_MAX - adjustment) ||
+         (adjustment < 0 && sync_wall <= -adjustment))
+diff --git a/video/out/vo.c b/video/out/vo.c
+index f7fef1f..058aa86 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -50,6 +50,7 @@
+ #include "options/m_config.h"
+ #include "common/msg.h"
+ #include "common/global.h"
++#include "common/ass_pacing_record.h"
+ #include "common/stats.h"
+ #include "video/hwdec.h"
+ #include "video/mp_image.h"
+@@ -186,6 +187,9 @@ struct vo_internal {
+     bool secondary_present_plan; // isolated planned-base consumption experiment
+     bool secondary_split_budget; // opt-in measured submission envelope forecast
+     struct secondary_ass_flip_budget secondary_flip_budget; // VO thread only
++    struct mp_ass_pacing_record pacing_draw_record; // diagnostic, VO thread only
++    struct mp_ass_pacing_record pacing_plan_record;
++    int64_t pacing_cpu_end;
+     int64_t secondary_render_cost;
+     int64_t secondary_cost_update; // VO thread only
+     int64_t secondary_gpu_cost; // VO thread only
+@@ -221,12 +225,99 @@ struct vo_internal {
+ 
+ // Called by the VO thread, with in->lock held. Old GPU averages and redraw
+ // samples cannot describe a different file, texture size or presentation chain.
++static uint32_t secondary_record_tag(const char *text)
++{
++    uint32_t tag = UINT32_C(2166136261);
++    for (; text && *text; text++)
++        tag = (tag ^ (uint8_t)*text) * UINT32_C(16777619);
++    return tag;
++}
++
++static void secondary_record_begin(struct vo *vo, const struct vo_frame *frame,
++    int64_t original_target, int64_t submit, int64_t presentation_time,
++    int64_t deadline, const struct secondary_ass_physical_point *point,
++    const struct secondary_ass_present_plan *plan, bool fresh, bool target_updated,
++    bool full_redraw)
++{
++    if (!mp_ass_pacing_enabled(vo->global))
++        return;
++    struct vo_internal *in = vo->in;
++    vo->pacing_draw_seq = mp_ass_pacing_next_draw(vo->global);
++    vo->pacing_frame_id = frame->frame_id;
++    in->pacing_cpu_end = 0;
++    in->pacing_draw_record = (struct mp_ass_pacing_record){
++        .event_ns = in->secondary_last_draw,
++        .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
++        .frame_id = frame->frame_id, .epoch = in->secondary_physical.epoch,
++        .generation = plan ? plan->generation : in->secondary_physical.success_generation,
++        .flags = (uint64_t)fresh | ((uint64_t)frame->display_synced << 1) |
++            ((uint64_t)target_updated << 2) | ((uint64_t)full_redraw << 3) |
++            ((uint64_t)(plan && plan->valid) << 4) |
++            ((uint64_t)(point->slot > 0) << 5),
++        .v = {original_target, submit, presentation_time, deadline,
++            point->slot, plan ? plan->base.slot : 0,
++            plan ? plan->base.wall : 0,
++            plan ? plan->lifecycle_safe_wait : 0,
++            plan ? plan->fifo_lower : 0, plan ? plan->fifo_known : 0,
++            in->secondary_physical.delay, in->secondary_physical.phase,
++            in->secondary_physical.phase_slot, in->secondary_physical.interval,
++            frame->pts, frame->duration},
++    };
++    in->pacing_plan_record = (struct mp_ass_pacing_record){0};
++    if (plan) {
++        in->pacing_plan_record = (struct mp_ass_pacing_record){
++            .event_ns = in->secondary_last_draw,
++            .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
++            .frame_id = frame->frame_id, .epoch = plan->epoch,
++            .generation = plan->generation,
++            .flags = (uint64_t)fresh | ((uint64_t)plan->valid << 1),
++            .v = {plan->base.slot, plan->base.wall, plan->target.slot,
++                plan->target.wall, plan->submit, plan->deadline,
++                plan->fifo_lower, plan->fifo_known, plan->historical_delay,
++                plan->fallback_submit, plan->lifecycle_safe_wait},
++        };
++    }
++    osd_set_ass_pacing_scope(vo->osd, vo->pacing_vo_seq, vo->pacing_draw_seq,
++                            frame->frame_id);
++}
++
++static void secondary_record_end(struct vo *vo)
++{
++    if (!vo->pacing_draw_seq)
++        return;
++    // Publish saved calculation boundaries after Present/feedback, never
++    // format or write a file in the interval between an API timestamp and call.
++    struct vo_internal *in = vo->in;
++    if (in->pacing_plan_record.draw_seq)
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_PLAN, &in->pacing_plan_record);
++    mp_ass_pacing_record(vo->global, MP_ASS_PACING_DRAW, &in->pacing_draw_record);
++    struct mp_ass_pacing_record record = in->pacing_draw_record;
++    record.event_ns = in->pacing_cpu_end;
++    record.v[0] = in->pacing_draw_record.event_ns;
++    record.v[1] = in->pacing_cpu_end;
++    record.v[2] = in->secondary_gpu_cost; // performance estimate, not GPU Ready
++    record.v[3] = in->secondary_redraw_gpu_cost;
++    mp_ass_pacing_record(vo->global, MP_ASS_PACING_CPU, &record);
++    osd_set_ass_pacing_scope(vo->osd, 0, 0, 0);
++    vo->pacing_draw_seq = vo->pacing_frame_id = 0;
++}
++
+ static void secondary_reset_physical(struct vo *vo, const char *reason)
+ {
+     struct vo_internal *in = vo->in;
++    uint64_t previous_epoch = in->secondary_physical.epoch;
+     secondary_ass_physical_reset(&in->secondary_physical);
+     secondary_ass_flip_budget_reset(&in->secondary_flip_budget);
+-    if (in->secondary_present_plan)
++    if (mp_ass_pacing_enabled(vo->global)) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
++            .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++            .epoch = in->secondary_physical.epoch,
++            .v = {(int64_t)previous_epoch, secondary_record_tag(reason)},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_LIFECYCLE, &record);
++    }
++    if (in->secondary_trace && in->secondary_present_plan)
+         MP_INFO(vo, "native-ass-plan-reset: epoch=%"PRIu64" reason=%s\n",
+                 in->secondary_physical.epoch, reason);
+ }
+@@ -299,6 +390,21 @@ static void secondary_observe_flip_budget(struct vo *vo,
+     bool observed = secondary_ass_flip_budget_observe(&in->secondary_flip_budget,
+         valid, plan ? plan->epoch : 0, plan ? plan->generation : 0,
+         vsync->secondary_submit_id, begin, end, vo_wait);
++    if (mp_ass_pacing_enabled(vo->global)) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = end, .vo_seq = vo->pacing_vo_seq,
++            .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++            .epoch = in->secondary_physical.epoch,
++            .generation = in->secondary_physical.success_generation,
++            .flags = (uint64_t)fresh | ((uint64_t)valid << 1) |
++                ((uint64_t)observed << 2) | ((uint64_t)guard_armed << 3),
++            .v = {(int64_t)vsync->secondary_submit_id, begin, end, vo_wait,
++                flip_begin, in->secondary_flip_budget.cost,
++                in->secondary_redraw_block_cost, in->secondary_redraw_cost},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_FLIP_BUDGET, &record);
++    }
++    if (in->secondary_trace)
+     MP_INFO(vo, "native-ass-flip-budget: fresh=%d id=%"PRIu64
+         " valid=%d observed=%d guard_armed=%d begin_ns=%"PRId64" end_ns=%"PRId64
+         " vo_wait_ns=%"PRId64" flip_begin_ns=%"PRId64
+@@ -328,6 +434,7 @@ static const struct secondary_ass_physical *secondary_planning_state(
+ static void secondary_trace_plan(struct vo *vo, bool fresh,
+                                 const struct secondary_ass_present_plan *plan)
+ {
++    if (vo->in->secondary_trace)
+     MP_INFO(vo, "native-ass-plan: fresh=%d enabled=1 base_slot=%"PRId64
+         " base_ns=%"PRId64" target_slot=%"PRId64" target_ns=%"PRId64
+         " submit_ns=%"PRId64" deadline_ns=%"PRId64" fifo_lower_slot=%"PRId64
+@@ -343,6 +450,18 @@ static void secondary_trace_plan(struct vo *vo, bool fresh,
+ static void secondary_trace_plan_missed(struct vo *vo, const char *reason,
+     const char *stage, const struct secondary_ass_present_plan *plan)
+ {
++    if (mp_ass_pacing_enabled(vo->global)) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
++            .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++            .epoch = plan->epoch, .generation = plan->generation,
++            .v = {plan->target.slot, plan->target.wall, plan->base.slot,
++                plan->base.wall, plan->deadline, secondary_record_tag(reason),
++                secondary_record_tag(stage)},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_MISS, &record);
++    }
++    if (vo->in->secondary_trace)
+     MP_INFO(vo, "native-ass-plan-missed: reason=%s stage=%s actual_draw=0 "
+         "original_target_slot=%"PRId64" original_target_ns=%"PRId64
+         " base_slot=%"PRId64" base_ns=%"PRId64" epoch=%"PRIu64
+@@ -480,6 +599,7 @@ static struct vo *vo_create(bool probing, struct mpv_global *global,
+         .monitor_par = 1,
+         .extra = *ex,
+         .probing = probing,
++        .pacing_vo_seq = mp_ass_pacing_next_vo(global),
+         .in = talloc(vo, struct vo_internal),
+     };
+     mp_mutex_init(&vo->params_mutex);
+@@ -1184,7 +1304,8 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+            (!in->current_frame || in->current_frame->num_vsyncs < 1));
+     // Copy scalar identity under the VO lock; the frame can be freed as
+     // soon as we unlock. The core thread never reads VO physical state.
+-    bool trace_queue = in->secondary_schedule_trace;
++    bool record_queue = mp_ass_pacing_enabled(vo->global);
++    bool trace_queue = in->secondary_schedule_trace || record_queue;
+     int64_t queue_ns = trace_queue ? mp_time_ns() : 0;
+     int64_t queue_pts = trace_queue ? frame->pts : 0;
+     int64_t queue_duration = trace_queue ? frame->duration : 0;
+@@ -1199,7 +1320,15 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+                    ? 0 : frame->pts + MPMAX(frame->duration, 0);
+     wakeup_locked(vo);
+     mp_mutex_unlock(&in->lock);
+-    if (trace_queue)
++    if (record_queue) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = queue_ns, .vo_seq = vo->pacing_vo_seq,
++            .frame_id = queued_id, .flags = queue_ds,
++            .v = {(int64_t)retained_id, queue_pts, queue_duration},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_QUEUE, &record);
++    }
++    if (in->secondary_schedule_trace)
+         MP_INFO(vo, "native-ass-queue-trace: frame=%"PRIu64
+             " retained_id=%"PRIu64" queue_ns=%"PRId64
+             " pts_ns=%"PRId64" duration_ns=%"PRId64" ds=%d\n",
+@@ -1222,6 +1351,8 @@ void vo_wait_frame(struct vo *vo)
+ static void wait_until(struct vo *vo, int64_t target)
+ {
+     struct vo_internal *in = vo->in;
++    bool record_wait = vo->pacing_draw_seq && mp_ass_pacing_enabled(vo->global);
++    int64_t wait_begin = record_wait ? mp_time_ns() : 0;
+     mp_mutex_lock(&in->lock);
+     while (target > mp_time_ns()) {
+         if (in->queued_events & VO_EVENT_LIVE_RESIZING)
+@@ -1252,10 +1383,21 @@ static void wait_until(struct vo *vo, int64_t target)
+                 target, woke, woke - target);
+     }
+     mp_mutex_unlock(&in->lock);
++    if (record_wait) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
++            .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++            .epoch = in->secondary_physical.epoch,
++            .v = {target, wait_begin},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_WAIT, &record);
++    }
+ }
+ 
+ static void secondary_plan_wait_until(struct vo *vo, int64_t target)
+ {
++    bool record_wait = vo->pacing_draw_seq && mp_ass_pacing_enabled(vo->global);
++    int64_t wait_begin = record_wait ? mp_time_ns() : 0;
+     // A rendered future sample must not be displayed early after its queue
+     // proof becomes invalid. The original wait may return for a live resize
+     // or wait error; finish this captured absolute deadline without the VO
+@@ -1263,8 +1405,19 @@ static void secondary_plan_wait_until(struct vo *vo, int64_t target)
+     wait_until(vo, target);
+     for (;;) {
+         int64_t now = mp_time_ns();
+-        if (now >= target)
++        if (now >= target) {
++            if (record_wait) {
++                struct mp_ass_pacing_record record = {
++                    .event_ns = now, .vo_seq = vo->pacing_vo_seq,
++                    .draw_seq = vo->pacing_draw_seq,
++                    .frame_id = vo->pacing_frame_id, .flags = 1,
++                    .epoch = vo->in->secondary_physical.epoch,
++                    .v = {target, wait_begin},
++                };
++                mp_ass_pacing_record(vo->global, MP_ASS_PACING_WAIT, &record);
++            }
+             return;
++        }
+         mp_sleep_ns(target - now);
+     }
+ }
+@@ -1333,6 +1486,7 @@ static void secondary_physical_feedback(struct vo *vo,
+             secondary_ass_present_plan_current(&in->secondary_physical, plan) &&
+             secondary_ass_physical_submit_planned_point(&in->secondary_physical,
+                 submitted_id, plan->epoch, plan->base, plan->target);
++        if (in->secondary_trace)
+         MP_INFO(vo, "native-ass-plan-register: id=%"PRIu64" registered=%d "
+             "base_slot=%"PRId64" target_slot=%"PRId64" epoch=%"PRIu64
+             " generation=%"PRIu64"\n", submitted_id, registered,
+@@ -1348,13 +1502,40 @@ static void secondary_physical_feedback(struct vo *vo,
+         vsync->secondary_sync_qpc_ns, vsync->secondary_sync_time,
+         vsync->secondary_sync_refresh_count, vsync->secondary_present_refresh_count,
+         vsync->secondary_present_id, seed);
+-    if (plan && vsync->secondary_phase_reset)
++    if (plan && vsync->secondary_phase_reset && in->secondary_trace)
+         MP_INFO(vo, "native-ass-plan-reset: epoch=%"PRIu64" reason=backend_reset\n",
+                 in->secondary_physical.epoch);
+     secondary_ass_physical_record_present(&in->secondary_physical,
+         !vsync->secondary_phase_reset && vsync->secondary_submit_valid,
+         vsync->secondary_submit_id, vsync->secondary_submit_generation,
+         vsync->secondary_submit_sync_interval);
++    if (mp_ass_pacing_enabled(vo->global)) {
++        struct secondary_ass_physical *p = &in->secondary_physical;
++        int64_t saved_base = 0, saved_target = 0;
++        for (unsigned n = 0; n < 32; n++) {
++            if (p->submitted[n].id == vsync->secondary_present_id) {
++                saved_base = p->submitted[n].base_slot;
++                saved_target = p->submitted[n].target_slot;
++                break;
++            }
++        }
++        struct mp_ass_pacing_record record = {
++            .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
++            .frame_id = vo->pacing_frame_id, .epoch = p->epoch,
++            .generation = vsync->secondary_submit_generation,
++            .flags = (uint64_t)vsync->secondary_submit_valid |
++                ((uint64_t)vsync->secondary_phase_reset << 1) |
++                ((uint64_t)p->outlier_pending << 2) |
++                ((uint64_t)p->sync_segment_consistent << 3),
++            .v = {(int64_t)vsync->secondary_submit_id,
++                (int64_t)vsync->secondary_present_id, intended.slot, intended.wall,
++                p->phase, p->phase_slot, p->interval, p->delay,
++                p->delay_count, p->sync_slot, p->sync_qpc_ns, p->sync_count,
++                saved_base, saved_target, (int64_t)p->historical_id,
++                vsync->secondary_display_time},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_PHYSICAL, &record);
++    }
+     if (in->secondary_trace && in->secondary_physical.historical_id ==
+             vsync->secondary_present_id) {
+         struct secondary_ass_physical *p = &in->secondary_physical;
+@@ -1408,9 +1589,23 @@ struct secondary_ass_prepass_trace {
+ static void secondary_trace_prepass(struct vo *vo,
+     const struct secondary_ass_prepass_trace *trace, bool cache_attempt, bool drawn)
+ {
+-    if (!trace->enabled)
++    bool record_enabled = mp_ass_pacing_enabled(vo->global);
++    if (!trace->enabled && !record_enabled)
+         return;
+     int64_t completed = mp_time_ns();
++    if (record_enabled) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = completed, .vo_seq = vo->pacing_vo_seq,
++            .frame_id = trace->current_id,
++            .flags = (uint64_t)cache_attempt | ((uint64_t)drawn << 1),
++            .v = {(int64_t)trace->queued_id, trace->decision, trace->prepare,
++                trace->candidate_slot, trace->candidate_wall, trace->fresh_due,
++                trace->fresh_cost, trace->redraw_cost, trace->block_cost},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_PREPASS, &record);
++    }
++    if (!trace->enabled)
++        return;
+     MP_INFO(vo, "native-ass-prepass-trace: current_id=%"PRIu64
+         " queued_id=%"PRIu64" decision_ns=%"PRId64" prepare_ns=%"PRId64
+         " candidate_slot=%"PRId64" candidate_ns=%"PRId64
+@@ -1503,9 +1698,10 @@ static bool render_frame(struct vo *vo)
+                         : (struct secondary_ass_present_plan){0},
+                 };
+         }
+-        if (in->secondary_schedule_trace)
++        if (in->secondary_schedule_trace || mp_ass_pacing_enabled(vo->global))
+             prepass_trace = (struct secondary_ass_prepass_trace){
+-                .enabled = true, .current_id = in->current_frame->frame_id,
++                .enabled = in->secondary_schedule_trace,
++                .current_id = in->current_frame->frame_id,
+                 .queued_id = in->frame_queued->frame_id,
+                 .decision = now, .prepare = prepare,
+                 .candidate_slot = prepass_candidate.slot,
+@@ -1569,6 +1765,7 @@ static bool render_frame(struct vo *vo)
+ 
+     // Time at which we should flip_page on the VO.
+     int64_t target = frame->display_synced ? 0 : pts - in->flip_queue_offset;
++    int64_t original_video_target = target;
+ 
+     // "normal" strict drop threshold.
+     in->dropped_frame = duration >= 0 && end_time < now;
+@@ -1714,10 +1911,16 @@ static bool render_frame(struct vo *vo)
+         secondary_ass_consume_draw(&in->secondary_presentation,
+                                    in->secondary_last_draw);
+ 
++        secondary_record_begin(vo, frame, original_video_target, target,
++            presentation_time, planned_audio ? present_plan.deadline : 0,
++            &physical_point, planned_audio ? &present_plan : NULL,
++            !frame->repeat, secondary_target_updated, false);
+         in->visible = vo->driver->draw_frame(vo, frame);
+         fresh_drawn = true;
+ 
+         int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
++        if (vo->pacing_draw_seq)
++            in->pacing_cpu_end = in->secondary_last_draw + cpu_cost;
+         double secondary_rate = osd_get_secondary_refresh(vo->osd);
+         int64_t render_cost = 0;
+         if (secondary_rate > 0) {
+@@ -1861,6 +2064,7 @@ static bool render_frame(struct vo *vo)
+             planned_audio ? &present_plan : NULL, flip_budget_begin,
+             0, flip_budget_begin,
+             plan_guard_armed, !frame->repeat);
++        secondary_record_end(vo);
+ 
+         // Make up some crap if presentation feedback is missing.
+         if (vsync.last_queue_display_time <= 0)
+@@ -2121,8 +2325,13 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     in->secondary_last_draw = draw_begin;
+     secondary_ass_consume_draw(&in->secondary_presentation,
+                                in->secondary_last_draw);
++    secondary_record_begin(vo, frame, 0, trace_submit, presentation_time,
++        trace_deadline, &physical_point, planned_audio ? &present_plan : NULL,
++        false, secondary_target_updated, full_redraw);
+     vo->driver->draw_frame(vo, frame);
+     int64_t cpu_end = mp_time_ns();
++    if (vo->pacing_draw_seq)
++        in->pacing_cpu_end = cpu_end;
+     int64_t cpu_cost = cpu_end - in->secondary_last_draw;
+     bool flip_budget_guard_armed = false;
+     if (physical_phase) {
+@@ -2201,6 +2410,7 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     }
+     if (frame != &dummy && !(vo->driver->caps & VO_CAP_FRAMEOWNER))
+         talloc_free(frame);
++    secondary_record_end(vo);
+     return true;
+ }
+ 
+@@ -2232,23 +2442,37 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+     read_opts(vo);
+     const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
+     in->secondary_trace = trace && strcmp(trace, "1") == 0;
++    // Recording and text logging do not grant experimental scheduling.
++    // Explicit diagnostic mode allows fixed same-binary cases with text off.
++    const char *diagnostic_env = getenv("MPV_NATIVE_ASS_DIAGNOSTIC");
++    bool diagnostic = in->secondary_trace ||
++        (diagnostic_env && strcmp(diagnostic_env, "1") == 0);
+     const char *schedule_trace = getenv("MPV_NATIVE_SCHEDULE_TRACE");
+     mp_mutex_lock(&in->lock);
+     in->secondary_schedule_trace = in->secondary_trace && schedule_trace &&
+         strcmp(schedule_trace, "1") == 0;
+     mp_mutex_unlock(&in->lock);
+     const char *fifo_present = getenv("MPV_NATIVE_FIFO_PRESENT");
+-    in->secondary_fifo_present = in->secondary_trace && fifo_present &&
++    in->secondary_fifo_present = diagnostic && fifo_present &&
+         strcmp(fifo_present, "1") == 0;
+     const char *present_grid = getenv("MPV_NATIVE_PRESENT_GRID");
+-    in->secondary_present_grid = in->secondary_trace && present_grid &&
++    in->secondary_present_grid = diagnostic && present_grid &&
+         strcmp(present_grid, "1") == 0;
+     const char *present_plan = getenv("MPV_NATIVE_PRESENT_PLAN");
+-    in->secondary_present_plan = in->secondary_trace && present_plan &&
++    in->secondary_present_plan = diagnostic && present_plan &&
+         strcmp(present_plan, "1") == 0;
+     const char *split_budget = getenv("MPV_NATIVE_SPLIT_BUDGET");
+-    in->secondary_split_budget = in->secondary_trace && in->secondary_present_plan &&
++    in->secondary_split_budget = diagnostic && in->secondary_present_plan &&
+         in->secondary_present_grid && split_budget && strcmp(split_budget, "1") == 0;
++    if (mp_ass_pacing_enabled(vo->global)) {
++        struct mp_ass_pacing_record record = {
++            .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
++            .v = {in->secondary_trace, diagnostic, in->secondary_schedule_trace,
++                in->secondary_fifo_present, in->secondary_present_grid,
++                in->secondary_present_plan, in->secondary_split_budget},
++        };
++        mp_ass_pacing_record(vo->global, MP_ASS_PACING_CONFIG, &record);
++    }
+     update_display_fps(vo);
+     vo_event(vo, VO_EVENT_WIN_STATE);
+ 
+diff --git a/video/out/vo.h b/video/out/vo.h
+index ec34382..bb3b5e6 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -485,6 +485,9 @@ struct vo {
+     struct mp_log *log; // Using e.g. "[vo/vdpau]" as prefix
+     void *priv;
+     struct mpv_global *global;
++    // Internal diagnostic identity. vo_seq is immutable after creation;
++    // draw/frame scope is owned by the VO thread and cleared after feedback.
++    uint64_t pacing_vo_seq, pacing_draw_seq, pacing_frame_id;
+     union {
+         struct vo_x11_state *x11;
+         struct vo_w32_state *w32;
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 44e66ea..a0d39db 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -30,6 +30,7 @@
+ 
+ #include "config.h"
+ #include "common/common.h"
++#include "common/ass_pacing_record.h"
+ #include "common/stats.h"
+ #include "misc/io_utils.h"
+ #include "options/m_config.h"
+@@ -191,6 +192,28 @@ struct priv {
+ static void update_render_options(struct vo *vo);
+ static void update_lut(struct priv *p, struct user_lut *lut);
+ 
++// CPU call boundaries only. Completion/Ready/Display remain separate evidence.
++static void pacing_gpu_stage(struct vo *vo, unsigned stage, int result)
++{
++    if (!mp_ass_pacing_enabled(vo->global))
++        return;
++    struct mp_ass_pacing_record record = {
++        .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
++        .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++        .v = {stage, result},
++    };
++    mp_ass_pacing_record(vo->global, MP_ASS_PACING_GPU_STAGE, &record);
++}
++
++static void pacing_gpu_marker(struct vo *vo, unsigned stage)
++{
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    struct priv *p = vo->priv;
++    if (p->gpu_marker_diagnostics)
++        ra_d3d11_ctx_gpu_marker_stage(p->ra_ctx, p->gpu_marker_frame_id, stage);
++#endif
++}
++
+ // [Luna] Keep image-subtitle color handling available to the shared package
+ // when migrating the core past the upstream Blu-ray menu merge.
+ enum image_subs_colorspace_mode {
+@@ -823,9 +846,12 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+     struct mp_image *mpi = frame->user_data;
+     struct frame_priv *fp = mpi->priv;
+     struct priv *p = fp->vo->priv;
++    pacing_gpu_stage(fp->vo, 130, 0);
+     if (!hwdec_reconfig(p, &p->hwdec_mapper, &p->hwdec_timer, fp->hwdec,
+-                        &mpi->params))
++                        &mpi->params)) {
++        pacing_gpu_stage(fp->vo, 131, -1);
+         return false;
++    }
+ 
+     stats_time_start(p->stats, "hwdec-map");
+     timer_pool_start(p->hwdec_timer);
+@@ -833,6 +859,7 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+         MP_ERR(p, "Mapping hardware decoded surface failed.\n");
+         timer_pool_stop(p->hwdec_timer);
+         stats_time_end(p->stats, "hwdec-map");
++        pacing_gpu_stage(fp->vo, 131, -2);
+         return false;
+     }
+ 
+@@ -840,6 +867,7 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+         if (!(frame->planes[n].texture = hwdec_get_tex(p, p->hwdec_mapper, n))) {
+             timer_pool_stop(p->hwdec_timer);
+             stats_time_end(p->stats, "hwdec-map");
++            pacing_gpu_stage(fp->vo, 131, -3);
+             return false;
+         }
+     }
+@@ -848,6 +876,9 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+     p->hwdec_perf = timer_pool_measure(p->hwdec_timer);
+     stats_time_end(p->stats, "hwdec-map");
+ 
++    pacing_gpu_stage(fp->vo, 131, 1);
++    pacing_gpu_marker(fp->vo, 3);
++
+     return true;
+ }
+ 
+@@ -871,21 +902,30 @@ static bool hwdec_acquire_el(pl_gpu gpu, struct pl_frame *frame)
+     struct mp_image *el_mpi = bl_mpi->enhancement_layer;
+     struct frame_priv *fp = bl_mpi->priv;
+     struct priv *p = fp->vo->priv;
++    pacing_gpu_stage(fp->vo, 132, 0);
+     if (!hwdec_reconfig(p, &p->el_hwdec_mapper, &p->el_hwdec_timer,
+-                        fp->el_hwdec, &el_mpi->params))
++                        fp->el_hwdec, &el_mpi->params)) {
++        pacing_gpu_stage(fp->vo, 133, -1);
+         return false;
++    }
+ 
+     if (ra_hwdec_mapper_map(p->el_hwdec_mapper, el_mpi) < 0) {
+         MP_ERR(p, "Mapping enhancement-layer hwdec surface failed.\n");
++        pacing_gpu_stage(fp->vo, 133, -2);
+         return false;
+     }
+ 
+     for (int n = 0; n < frame->num_planes; n++) {
+         if (!(frame->planes[n].texture =
+-                hwdec_get_tex(p, p->el_hwdec_mapper, n)))
++                hwdec_get_tex(p, p->el_hwdec_mapper, n))) {
++            pacing_gpu_stage(fp->vo, 133, -3);
+             return false;
++        }
+     }
+ 
++    pacing_gpu_stage(fp->vo, 133, 1);
++    pacing_gpu_marker(fp->vo, 4);
++
+     return true;
+ }
+ 
+@@ -1614,8 +1654,11 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     }
+ 
+     struct pl_swapchain_frame swframe;
++    pacing_gpu_stage(vo, 100, 0);
++    pacing_gpu_marker(vo, 1);
+     bool should_draw = sw->fns->start_frame(sw, NULL); // for wayland logic
+     if (!should_draw || !pl_swapchain_start_frame(p->sw, &swframe)) {
++        pacing_gpu_stage(vo, 101, -1);
+         if (frame->current) {
+             // Advance the queue state to the current PTS to discard unused frames
+             struct pl_queue_params qparams = *pl_queue_params(
+@@ -1628,6 +1671,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         }
+         return VO_FALSE;
+     }
++    pacing_gpu_stage(vo, 101, 1);
+ 
+     bool valid = false;
+     p->is_interpolated = false;
+@@ -1721,7 +1765,10 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         }
+         p->last_pts = qparams.pts;
+ 
+-        switch (pl_queue_update(p->queue, &mix, &qparams)) {
++        pacing_gpu_stage(vo, 120, 0);
++        int queue_status = pl_queue_update(p->queue, &mix, &qparams);
++        pacing_gpu_stage(vo, 121, queue_status);
++        switch (queue_status) {
+         case PL_QUEUE_ERR:
+             MP_ERR(vo, "Failed updating frames!\n");
+             goto done;
+@@ -1836,7 +1883,10 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     // Render frame
+     stats_time_start(p->stats, "render");
+     int64_t render_start = p->timing_diagnostics ? mp_time_ns() : 0;
++    pacing_gpu_stage(vo, 140, 0);
++    pacing_gpu_marker(vo, 2);
+     bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
++    pacing_gpu_stage(vo, 141, render_ok);
+     if (p->timing_diagnostics) {
+         int64_t ns = mp_time_ns() - render_start;
+         p->timing_render_ns += ns;
+@@ -1882,7 +1932,9 @@ done:
+     if (p->gpu_marker_diagnostics)
+         ra_d3d11_ctx_gpu_marker_draw_end(p->ra_ctx, p->gpu_marker_frame_id);
+ #endif
++    pacing_gpu_stage(vo, 150, 0);
+     pl_gpu_flush(gpu);
++    pacing_gpu_stage(vo, 151, 1);
+     p->frame_pending = true;
+     return VO_TRUE;
+ }
+@@ -2639,8 +2691,11 @@ static int preinit(struct vo *vo)
+ #if HAVE_D3D11 && defined(PL_HAVE_D3D11)
+     const char *gpu_marker = getenv("MPV_NATIVE_GPU_MARKER");
+     const char *ass_trace = getenv("MPV_NATIVE_ASS_TRACE");
++    const char *ass_diagnostic = getenv("MPV_NATIVE_ASS_DIAGNOSTIC");
++    bool diagnostic = (ass_trace && strcmp(ass_trace, "1") == 0) ||
++        (ass_diagnostic && strcmp(ass_diagnostic, "1") == 0);
+     p->gpu_marker_diagnostics = gpu_marker && strcmp(gpu_marker, "1") == 0 &&
+-                                ass_trace && strcmp(ass_trace, "1") == 0;
++                                diagnostic;
+ #endif
+     p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
+     p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
+-- 
+2.54.0.windows.1
+
