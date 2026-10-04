@@ -1,7 +1,7 @@
-From fc9b73871dbf2b8c34daefc262061e225b6c79d0 Mon Sep 17 00:00:00 2001
+From c133e9c58dc1f79a5e8f981e6dac16ec377cf4ba Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
-Date: Sat, 3 Oct 2026 22:30:00 +0800
-Subject: [PATCH] vo: preserve FIFO phase with shared swapchain lifecycle guards
+Date: Sun, 04 Oct 2026 08:36:10 +0800
+Subject: [PATCH] vo: separate immutable present plans from historical delay
 
 ---
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
@@ -246,7 +246,7 @@ index 55b896becd4cfc4903f2256d379b78240a899750..e976bcb0b9e53d2ada03f924e0ec7ff9
  // an RA context.
  struct pl_d3d11_swapchain_params;
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
-index 1943e411916f69a707d74965c5773cee6b27b070..f892f9c504ee3979e073cc4c5922a3f6c4a661c6 100644
+index 1943e411916f69a707d74965c5773cee6b27b070..ca618dc9ff2201a133a15c88c9447d1b0c40d509 100644
 --- a/video/out/secondary_ass_physical.h
 +++ b/video/out/secondary_ass_physical.h
 @@ -25,6 +25,8 @@ struct secondary_ass_physical {
@@ -258,7 +258,42 @@ index 1943e411916f69a707d74965c5773cee6b27b070..f892f9c504ee3979e073cc4c5922a3f6
      int delay, delay_samples[3], delay_count, delay_next;
      struct { uint64_t id; int64_t base, base_slot, target_slot; } submitted[32];
      unsigned next;
-@@ -593,6 +595,56 @@ static inline void secondary_ass_physical_update(
+@@ -394,6 +396,34 @@ static inline void secondary_ass_physical_submit_point(
+     }
+ }
+ 
++// Opt-in consumers provide the immutable eligibility base selected before
++// drawing.  It is not the actual API cycle and is never reconstructed using
++// the current historical median.  The feedback/median implementation below
++// remains unchanged and measures actual-slot minus this planned base.
++static inline bool secondary_ass_physical_submit_planned_point(
++    struct secondary_ass_physical *p, uint64_t id, uint64_t epoch,
++    struct secondary_ass_physical_point base,
++    struct secondary_ass_physical_point target)
++{
++    if (p->epoch_exhausted || !id || !epoch || epoch != p->epoch ||
++        base.wall <= 0 || base.slot <= 0 || target.wall < base.wall ||
++        target.slot < base.slot ||
++        !secondary_ass_physical_interval_valid(p->interval))
++        return false;
++    if (p->submitted[(p->next + 31) % 32].id == id)
++        return false;
++    p->submitted[p->next].id = id;
++    p->submitted[p->next].base = base.wall;
++    p->submitted[p->next].base_slot = base.slot;
++    p->submitted[p->next].target_slot = target.slot;
++    p->next = (p->next + 1) % 32;
++    if (base.slot > p->last_base_slot) {
++        p->last_base_slot = base.slot;
++        p->last_base = base.wall;
++    }
++    return true;
++}
++
+ static inline void secondary_ass_physical_submit(
+     struct secondary_ass_physical *p, uint64_t id, int64_t intended)
+ {
+@@ -593,6 +623,56 @@ static inline void secondary_ass_physical_update(
      secondary_ass_physical_feedback(p, actual, interval, historical_id);
  }
  
@@ -315,22 +350,354 @@ index 1943e411916f69a707d74965c5773cee6b27b070..f892f9c504ee3979e073cc4c5922a3f6
  static inline void secondary_ass_physical_update_observed(
      struct secondary_ass_physical *p, bool invalid, uint64_t submitted_id,
      struct secondary_ass_physical_point intended, int64_t sync_qpc_ns,
+diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d19d8a700eeaeaee0645e320c7254f01e7bb3bdd
+--- /dev/null
++++ b/video/out/secondary_ass_present_plan.h
+@@ -0,0 +1,116 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_PRESENT_PLAN_H
++#define MP_SECONDARY_ASS_PRESENT_PLAN_H
++
++#include "secondary_ass_physical.h"
++
++// A planned eligibility base is not the actual Present-entry cycle.  Keep
++// the original plan immutable even when an early call or lifecycle fallback
++// changes its execution time.  Historical delay is diagnostic only here.
++struct secondary_ass_present_plan {
++    bool valid, fifo_known;
++    struct secondary_ass_physical_point base, target;
++    int64_t submit, deadline, fallback_submit, lifecycle_safe_wait;
++    int64_t interval, fifo_lower;
++    uint64_t epoch, generation;
++    int historical_delay;
++};
++
++static inline struct secondary_ass_physical secondary_ass_present_plan_view(
++    const struct secondary_ass_physical *p)
++{
++    struct secondary_ass_physical view = *p;
++    // This copy is for planning only.  Registration/feedback always mutate
++    // the original ledger and preserve its median and outlier rules.
++    view.delay = 0;
++    return view;
++}
++
++static inline struct secondary_ass_present_plan secondary_ass_present_plan_make(
++    const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point base,
++    struct secondary_ass_physical_point target)
++{
++    struct secondary_ass_present_plan plan = {
++        .base = base, .target = target, .epoch = p->epoch,
++        .generation = p->success_generation, .interval = p->interval,
++        .historical_delay = p->delay,
++    };
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    plan.fifo_lower = secondary_ass_physical_fifo_lower_bound(&view);
++    plan.fifo_known = plan.fifo_lower > 0;
++    if (base.slot <= 0 || target.slot < base.slot || base.wall <= 0 ||
++        target.wall < base.wall || base.slot <= p->last_base_slot ||
++        !p->epoch || p->epoch_exhausted ||
++        !secondary_ass_physical_interval_valid(p->interval) ||
++        secondary_ass_physical_point_at(&view, base.slot).slot != base.slot ||
++        secondary_ass_physical_point_at(&view, base.slot).wall != base.wall ||
++        secondary_ass_physical_point_at(&view, target.slot).slot != target.slot ||
++        secondary_ass_physical_point_at(&view, target.slot).wall != target.wall)
++        return plan;
++    plan.submit = secondary_ass_physical_submit_time(&view, base.wall);
++    plan.fallback_submit = secondary_ass_physical_submit_time(&view, target.wall);
++    plan.deadline = target.wall;
++    // After a generation/Sync0/mode change, old T cannot identify the next
++    // display cycle.  Waiting until the sampled target wall is conservative.
++    plan.lifecycle_safe_wait = target.wall;
++    plan.valid = plan.submit > 0 && plan.fallback_submit > 0;
++    return plan;
++}
++
++static inline struct secondary_ass_present_plan secondary_ass_present_plan_fresh(
++    const struct secondary_ass_physical *p, int64_t ready)
++{
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    // The existing strict next-cycle rule also handles exact-boundary ready.
++    struct secondary_ass_physical_point base =
++        secondary_ass_physical_predict_point(&view, ready);
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    struct secondary_ass_physical_point target = base;
++    if (base.slot > 0 && lower > base.slot)
++        target = secondary_ass_physical_point_at(&view, lower);
++    return secondary_ass_present_plan_make(p, base, target);
++}
++
++static inline struct secondary_ass_present_plan secondary_ass_present_plan_cache(
++    const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point sample)
++{
++    // Cached draws keep the exact original sampler lattice target and wait
++    // inside its preceding Sync1 cycle.  No cache early path is introduced.
++    struct secondary_ass_present_plan plan =
++        secondary_ass_present_plan_make(p, sample, sample);
++    if (plan.fifo_known && plan.fifo_lower > sample.slot)
++        plan.valid = false;
++    return plan;
++}
++
++static inline bool secondary_ass_present_plan_current(
++    const struct secondary_ass_physical *p,
++    const struct secondary_ass_present_plan *plan)
++{
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    return plan->valid && !p->epoch_exhausted && plan->epoch == p->epoch &&
++        plan->generation == p->success_generation &&
++        plan->base.slot > p->last_base_slot &&
++        (lower <= 0 || lower <= plan->target.slot) &&
++        secondary_ass_physical_point_at(&view, plan->target.slot).slot ==
++            plan->target.slot;
++}
++
++static inline struct secondary_ass_physical_point
++secondary_ass_present_plan_cache_next(const struct secondary_ass_physical *p,
++    int64_t first_slot, int64_t divisor, int64_t now)
++{
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    // A count-proven lower bound can rule out an old sampler task.  Select
++    // another point only on the original divided lattice; never rename an
++    // already captured task or change the fresh eligibility base.
++    if (lower > 0 && lower - 1 > view.last_base_slot)
++        view.last_base_slot = lower - 1;
++    return secondary_ass_physical_cache_next(&view, first_slot, divisor, now);
++}
++
++#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 3f888082578670770f82fa710684f0ea1398acd5..5a2403bf59180831788af8de443e16945ebf8f70 100644
+index 3f888082578670770f82fa710684f0ea1398acd5..e1baa7da2c8b52ca546fdece58fa548bb9dba9c2 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
-@@ -179,6 +179,7 @@ struct vo_internal {
+@@ -42,6 +42,7 @@
+ #include "secondary_ass_budget.h"
+ #include "secondary_ass_presentation.h"
+ #include "secondary_ass_physical.h"
++#include "secondary_ass_present_plan.h"
+ #include "aspect.h"
+ #include "dr_helper.h"
+ #include "input/input.h"
+@@ -179,6 +180,8 @@ struct vo_internal {
      bool secondary_sync_mode_valid, secondary_sync_mode;
      bool secondary_trace; // explicitly enabled diagnostic; never on by default
      bool secondary_present_grid; // opt-in cadence experiment, not a default
 +    bool secondary_fifo_present; // isolated opt-in FIFO submission experiment
++    bool secondary_present_plan; // isolated planned-base consumption experiment
      int64_t secondary_render_cost;
      int64_t secondary_cost_update; // VO thread only
      int64_t secondary_gpu_cost; // VO thread only
-@@ -1165,6 +1166,10 @@ static void secondary_physical_feedback(struct vo *vo,
+@@ -214,8 +217,18 @@ struct vo_internal {
+ 
+ // Called by the VO thread, with in->lock held. Old GPU averages and redraw
+ // samples cannot describe a different file, texture size or presentation chain.
+-static void reset_secondary_ass_budget(struct vo_internal *in)
++static void secondary_reset_physical(struct vo *vo, const char *reason)
+ {
++    struct vo_internal *in = vo->in;
++    secondary_ass_physical_reset(&in->secondary_physical);
++    if (in->secondary_present_plan)
++        MP_INFO(vo, "native-ass-plan-reset: epoch=%"PRIu64" reason=%s\n",
++                in->secondary_physical.epoch, reason);
++}
++
++static void reset_secondary_ass_budget(struct vo *vo)
++{
++    struct vo_internal *in = vo->in;
+     in->secondary_budget = (struct secondary_ass_budget){0};
+     in->secondary_redraw_budget = (struct secondary_ass_budget){0};
+     in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
+@@ -225,7 +238,7 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
+     in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
+     in->secondary_next_probe = 0;
+     in->secondary_presentation = (struct secondary_ass_presentation){0};
+-    secondary_ass_physical_reset(&in->secondary_physical);
++    secondary_reset_physical(vo, "budget_reset");
+ }
+ 
+ extern const struct m_sub_options gl_video_conf;
+@@ -238,8 +251,72 @@ struct secondary_ass_grid_task {
+     int64_t interval, deadline, submit_time;
+     int delay;
+     double rate;
++    bool plan_enabled;
++    struct secondary_ass_present_plan plan;
+ };
+ 
++static bool secondary_plan_enabled(struct vo *vo, bool display_synced,
++                                   int64_t divisor)
++{
++    // Restrict this experiment to an established integer physical sampler.
++    // Arbitrary manual cadence and no-grid scheduling keep the legacy path.
++    return vo->in->secondary_present_plan && vo->in->secondary_present_grid &&
++        !display_synced && divisor > 0;
++}
++
++static const struct secondary_ass_physical *secondary_planning_state(
++    struct vo *vo, bool display_synced, int64_t divisor,
++    struct secondary_ass_physical *storage)
++{
++    if (secondary_plan_enabled(vo, display_synced, divisor)) {
++        *storage = secondary_ass_present_plan_view(&vo->in->secondary_physical);
++        return storage;
++    }
++    return &vo->in->secondary_physical;
++}
++
++static void secondary_trace_plan(struct vo *vo, bool fresh,
++                                const struct secondary_ass_present_plan *plan)
++{
++    MP_INFO(vo, "native-ass-plan: fresh=%d enabled=1 base_slot=%"PRId64
++        " base_ns=%"PRId64" target_slot=%"PRId64" target_ns=%"PRId64
++        " submit_ns=%"PRId64" deadline_ns=%"PRId64" fifo_lower_slot=%"PRId64
++        " fifo_known=%d epoch=%"PRIu64" generation=%"PRIu64
++        " historical_delay=%d fallback_submit_ns=%"PRId64
++        " lifecycle_safe_wait_ns=%"PRId64" valid=%d\n",
++        fresh, plan->base.slot, plan->base.wall, plan->target.slot,
++        plan->target.wall, plan->submit, plan->deadline, plan->fifo_lower,
++        plan->fifo_known, plan->epoch, plan->generation, plan->historical_delay,
++        plan->fallback_submit, plan->lifecycle_safe_wait, plan->valid);
++}
++
++static void secondary_trace_plan_missed(struct vo *vo, const char *reason,
++    const char *stage, const struct secondary_ass_present_plan *plan)
++{
++    MP_INFO(vo, "native-ass-plan-missed: reason=%s stage=%s actual_draw=0 "
++        "original_target_slot=%"PRId64" original_target_ns=%"PRId64
++        " base_slot=%"PRId64" base_ns=%"PRId64" epoch=%"PRIu64
++        " generation=%"PRIu64" now_ns=%"PRId64" deadline_ns=%"PRId64"\n",
++        reason, stage, plan->target.slot, plan->target.wall,
++        plan->base.slot, plan->base.wall, plan->epoch, plan->generation,
++        mp_time_ns(), plan->deadline);
++}
++
++static const char *secondary_plan_stale_reason(
++    const struct secondary_ass_physical *p,
++    const struct secondary_ass_present_plan *plan)
++{
++    if (p->epoch != plan->epoch || p->success_generation != plan->generation)
++        return "epoch_or_generation";
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    if (lower > 0 && lower > plan->target.slot)
++        return "fifo_after_target";
++    if (plan->base.slot > 0 && plan->base.slot <= p->last_base_slot)
++        return "occupied_base";
++    return "plan_unavailable";
++}
++
+ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                       const struct secondary_ass_grid_task *grid_task);
+ static MP_THREAD_VOID vo_thread(void *ptr);
+@@ -614,7 +691,7 @@ static void update_display_fps(struct vo *vo)
+         mp_mutex_lock(&in->lock);
+ 
+         if (in->reported_display_fps != fps)
+-            secondary_ass_physical_reset(&in->secondary_physical);
++            secondary_reset_physical(vo, "reported_display_fps");
+         in->reported_display_fps = fps;
+     }
+ 
+@@ -695,7 +772,7 @@ static void run_reconfig(void *p)
+     talloc_free(in->current_frame);
+     in->current_frame = NULL;
+     forget_frames(vo);
+-    reset_secondary_ass_budget(in);
++    reset_secondary_ass_budget(vo);
+     reset_vsync_timings(vo);
+     mp_mutex_unlock(&in->lock);
+ 
+@@ -1112,9 +1189,27 @@ static void wait_until(struct vo *vo, int64_t target)
+     mp_mutex_unlock(&in->lock);
+ }
+ 
+-static struct secondary_ass_physical_point secondary_next_sample(struct vo *vo)
++static void secondary_plan_wait_until(struct vo *vo, int64_t target)
+ {
+-    struct secondary_ass_physical *p = &vo->in->secondary_physical;
++    // A rendered future sample must not be displayed early after its queue
++    // proof becomes invalid. The original wait may return for a live resize
++    // or wait error; finish this captured absolute deadline without the VO
++    // lock, without selecting a new slot or changing the physical clock.
++    wait_until(vo, target);
++    for (;;) {
++        int64_t now = mp_time_ns();
++        if (now >= target)
++            return;
++        mp_sleep_ns(target - now);
++    }
++}
++
++static struct secondary_ass_physical_point secondary_next_sample(struct vo *vo,
++                                                                 int64_t divisor)
++{
++    struct secondary_ass_physical storage;
++    bool ds = vo->in->current_frame && vo->in->current_frame->display_synced;
++    const struct secondary_ass_physical *p = secondary_planning_state(vo, ds, divisor, &storage);
+     int64_t slot = osd_get_secondary_physical_next_sample_slot(vo->osd);
+     if (slot > 0)
+         return secondary_ass_physical_point_at(p, slot);
+@@ -1140,9 +1235,13 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
+     struct vo *vo, struct secondary_ass_physical_point first,
+     int64_t divisor, int64_t effective_start)
+ {
+-    struct secondary_ass_physical *p = &vo->in->secondary_physical;
+-    struct secondary_ass_physical_point next = secondary_ass_physical_cache_next(
+-        p, first.slot, divisor, effective_start);
++    struct secondary_ass_physical storage;
++    bool ds = vo->in->current_frame && vo->in->current_frame->display_synced;
++    const struct secondary_ass_physical *p = secondary_planning_state(vo, ds, divisor, &storage);
++    struct secondary_ass_physical_point next = secondary_plan_enabled(vo, ds, divisor)
++        ? secondary_ass_present_plan_cache_next(&vo->in->secondary_physical,
++            first.slot, divisor, effective_start)
++        : secondary_ass_physical_cache_next(p, first.slot, divisor, effective_start);
+     if (vo->in->secondary_trace && next.slot > first.slot)
+         MP_INFO(vo, "native-ass-cache-reschedule: first_slot=%"PRId64
+             " next_slot=%"PRId64" skipped_samples=%"PRId64
+@@ -1155,16 +1254,42 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
+ }
+ 
+ static void secondary_physical_feedback(struct vo *vo,
+-    const struct vo_vsync_info *vsync, struct secondary_ass_physical_point intended)
++    const struct vo_vsync_info *vsync, struct secondary_ass_physical_point intended,
++    const struct secondary_ass_present_plan *plan)
+ {
+     struct vo_internal *in = vo->in;
+     int64_t seed = in->reported_display_fps > 0
+         ? MP_TIME_S_TO_NS(1.0 / in->reported_display_fps) : vsync->vsync_duration;
++    uint64_t submitted_id = vsync->secondary_submit_id;
++    if (plan) {
++        bool registered = !vsync->secondary_phase_reset &&
++            vsync->secondary_submit_valid && plan->generation > 0 &&
++            vsync->secondary_submit_generation == plan->generation &&
++            secondary_ass_present_plan_current(&in->secondary_physical, plan) &&
++            secondary_ass_physical_submit_planned_point(&in->secondary_physical,
++                submitted_id, plan->epoch, plan->base, plan->target);
++        MP_INFO(vo, "native-ass-plan-register: id=%"PRIu64" registered=%d "
++            "base_slot=%"PRId64" target_slot=%"PRId64" epoch=%"PRIu64
++            " generation=%"PRIu64"\n", submitted_id, registered,
++            plan->base.slot, plan->target.slot, plan->epoch, plan->generation);
++        if (!vsync->secondary_phase_reset && vsync->secondary_submit_valid)
++            in->secondary_physical.last_submit_id = submitted_id;
++        // Observe the real history once, without the legacy median-based
++        // registration.  Unknown/failed plans do not invent a saved base.
++        submitted_id = 0;
++    }
+     secondary_ass_physical_update_observed(&in->secondary_physical,
+-        vsync->secondary_phase_reset, vsync->secondary_submit_id, intended,
++        vsync->secondary_phase_reset, submitted_id, intended,
          vsync->secondary_sync_qpc_ns, vsync->secondary_sync_time,
          vsync->secondary_sync_refresh_count, vsync->secondary_present_refresh_count,
          vsync->secondary_present_id, seed);
++    if (plan && vsync->secondary_phase_reset)
++        MP_INFO(vo, "native-ass-plan-reset: epoch=%"PRIu64" reason=backend_reset\n",
++                in->secondary_physical.epoch);
 +    secondary_ass_physical_record_present(&in->secondary_physical,
 +        !vsync->secondary_phase_reset && vsync->secondary_submit_valid,
 +        vsync->secondary_submit_id, vsync->secondary_submit_generation,
@@ -338,15 +705,168 @@ index 3f888082578670770f82fa710684f0ea1398acd5..5a2403bf59180831788af8de443e1694
      if (in->secondary_trace && in->secondary_physical.historical_id ==
              vsync->secondary_present_id) {
          struct secondary_ass_physical *p = &in->secondary_physical;
-@@ -1521,7 +1526,26 @@ static bool render_frame(struct vo *vo)
+@@ -1172,10 +1297,18 @@ static void secondary_physical_feedback(struct vo *vo,
+             if (p->submitted[n].id != vsync->secondary_present_id ||
+                 p->submitted[n].target_slot <= 0)
+                 continue;
+-            MP_INFO(vo, "native-ass-physical: id=%"PRIu64" target_slot=%"PRId64
+-                " actual_slot=%"PRId64" late_slots=%"PRId64" epoch=%"PRIu64"\n",
+-                vsync->secondary_present_id, p->submitted[n].target_slot,
+-                p->phase_slot, p->phase_slot - p->submitted[n].target_slot, p->epoch);
++            if (plan)
++                MP_INFO(vo, "native-ass-physical: id=%"PRIu64" target_slot=%"PRId64
++                    " actual_slot=%"PRId64" late_slots=%"PRId64" epoch=%"PRIu64
++                    " base_slot=%"PRId64"\n", vsync->secondary_present_id,
++                    p->submitted[n].target_slot, p->phase_slot,
++                    p->phase_slot - p->submitted[n].target_slot, p->epoch,
++                    p->submitted[n].base_slot);
++            else
++                MP_INFO(vo, "native-ass-physical: id=%"PRIu64" target_slot=%"PRId64
++                    " actual_slot=%"PRId64" late_slots=%"PRId64" epoch=%"PRIu64"\n",
++                    vsync->secondary_present_id, p->submitted[n].target_slot,
++                    p->phase_slot, p->phase_slot - p->submitted[n].target_slot, p->epoch);
+             break;
+         }
+     }
+@@ -1209,10 +1342,13 @@ static bool render_frame(struct vo *vo)
+     update_display_fps(vo);
+ 
+     double native_rate = osd_get_secondary_refresh(vo->osd);
+-    struct secondary_ass_physical_point native_point = secondary_next_sample(vo);
+-    int64_t native_sample = native_point.wall;
++    struct secondary_ass_physical_point native_point = secondary_next_sample(vo, 0);
+     int64_t sample_divisor = in->secondary_present_grid
+         ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
++    int64_t native_sample = native_point.wall;
++    struct secondary_ass_physical prepass_storage;
++    const struct secondary_ass_physical *prepass_state =
++        secondary_planning_state(vo, false, 0, &prepass_storage);
+ 
+     mp_mutex_lock(&in->lock);
+ 
+@@ -1233,7 +1369,7 @@ static bool render_frame(struct vo *vo)
+                                 in->secondary_physical.interval);
+         int64_t duration = MPMIN(in->frame_queued->duration, in->current_frame->duration);
+         int64_t prepare = secondary_ass_physical_cache_prepare(
+-            &in->secondary_physical, now, native_sample,
++            (struct secondary_ass_physical *)prepass_state, now, native_sample,
+             in->frame_queued->pts - in->flip_queue_offset, duration, interval,
+             in->secondary_render_cost, in->secondary_redraw_cost,
+             in->secondary_redraw_block_cost,
+@@ -1242,11 +1378,13 @@ static bool render_frame(struct vo *vo)
+         if (sample_divisor > 0 &&
+             sample_divisor <= INT64_MAX / in->secondary_physical.interval &&
+             duration >= sample_divisor * in->secondary_physical.interval) {
++            prepass_state = secondary_planning_state(vo, false, sample_divisor,
++                                                     &prepass_storage);
+             struct secondary_ass_physical_point sample = secondary_cache_next_sample(
+                 vo, native_point, sample_divisor, MPMAX(now,
+                     vo->previous_redraw_time + in->secondary_physical.interval));
+             prepare = secondary_ass_physical_cache_sample_prepare(
+-                &in->secondary_physical, now, sample.slot, sample_divisor,
++                (struct secondary_ass_physical *)prepass_state, now, sample.slot, sample_divisor,
+                 in->frame_queued->pts - in->flip_queue_offset, duration, interval,
+                 in->secondary_render_cost, in->secondary_redraw_cost,
+                 in->secondary_redraw_block_cost,
+@@ -1256,13 +1394,17 @@ static bool render_frame(struct vo *vo)
+                     .point = sample, .epoch = in->secondary_physical.epoch,
+                     .current_id = in->current_frame->frame_id,
+                     .queued_id = in->frame_queued->frame_id,
+-                    .divisor = sample_divisor, .delay = in->secondary_physical.delay,
++                    .divisor = sample_divisor, .delay = prepass_state->delay,
+                     .rate = native_rate,
+                     .interval = in->secondary_physical.interval,
+                     .deadline = secondary_ass_physical_cache_deadline(sample,
+-                        in->secondary_physical.interval, in->secondary_physical.delay),
++                        prepass_state->interval, prepass_state->delay),
+                     .submit_time = secondary_ass_physical_submit_time(
+-                        &in->secondary_physical, sample.wall),
++                        prepass_state, sample.wall),
++                    .plan_enabled = secondary_plan_enabled(vo, false, sample_divisor),
++                    .plan = secondary_plan_enabled(vo, false, sample_divisor)
++                        ? secondary_ass_present_plan_cache(&in->secondary_physical, sample)
++                        : (struct secondary_ass_present_plan){0},
+                 };
+         }
+         if (in->secondary_trace && prepare <= 0)
+@@ -1385,6 +1527,9 @@ static bool render_frame(struct vo *vo)
+             secondary_ass_predict_present(&in->secondary_presentation,
+                                            present_ready, display_interval) : 0;
+         struct secondary_ass_physical_point physical_point = {0};
++        struct secondary_ass_present_plan present_plan = {0};
++        bool planned_audio = secondary_plan_enabled(vo, frame->display_synced,
++                                                  sample_divisor);
+         bool physical_phase = clock_rate > 0 && !frame->display_synced &&
+             in->secondary_physical.phase && native_rate > 0 &&
+             duration >= in->secondary_physical.interval &&
+@@ -1393,17 +1538,23 @@ static bool render_frame(struct vo *vo)
+                 MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
+         if (in->secondary_sync_mode_valid &&
+             in->secondary_sync_mode != frame->display_synced)
+-            secondary_ass_physical_reset(&in->secondary_physical);
++            secondary_reset_physical(vo, "sync_mode");
+         in->secondary_sync_mode = frame->display_synced;
+         in->secondary_sync_mode_valid = true;
+         if (physical_phase && in->secondary_physical.phase) {
+             int64_t physical_ready = MPMAX(present_ready,
+                 mp_time_ns() + in->secondary_render_cost);
++            if (planned_audio)
++                present_plan = secondary_ass_present_plan_fresh(
++                    &in->secondary_physical, physical_ready);
+             struct secondary_ass_physical_point candidate =
++                planned_audio ? present_plan.target :
+                 secondary_ass_physical_predict_point(&in->secondary_physical,
+                                                      physical_ready);
+-            int64_t submit = secondary_ass_physical_submit_time(
+-                &in->secondary_physical, candidate.wall);
++            int64_t submit = planned_audio
++                ? (present_plan.valid ? present_plan.submit : 0)
++                : secondary_ass_physical_submit_time(
++                    &in->secondary_physical, candidate.wall);
+             if (candidate.slot > 0 && candidate.wall > 0 && submit > 0) {
+                 display_interval = in->secondary_physical.interval;
+                 physical_point = candidate;
+@@ -1438,6 +1589,8 @@ static bool render_frame(struct vo *vo)
+                 frame->display_synced ? presentation_time : frame->pts,
+                 frame->display_synced);
+         }
++        if (planned_audio && in->secondary_trace && presentation_time > 0)
++            secondary_trace_plan(vo, !frame->repeat, &present_plan);
+         if (in->secondary_trace && presentation_time > 0)
+             MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=%d ds=%d "
+                     "target_ns=%"PRId64" interval_ns=%"PRId64
+@@ -1521,7 +1674,52 @@ static bool render_frame(struct vo *vo)
                  in->secondary_last_draw, mp_time_ns(), cpu_cost,
                  in->secondary_gpu_cost, in->secondary_gpu_peak);
  
 -        wait_until(vo, target);
 +        bool early_present = false;
++        bool plan_guard_armed = false;
++        if (planned_audio && present_plan.valid) {
++            // Arming lifecycle protection is distinct from skipping the VO
++            // wait.  Normal Sync1 submission also needs final Sync0/resize
++            // protection; an elapsed original S must not bypass this guard.
++            plan_guard_armed =
++                secondary_ass_present_plan_current(&in->secondary_physical,
++                                                   &present_plan) &&
++                vo->driver->can_present_early &&
++                vo->driver->can_present_early(vo, present_plan.generation,
++                    present_plan.lifecycle_safe_wait, secondary_plan_wait_until);
++            early_present = plan_guard_armed && in->secondary_fifo_present &&
++                in->visible && !frame->repeat && physical_phase &&
++                secondary_target_updated && present_plan.fifo_known &&
++                present_plan.fifo_lower == present_plan.target.slot &&
++                present_plan.submit > mp_time_ns();
++            if (early_present && in->secondary_trace)
++                MP_INFO(vo, "native-ass-early-present: target_slot=%"PRId64
++                    " fifo_lower_slot=%"PRId64" generation=%"PRIu64
++                    " original_submit_ns=%"PRId64"\n", present_plan.target.slot,
++                    present_plan.fifo_lower, present_plan.generation,
++                    present_plan.submit);
++        }
 +        int64_t fifo_lower = secondary_ass_physical_fifo_lower_bound(
 +            &in->secondary_physical);
-+        if (in->secondary_fifo_present && in->visible && !frame->repeat &&
++        if (!planned_audio && in->secondary_fifo_present && in->visible && !frame->repeat &&
 +            physical_phase &&
 +            secondary_target_updated && fifo_lower > 0 && target > mp_time_ns() &&
 +            fifo_lower == physical_point.slot &&
@@ -362,11 +882,189 @@ index 3f888082578670770f82fa710684f0ea1398acd5..5a2403bf59180831788af8de443e1694
 +                    physical_point.slot, fifo_lower,
 +                    in->secondary_physical.success_generation, target);
 +        }
-+        wait_until(vo, early_present ? 0 : target);
++        if (planned_audio && present_plan.valid && !plan_guard_armed)
++            secondary_plan_wait_until(vo, present_plan.lifecycle_safe_wait);
++        else
++            wait_until(vo, early_present ? 0 : target);
  
          stats_time_start(in->stats, "video-flip");
  
-@@ -1853,6 +1877,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1535,7 +1733,8 @@ static bool render_frame(struct vo *vo)
+             vo->driver->get_vsync(vo, &vsync);
+ 
+         if (clock_rate > 0) {
+-            secondary_physical_feedback(vo, &vsync, physical_point);
++            secondary_physical_feedback(vo, &vsync, physical_point,
++                planned_audio ? &present_plan : NULL);
+             secondary_ass_present_feedback(&in->secondary_presentation,
+                                            vsync.last_queue_display_time);
+             if (in->secondary_trace)
+@@ -1545,7 +1744,7 @@ static bool render_frame(struct vo *vo)
+                         vsync.last_queue_display_time);
+         } else {
+             in->secondary_presentation = (struct secondary_ass_presentation){0};
+-            secondary_ass_physical_reset(&in->secondary_physical);
++            secondary_reset_physical(vo, "clock_disabled");
+         }
+ 
+         // Make up some crap if presentation feedback is missing.
+@@ -1622,12 +1821,21 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         in->current_frame->frame_id != grid_task->current_id ||
+         (in->frame_queued ? in->frame_queued->frame_id : 0) != grid_task->queued_id ||
+         in->secondary_physical.epoch != grid_task->epoch ||
+-        in->secondary_physical.delay != grid_task->delay ||
+-        grid_task->point.slot <= grid_task->delay ||
+-        grid_task->point.slot - grid_task->delay <= in->secondary_physical.last_base_slot ||
++        grid_task->plan_enabled != secondary_plan_enabled(vo,
++            in->current_frame->display_synced, grid_divisor) ||
++        (grid_task->plan_enabled
++            ? !secondary_ass_present_plan_current(&in->secondary_physical,
++                                                 &grid_task->plan)
++            : in->secondary_physical.delay != grid_task->delay ||
++              grid_task->point.slot <= grid_task->delay ||
++              grid_task->point.slot - grid_task->delay <= in->secondary_physical.last_base_slot) ||
+         grid_rate != grid_task->rate || grid_divisor != grid_task->divisor))
+     {
+         mp_mutex_unlock(&in->lock);
++        if (grid_task->plan_enabled)
++            secondary_trace_plan_missed(vo,
++                secondary_plan_stale_reason(&in->secondary_physical, &grid_task->plan),
++                "before-draw", &grid_task->plan);
+         return false;
+     }
+     if (grid_task && (grid_task->deadline <= 0 || grid_task->submit_time <= 0 ||
+@@ -1680,6 +1888,13 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         (int64_t)in->vsync_interval : MP_TIME_S_TO_NS(1.0 / 60);
+     double secondary_rate = osd_get_secondary_refresh(vo->osd);
+     double clock_rate = osd_get_secondary_clock_rate(vo->osd);
++    bool planned_audio = secondary_plan_enabled(vo, frame->display_synced,
++                                               grid_divisor);
++    struct secondary_ass_present_plan present_plan = {0};
++    struct secondary_ass_physical planning_storage;
++    const struct secondary_ass_physical *planning_state =
++        secondary_planning_state(vo, frame->display_synced, grid_divisor,
++                                 &planning_storage);
+     int64_t presentation_time = clock_rate > 0 ?
+         secondary_ass_predict_present(&in->secondary_presentation,
+                                        mp_time_ns(), display_interval) : 0;
+@@ -1690,16 +1905,23 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         secondary_ass_budget_affordable(in->secondary_render_cost,
+             in->secondary_redraw_cost, video_duration,
+             MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval));
++    if (grid_task && grid_task->plan_enabled && !physical_phase) {
++        if (frame != &dummy)
++            talloc_free(frame);
++        secondary_trace_plan_missed(vo, "physical_path_unavailable",
++                                    "before-draw", &grid_task->plan);
++        return false;
++    }
+     if (physical_phase) {
+         display_interval = in->secondary_physical.interval;
+-        physical_point = secondary_ass_physical_predict_point(&in->secondary_physical,
++        physical_point = secondary_ass_physical_predict_point(planning_state,
+             mp_time_ns() + in->secondary_redraw_cost);
+         if (physical_point.slot > 0 && physical_point.wall > 0)
+             presentation_time = physical_point.wall;
+-        struct secondary_ass_physical_point next_sample = secondary_next_sample(vo);
++        struct secondary_ass_physical_point next_sample = secondary_next_sample(vo, grid_divisor);
+         int64_t sample = next_sample.wall;
+         int64_t prepare = secondary_ass_physical_render_slot_time(
+-            &in->secondary_physical, sample, in->secondary_redraw_cost);
++            planning_state, sample, in->secondary_redraw_cost);
+         if (sample > 0 && prepare <= mp_time_ns() + display_interval / 4 &&
+             next_sample.slot >= physical_point.slot)
+         {
+@@ -1713,6 +1935,20 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+             presentation_time = physical_point.wall;
+             display_interval = grid_task->interval;
+         }
++        if (planned_audio) {
++            // The captured integer sampler slot is authoritative for a
++            // cached draw; manual/no-grid redraws remain on the legacy path.
++            present_plan = grid_task->plan;
++            if (!secondary_ass_present_plan_current(&in->secondary_physical,
++                                                   &present_plan)) {
++                if (frame != &dummy)
++                    talloc_free(frame);
++                secondary_trace_plan_missed(vo,
++                    secondary_plan_stale_reason(&in->secondary_physical, &present_plan),
++                    "before-draw", &present_plan);
++                return false;
++            }
++        }
+         physical_phase = physical_point.slot > 0 && physical_point.wall > 0;
+     }
+     if (frame->display_synced && clock_rate > 0) {
+@@ -1723,12 +1959,15 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         }
+     }
+     bool secondary_target_updated = secondary_set_presentation(vo,
+-        physical_point, presentation_time, display_interval, mp_time_ns());
++        physical_point, presentation_time, display_interval,
++        planned_audio && present_plan.valid ? present_plan.submit : mp_time_ns());
+     if (!secondary_target_updated && in->secondary_trace)
+         MP_INFO(vo, "native-ass-phase-hold: fresh=0 target_updated=0 "
+             "physical_point_available=0 actual_display_known=0 "
+             "raw_video_target_ns=0 epoch=%"PRIu64"\n",
+             in->secondary_physical.epoch);
++    if (planned_audio && in->secondary_trace && presentation_time > 0)
++        secondary_trace_plan(vo, false, &present_plan);
+     if (in->secondary_trace && presentation_time > 0)
+         MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=0 ds=%d "
+                 "target_ns=%"PRId64" interval_ns=%"PRId64
+@@ -1743,9 +1982,9 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     // Capture them before feedback can refine the period or learned delay.
+     int64_t trace_deadline = grid_task ? grid_task->deadline :
+         secondary_ass_physical_cache_deadline(physical_point, display_interval,
+-                                             in->secondary_physical.delay);
++                                             planning_state->delay);
+     int64_t trace_submit = grid_task ? grid_task->submit_time :
+-        secondary_ass_physical_submit_time(&in->secondary_physical, presentation_time);
++        secondary_ass_physical_submit_time(planning_state, presentation_time);
+     uint64_t trace_epoch = grid_task ? grid_task->epoch : in->secondary_physical.epoch;
+     int64_t draw_begin = mp_time_ns();
+     if (grid_task && draw_begin >= grid_task->deadline) {
+@@ -1769,9 +2008,26 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     vo->driver->draw_frame(vo, frame);
+     int64_t cpu_end = mp_time_ns();
+     int64_t cpu_cost = cpu_end - in->secondary_last_draw;
+-    if (physical_phase)
+-        wait_until(vo, grid_task ? grid_task->submit_time :
+-            secondary_ass_physical_submit_time(&in->secondary_physical, presentation_time));
++    if (physical_phase) {
++        if (planned_audio && present_plan.valid) {
++            bool armed =
++                secondary_ass_present_plan_current(&in->secondary_physical,
++                                                   &present_plan) &&
++                vo->driver->can_present_early &&
++                vo->driver->can_present_early(vo, present_plan.generation,
++                    present_plan.lifecycle_safe_wait, secondary_plan_wait_until);
++            // Cached plans always keep the normal original lattice S.  The
++            // armed backend restores absolute D after a lifecycle change.
++            if (armed)
++                wait_until(vo, present_plan.submit);
++            else
++                secondary_plan_wait_until(vo, present_plan.lifecycle_safe_wait);
++        } else {
++            wait_until(vo, grid_task ? grid_task->submit_time :
++                secondary_ass_physical_submit_time(&in->secondary_physical,
++                                                    presentation_time));
++        }
++    }
+     int64_t flip_call = in->secondary_trace && trace_deadline > 0 ? mp_time_ns() : 0;
+     vo->driver->flip_page(vo);
+     if (clock_rate > 0) {
+@@ -1781,7 +2037,8 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         };
+         if (vo->driver->get_vsync)
+             vo->driver->get_vsync(vo, &vsync);
+-        secondary_physical_feedback(vo, &vsync, physical_point);
++        secondary_physical_feedback(vo, &vsync, physical_point,
++            planned_audio ? &present_plan : NULL);
+         secondary_ass_present_feedback(&in->secondary_presentation,
+                                        vsync.last_queue_display_time);
+         if (in->secondary_trace)
+@@ -1853,9 +2110,15 @@ static MP_THREAD_VOID vo_thread(void *ptr)
      read_opts(vo);
      const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
      in->secondary_trace = trace && strcmp(trace, "1") == 0;
@@ -376,6 +1074,119 @@ index 3f888082578670770f82fa710684f0ea1398acd5..5a2403bf59180831788af8de443e1694
      const char *present_grid = getenv("MPV_NATIVE_PRESENT_GRID");
      in->secondary_present_grid = in->secondary_trace && present_grid &&
          strcmp(present_grid, "1") == 0;
++    const char *present_plan = getenv("MPV_NATIVE_PRESENT_PLAN");
++    in->secondary_present_plan = in->secondary_trace && present_plan &&
++        strcmp(present_plan, "1") == 0;
+     update_display_fps(vo);
+     vo_event(vo, VO_EVENT_WIN_STATE);
+ 
+@@ -1910,10 +2173,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         int64_t secondary_probe = in->secondary_next_probe;
+         int64_t secondary_duration = in->current_frame && !in->current_frame->display_synced
+             ? in->current_frame->duration : 0;
++        bool secondary_ds = in->current_frame && in->current_frame->display_synced;
+         int64_t secondary_deadline = get_current_frame_end(vo) - in->flip_queue_offset;
+         mp_mutex_unlock(&in->lock);
+ 
+         double secondary_rate = osd_get_secondary_refresh(vo->osd);
++        int64_t thread_divisor = in->secondary_present_plan && in->secondary_present_grid
++            ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
++        struct secondary_ass_physical thread_planning_storage;
++        const struct secondary_ass_physical *thread_planning_state =
++            secondary_planning_state(vo, secondary_ds, 0,
++                                     &thread_planning_storage);
+         struct secondary_ass_grid_task grid_task = {0};
+         if (!working && secondary_eligible && secondary_rate > 0) {
+             int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
+@@ -1938,18 +2208,26 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 if (secondary_duration >= in->secondary_physical.interval &&
+                     in->secondary_physical.phase)
+                 {
+-                    physical_sample = secondary_next_sample(vo);
++                    int64_t plan_sample_divisor = !probe && thread_divisor > 0 &&
++                        thread_divisor <= INT64_MAX / in->secondary_physical.interval &&
++                        secondary_duration >= thread_divisor * in->secondary_physical.interval
++                        ? thread_divisor : 0;
++                    physical_sample = secondary_next_sample(vo, plan_sample_divisor);
+                     if (in->secondary_present_grid && !probe) {
+-                        int64_t divisor = osd_get_secondary_physical_sample_divisor(vo->osd);
++                        int64_t divisor = in->secondary_present_plan ? thread_divisor :
++                            osd_get_secondary_physical_sample_divisor(vo->osd);
+                         if (divisor > 0 && divisor <= INT64_MAX / in->secondary_physical.interval &&
+-                            secondary_duration >= divisor * in->secondary_physical.interval)
++                            secondary_duration >= divisor * in->secondary_physical.interval) {
++                            thread_planning_state = secondary_planning_state(vo,
++                                secondary_ds, divisor, &thread_planning_storage);
+                             physical_sample = secondary_cache_next_sample(vo, physical_sample,
+                                 divisor, MPMAX(now, vo->previous_redraw_time +
+                                     (int64_t)in->vsync_interval));
++                        }
+                     }
+                     sample_time = physical_sample.wall;
+                     sample_prepare = secondary_ass_physical_render_slot_time(
+-                        &in->secondary_physical, sample_time, secondary_redraw_cost);
++                        thread_planning_state, sample_time, secondary_redraw_cost);
+                 }
+                 if (sample_prepare > 0)
+                     next = sample_prepare;
+@@ -1963,10 +2241,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                     secondary_duration >= in->secondary_physical.interval)
+                 {
+                     int64_t deadline = secondary_ass_physical_predict(
+-                        &in->secondary_physical, secondary_deadline);
+-                    deadline -= in->secondary_physical.delay *
+-                        in->secondary_physical.interval +
+-                        in->secondary_physical.interval / 4;
++                        (struct secondary_ass_physical *)thread_planning_state,
++                        secondary_deadline);
++                    deadline -= thread_planning_state->delay *
++                        thread_planning_state->interval +
++                        thread_planning_state->interval / 4;
+                     headroom = secondary_ass_budget_before_deadline(
+                         MPMAX(now, next), deadline, secondary_cost, cost,
+                         MP_TIME_MS_TO_NS(1));
+@@ -1976,7 +2255,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                     wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
+                     if (in->secondary_present_grid && physical_sample.slot > 0 &&
+                         now >= next && !probe) {
+-                        int64_t divisor = osd_get_secondary_physical_sample_divisor(vo->osd);
++                        int64_t divisor = in->secondary_present_plan ? thread_divisor :
++                            osd_get_secondary_physical_sample_divisor(vo->osd);
+                         mp_mutex_lock(&in->lock);
+                         if (divisor > 0 && in->current_frame && !in->frame_queued &&
+                             divisor <= INT64_MAX / in->secondary_physical.interval &&
+@@ -1985,13 +2265,19 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                                 .point = physical_sample,
+                                 .epoch = in->secondary_physical.epoch,
+                                 .current_id = in->current_frame->frame_id,
+-                                .divisor = divisor, .delay = in->secondary_physical.delay,
++                                .divisor = divisor, .delay = thread_planning_state->delay,
+                                 .rate = secondary_rate,
+                                 .interval = in->secondary_physical.interval,
+                                 .deadline = secondary_ass_physical_cache_deadline(physical_sample,
+-                                    in->secondary_physical.interval, in->secondary_physical.delay),
++                                    thread_planning_state->interval, thread_planning_state->delay),
+                                 .submit_time = secondary_ass_physical_submit_time(
+-                                    &in->secondary_physical, physical_sample.wall),
++                                    thread_planning_state, physical_sample.wall),
++                                .plan_enabled = secondary_plan_enabled(vo,
++                                    secondary_ds, divisor),
++                                .plan = secondary_plan_enabled(vo, secondary_ds, divisor)
++                                    ? secondary_ass_present_plan_cache(
++                                        &in->secondary_physical, physical_sample)
++                                    : (struct secondary_ass_present_plan){0},
+                             };
+                         mp_mutex_unlock(&in->lock);
+                     }
+@@ -2008,7 +2294,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+ 
+         if (send_reset) {
+             mp_mutex_lock(&in->lock);
+-            reset_secondary_ass_budget(in);
++            reset_secondary_ass_budget(vo);
+             mp_mutex_unlock(&in->lock);
+             vo->driver->control(vo, VOCTRL_RESET, NULL);
+         }
 diff --git a/video/out/vo.h b/video/out/vo.h
 index a3d1d9ee97d96a777c12c53b177e87f793300872..ec343826cdbb12f9f738391eec25eabff2c35cdd 100644
 --- a/video/out/vo.h
@@ -436,5 +1247,3 @@ index 6d9e50dec22b2e1a22cc661b100a7b435f8f9871..44e66ea22c2900eff1fe4a61d9f78726
      .get_vsync = get_vsync,
      .wait_events = wait_events,
      .wakeup = wakeup,
--- 
-2.51.0
