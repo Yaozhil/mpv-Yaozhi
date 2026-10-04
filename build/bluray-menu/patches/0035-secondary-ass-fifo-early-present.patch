@@ -1,5 +1,5 @@
 diff --git a/player/core.h b/player/core.h
-index 2889d35..099b6b2 100644
+index 2889d352bdd53a91d072097e96fe35ea4804ecb0..099b6b206ebf9946c9caf0448ec007cd26f80538 100644
 --- a/player/core.h
 +++ b/player/core.h
 @@ -389,6 +389,12 @@ typedef struct MPContext {
@@ -16,7 +16,7 @@ index 2889d35..099b6b2 100644
  
      // Past timestamps etc.
 diff --git a/player/video.c b/player/video.c
-index 6043022..08490c0 100644
+index 60430224d10b15da28a13556d25ccb223ad541f8..08490c039cf95b22ab5e4a4ac53175a6ec002cd8 100644
 --- a/player/video.c
 +++ b/player/video.c
 @@ -114,6 +114,8 @@ void reset_video_state(struct MPContext *mpctx)
@@ -55,7 +55,7 @@ index 6043022..08490c0 100644
          }
      }
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index 47a8fde..9019b22 100644
+index 47a8fde17f5a5050bc748b3b03c656dc896eb73d..9019b2226affafa89c12d5f9f0d7607aff8ff186 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -131,7 +131,21 @@ struct priv {
@@ -320,7 +320,7 @@ index 47a8fde..9019b22 100644
  {
      if (ra->swapchain->fns != &d3d11_swapchain)
 diff --git a/video/out/d3d11/context.h b/video/out/d3d11/context.h
-index 55b896b..e976bcb 100644
+index 55b896becd4cfc4903f2256d379b78240a899750..e976bcb0b9e53d2ada03f924e0ec7ff9be5f1ef0 100644
 --- a/video/out/d3d11/context.h
 +++ b/video/out/d3d11/context.h
 @@ -9,6 +9,12 @@
@@ -338,7 +338,7 @@ index 55b896b..e976bcb 100644
  struct pl_d3d11_swapchain_params;
 diff --git a/video/out/secondary_ass_flip_budget.h b/video/out/secondary_ass_flip_budget.h
 new file mode 100644
-index 0000000..df7d538
+index 0000000000000000000000000000000000000000..df7d5382732466b3027c9d34d0afaf90f04013bd
 --- /dev/null
 +++ b/video/out/secondary_ass_flip_budget.h
 @@ -0,0 +1,60 @@
@@ -403,7 +403,7 @@ index 0000000..df7d538
 +
 +#endif
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
-index 1943e41..ca618dc 100644
+index 1943e411916f69a707d74965c5773cee6b27b070..ca618dc9ff2201a133a15c88c9447d1b0c40d509 100644
 --- a/video/out/secondary_ass_physical.h
 +++ b/video/out/secondary_ass_physical.h
 @@ -25,6 +25,8 @@ struct secondary_ass_physical {
@@ -509,7 +509,7 @@ index 1943e41..ca618dc 100644
      struct secondary_ass_physical_point intended, int64_t sync_qpc_ns,
 diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
 new file mode 100644
-index 0000000..d19d8a7
+index 0000000000000000000000000000000000000000..d19d8a700eeaeaee0645e320c7254f01e7bb3bdd
 --- /dev/null
 +++ b/video/out/secondary_ass_present_plan.h
 @@ -0,0 +1,116 @@
@@ -630,7 +630,7 @@ index 0000000..d19d8a7
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 3f88808..f7fef1f 100644
+index 3f888082578670770f82fa710684f0ea1398acd5..f7fef1f1a3ea27a8c7dbdedf23134492f3c38665 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -40,8 +40,10 @@
@@ -1553,7 +1553,7 @@ index 3f88808..f7fef1f 100644
              vo->driver->control(vo, VOCTRL_RESET, NULL);
          }
 diff --git a/video/out/vo.h b/video/out/vo.h
-index a3d1d9e..ec34382 100644
+index a3d1d9ee97d96a777c12c53b177e87f793300872..ec343826cdbb12f9f738391eec25eabff2c35cdd 100644
 --- a/video/out/vo.h
 +++ b/video/out/vo.h
 @@ -301,6 +301,9 @@ struct vo_vsync_info {
@@ -1581,7 +1581,7 @@ index a3d1d9e..ec34382 100644
       * Return presentation feedback. The implementation should not touch fields
       * it doesn't support; the info fields are preinitialized to neutral values.
 diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 6d9e50d..44e66ea 100644
+index 6d9e50dec22b2e1a22cc661b100a7b435f8f9871..44e66ea22c2900eff1fe4a61d9f78726d7b6e158 100644
 --- a/video/out/vo_gpu_next.c
 +++ b/video/out/vo_gpu_next.c
 @@ -1887,6 +1887,19 @@ done:
