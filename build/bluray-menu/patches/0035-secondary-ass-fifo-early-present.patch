@@ -1,7 +1,7 @@
-From b96bcf829b9e24beda04db9c27b4a5b1568c551e Mon Sep 17 00:00:00 2001
+From 1629d069279216798681a551b48c0741e98bdc8d Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
-Date: Sun, 04 Oct 2026 09:47:45 +0800
-Subject: [PATCH] vo: observe immutable plans and queue submission boundaries
+Date: Sun, 04 Oct 2026 12:03:39 +0800
+Subject: [PATCH] vo: separate measured submission envelope from ASS redraw budget
 
 ---
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
@@ -286,6 +286,72 @@ index 55b896becd4cfc4903f2256d379b78240a899750..e976bcb0b9e53d2ada03f924e0ec7ff9
  // Sets pl_d3d11_swapchain_params according to requested d3d11-output-format for
  // an RA context.
  struct pl_d3d11_swapchain_params;
+diff --git a/video/out/secondary_ass_flip_budget.h b/video/out/secondary_ass_flip_budget.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..df7d5382732466b3027c9d34d0afaf90f04013bd
+--- /dev/null
++++ b/video/out/secondary_ass_flip_budget.h
+@@ -0,0 +1,60 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_FLIP_BUDGET_H
++#define MP_SECONDARY_ASS_FLIP_BUDGET_H
++
++#include "secondary_ass_budget.h"
++
++// VO-thread-only post-CPU submission/feedback envelope. This is neither GPU work nor
++// scanout latency. Unlike a cached whole-draw sample, fresh frames also renew
++// this queue-blocking forecast when an old cached draw prevents new samples.
++struct secondary_ass_flip_budget {
++    struct secondary_ass_budget samples;
++    int64_t cost;
++    uint64_t epoch, generation, last_id;
++};
++
++static inline void secondary_ass_flip_budget_reset(
++    struct secondary_ass_flip_budget *b)
++{
++    *b = (struct secondary_ass_flip_budget){0};
++}
++
++static inline bool secondary_ass_flip_budget_observe(
++    struct secondary_ass_flip_budget *b, bool valid,
++    uint64_t epoch, uint64_t generation, uint64_t id,
++    int64_t begin, int64_t end, int64_t vo_wait)
++{
++    if (!valid || !epoch || !generation || !id || begin <= 0 || end <= begin ||
++        vo_wait < 0 || vo_wait >= end - begin) {
++        secondary_ass_flip_budget_reset(b);
++        return false;
++    }
++    if (b->epoch != epoch || b->generation != generation) {
++        secondary_ass_flip_budget_reset(b);
++        b->epoch = epoch;
++        b->generation = generation;
++    }
++    if (id <= b->last_id)
++        return false;
++    b->last_id = id;
++    b->cost = secondary_ass_budget_sample(&b->samples, end - begin - vo_wait, 0);
++    return true;
++}
++
++static inline int64_t secondary_ass_flip_budget_cost(
++    const struct secondary_ass_flip_budget *b,
++    uint64_t epoch, uint64_t generation, uint64_t last_id,
++    int64_t redraw_cost, int64_t legacy_block_cost)
++{
++    if (!b->samples.count || b->epoch != epoch ||
++        b->generation != generation || b->last_id != last_id ||
++        !last_id || redraw_cost < 0 || b->cost <= 0 ||
++        redraw_cost > INT64_MAX - b->cost)
++        return legacy_block_cost;
++    // Cache preparation starts at S - redraw_cost. Its forecast already
++    // reserves the compute/OSD portion through S. Charge the measured flip
++    // envelope separately rather than carrying a prior wait-until-S forever.
++    return redraw_cost + b->cost;
++}
++
++#endif
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
 index 1943e411916f69a707d74965c5773cee6b27b070..ca618dc9ff2201a133a15c88c9447d1b0c40d509 100644
 --- a/video/out/secondary_ass_physical.h
@@ -514,18 +580,21 @@ index 0000000000000000000000000000000000000000..d19d8a700eeaeaee0645e320c7254f01
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced1bd9d831 100644
+index 3f888082578670770f82fa710684f0ea1398acd5..adcb9fc9f1819f4f01704bf49440ac421f931f1e 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
-@@ -42,6 +42,7 @@
+@@ -40,8 +40,10 @@
+ #include "misc/bstr.h"
+ #include "vo.h"
  #include "secondary_ass_budget.h"
++#include "secondary_ass_flip_budget.h"
  #include "secondary_ass_presentation.h"
  #include "secondary_ass_physical.h"
 +#include "secondary_ass_present_plan.h"
  #include "aspect.h"
  #include "dr_helper.h"
  #include "input/input.h"
-@@ -178,7 +179,10 @@ struct vo_internal {
+@@ -178,7 +180,12 @@ struct vo_internal {
      struct secondary_ass_physical secondary_physical; // VO thread only
      bool secondary_sync_mode_valid, secondary_sync_mode;
      bool secondary_trace; // explicitly enabled diagnostic; never on by default
@@ -533,10 +602,12 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      bool secondary_present_grid; // opt-in cadence experiment, not a default
 +    bool secondary_fifo_present; // isolated opt-in FIFO submission experiment
 +    bool secondary_present_plan; // isolated planned-base consumption experiment
++    bool secondary_split_budget; // opt-in measured submission envelope forecast
++    struct secondary_ass_flip_budget secondary_flip_budget; // VO thread only
      int64_t secondary_render_cost;
      int64_t secondary_cost_update; // VO thread only
      int64_t secondary_gpu_cost; // VO thread only
-@@ -214,8 +218,18 @@ struct vo_internal {
+@@ -214,8 +221,19 @@ struct vo_internal {
  
  // Called by the VO thread, with in->lock held. Old GPU averages and redraw
  // samples cannot describe a different file, texture size or presentation chain.
@@ -545,6 +616,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  {
 +    struct vo_internal *in = vo->in;
 +    secondary_ass_physical_reset(&in->secondary_physical);
++    secondary_ass_flip_budget_reset(&in->secondary_flip_budget);
 +    if (in->secondary_present_plan)
 +        MP_INFO(vo, "native-ass-plan-reset: epoch=%"PRIu64" reason=%s\n",
 +                in->secondary_physical.epoch, reason);
@@ -556,7 +628,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      in->secondary_budget = (struct secondary_ass_budget){0};
      in->secondary_redraw_budget = (struct secondary_ass_budget){0};
      in->secondary_redraw_block_budget = (struct secondary_ass_budget){0};
-@@ -225,7 +239,7 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
+@@ -225,7 +243,7 @@ static void reset_secondary_ass_budget(struct vo_internal *in)
      in->secondary_redraw_gpu_cost = in->secondary_redraw_cpu_cost = 0;
      in->secondary_next_probe = 0;
      in->secondary_presentation = (struct secondary_ass_presentation){0};
@@ -565,7 +637,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  }
  
  extern const struct m_sub_options gl_video_conf;
-@@ -238,8 +252,72 @@ struct secondary_ass_grid_task {
+@@ -238,8 +256,117 @@ struct secondary_ass_grid_task {
      int64_t interval, deadline, submit_time;
      int delay;
      double rate;
@@ -580,6 +652,51 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
 +    // Arbitrary manual cadence and no-grid scheduling keep the legacy path.
 +    return vo->in->secondary_present_plan && vo->in->secondary_present_grid &&
 +        !display_synced && divisor > 0;
++}
++
++static int64_t secondary_cache_block_cost(struct vo *vo, bool planned_audio)
++{
++    struct vo_internal *in = vo->in;
++    if (!in->secondary_split_budget || !planned_audio ||
++        !in->secondary_physical.success_contiguous)
++        return in->secondary_redraw_block_cost;
++    return secondary_ass_flip_budget_cost(&in->secondary_flip_budget,
++        in->secondary_physical.epoch, in->secondary_physical.success_generation,
++        in->secondary_physical.success_last_id, in->secondary_redraw_cost,
++        in->secondary_redraw_block_cost);
++}
++
++static void secondary_observe_flip_budget(struct vo *vo,
++    const struct vo_vsync_info *vsync,
++    const struct secondary_ass_present_plan *plan, int64_t begin,
++    int64_t vo_wait, int64_t flip_begin, bool guard_armed, bool fresh)
++{
++    struct vo_internal *in = vo->in;
++    if (!in->secondary_split_budget)
++        return;
++    int64_t end = mp_time_ns();
++    bool valid = guard_armed && plan && plan->valid && !vsync->secondary_phase_reset &&
++        vsync->secondary_submit_valid && vsync->secondary_submit_sync_interval == 1 &&
++        vsync->secondary_submit_generation == plan->generation &&
++        plan->epoch == in->secondary_physical.epoch &&
++        plan->generation == in->secondary_physical.success_generation &&
++        in->secondary_physical.success_contiguous;
++    bool observed = secondary_ass_flip_budget_observe(&in->secondary_flip_budget,
++        valid, plan ? plan->epoch : 0, plan ? plan->generation : 0,
++        vsync->secondary_submit_id, begin, end, vo_wait);
++    MP_INFO(vo, "native-ass-flip-budget: fresh=%d id=%"PRIu64
++        " valid=%d observed=%d guard_armed=%d begin_ns=%"PRId64" end_ns=%"PRId64
++        " vo_wait_ns=%"PRId64" flip_begin_ns=%"PRId64
++        " envelope_ns=%"PRId64" sustained_ns=%"PRId64
++        " legacy_block_ns=%"PRId64" redraw_ns=%"PRId64
++        " epoch=%"PRIu64" generation=%"PRIu64"\n",
++        fresh, vsync->secondary_submit_id, valid, observed, guard_armed, begin, end,
++        vo_wait, flip_begin,
++        begin > 0 && end > begin && vo_wait >= 0 && end - begin > vo_wait
++            ? end - begin - vo_wait : 0,
++        in->secondary_flip_budget.cost, in->secondary_redraw_block_cost,
++        in->secondary_redraw_cost, in->secondary_physical.epoch,
++        in->secondary_physical.success_generation);
 +}
 +
 +static const struct secondary_ass_physical *secondary_planning_state(
@@ -638,7 +755,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
                        const struct secondary_ass_grid_task *grid_task);
  static MP_THREAD_VOID vo_thread(void *ptr);
-@@ -614,7 +692,7 @@ static void update_display_fps(struct vo *vo)
+@@ -614,7 +741,7 @@ static void update_display_fps(struct vo *vo)
          mp_mutex_lock(&in->lock);
  
          if (in->reported_display_fps != fps)
@@ -647,7 +764,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          in->reported_display_fps = fps;
      }
  
-@@ -695,7 +773,7 @@ static void run_reconfig(void *p)
+@@ -695,7 +822,7 @@ static void run_reconfig(void *p)
      talloc_free(in->current_frame);
      in->current_frame = NULL;
      forget_frames(vo);
@@ -656,7 +773,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      reset_vsync_timings(vo);
      mp_mutex_unlock(&in->lock);
  
-@@ -1055,13 +1133,28 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1055,13 +1182,28 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
      mp_mutex_lock(&in->lock);
      mp_assert(vo->config_ok && !in->frame_queued &&
             (!in->current_frame || in->current_frame->num_vsyncs < 1));
@@ -685,7 +802,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  }
  
  // If a frame is currently being rendered (or queued), wait until it's done.
-@@ -1112,9 +1205,27 @@ static void wait_until(struct vo *vo, int64_t target)
+@@ -1112,9 +1254,27 @@ static void wait_until(struct vo *vo, int64_t target)
      mp_mutex_unlock(&in->lock);
  }
  
@@ -715,7 +832,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      int64_t slot = osd_get_secondary_physical_next_sample_slot(vo->osd);
      if (slot > 0)
          return secondary_ass_physical_point_at(p, slot);
-@@ -1140,9 +1251,13 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
+@@ -1140,9 +1300,13 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
      struct vo *vo, struct secondary_ass_physical_point first,
      int64_t divisor, int64_t effective_start)
  {
@@ -732,7 +849,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      if (vo->in->secondary_trace && next.slot > first.slot)
          MP_INFO(vo, "native-ass-cache-reschedule: first_slot=%"PRId64
              " next_slot=%"PRId64" skipped_samples=%"PRId64
-@@ -1155,16 +1270,42 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
+@@ -1155,16 +1319,42 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
  }
  
  static void secondary_physical_feedback(struct vo *vo,
@@ -777,7 +894,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      if (in->secondary_trace && in->secondary_physical.historical_id ==
              vsync->secondary_present_id) {
          struct secondary_ass_physical *p = &in->secondary_physical;
-@@ -1172,10 +1313,18 @@ static void secondary_physical_feedback(struct vo *vo,
+@@ -1172,10 +1362,18 @@ static void secondary_physical_feedback(struct vo *vo,
              if (p->submitted[n].id != vsync->secondary_present_id ||
                  p->submitted[n].target_slot <= 0)
                  continue;
@@ -800,7 +917,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
              break;
          }
      }
-@@ -1200,19 +1349,49 @@ static bool secondary_set_presentation(struct vo *vo,
+@@ -1200,19 +1398,49 @@ static bool secondary_set_presentation(struct vo *vo,
      return true;
  }
  
@@ -852,15 +969,19 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  
      mp_mutex_lock(&in->lock);
  
-@@ -1233,20 +1412,24 @@ static bool render_frame(struct vo *vo)
+@@ -1232,39 +1460,61 @@ static bool render_frame(struct vo *vo)
+         int64_t interval = MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate),
                                  in->secondary_physical.interval);
          int64_t duration = MPMIN(in->frame_queued->duration, in->current_frame->duration);
++        int64_t prepass_block_cost = secondary_cache_block_cost(vo,
++            secondary_plan_enabled(vo, false, sample_divisor));
          int64_t prepare = secondary_ass_physical_cache_prepare(
 -            &in->secondary_physical, now, native_sample,
 +            (struct secondary_ass_physical *)prepass_state, now, native_sample,
              in->frame_queued->pts - in->flip_queue_offset, duration, interval,
              in->secondary_render_cost, in->secondary_redraw_cost,
-             in->secondary_redraw_block_cost,
+-            in->secondary_redraw_block_cost,
++            prepass_block_cost,
              vo->previous_redraw_time + in->secondary_physical.interval);
          struct secondary_ass_grid_task grid_task = {0};
 +        struct secondary_ass_physical_point prepass_candidate = native_point;
@@ -878,8 +999,11 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
 +                (struct secondary_ass_physical *)prepass_state, now, sample.slot, sample_divisor,
                  in->frame_queued->pts - in->flip_queue_offset, duration, interval,
                  in->secondary_render_cost, in->secondary_redraw_cost,
-                 in->secondary_redraw_block_cost,
-@@ -1256,15 +1439,31 @@ static bool render_frame(struct vo *vo)
+-                in->secondary_redraw_block_cost,
++                prepass_block_cost,
+                 vo->previous_redraw_time + in->secondary_physical.interval);
+             if (prepare > 0)
+                 grid_task = (struct secondary_ass_grid_task){
                      .point = sample, .epoch = in->secondary_physical.epoch,
                      .current_id = in->current_frame->frame_id,
                      .queued_id = in->frame_queued->frame_id,
@@ -909,12 +1033,21 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
 +                .fresh_due = in->frame_queued->pts - in->flip_queue_offset,
 +                .fresh_cost = in->secondary_render_cost,
 +                .redraw_cost = in->secondary_redraw_cost,
-+                .block_cost = in->secondary_redraw_block_cost,
++                .block_cost = prepass_block_cost,
 +            };
          if (in->secondary_trace && prepare <= 0)
              MP_INFO(vo, "native-ass-cache-plan: now_ns=%"PRId64
                  " sample_ns=%"PRId64" fresh_pts_ns=%"PRId64
-@@ -1286,6 +1485,7 @@ static bool render_frame(struct vo *vo)
+@@ -1272,7 +1522,7 @@ static bool render_frame(struct vo *vo)
+                 " block_cost_ns=%"PRId64" earliest_ns=%"PRId64"\n",
+                 now, native_sample, in->frame_queued->pts - in->flip_queue_offset,
+                 in->secondary_render_cost, in->secondary_redraw_cost,
+-                in->secondary_redraw_block_cost,
++                prepass_block_cost,
+                 vo->previous_redraw_time + in->secondary_physical.interval);
+         if (prepare > 0)
+         {
+@@ -1286,6 +1536,7 @@ static bool render_frame(struct vo *vo)
                                     grid_task.point.slot > 0 ? &grid_task : NULL);
              if (drawn || grid_task.point.slot <= 0)
                  vo->previous_redraw_time = redraw_start;
@@ -922,7 +1055,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
              // The queued image is untouched. "working" only requests an
              // immediate next VO iteration; it does not count a video frame.
              return true;
-@@ -1385,6 +1585,9 @@ static bool render_frame(struct vo *vo)
+@@ -1385,6 +1636,9 @@ static bool render_frame(struct vo *vo)
              secondary_ass_predict_present(&in->secondary_presentation,
                                             present_ready, display_interval) : 0;
          struct secondary_ass_physical_point physical_point = {0};
@@ -932,7 +1065,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          bool physical_phase = clock_rate > 0 && !frame->display_synced &&
              in->secondary_physical.phase && native_rate > 0 &&
              duration >= in->secondary_physical.interval &&
-@@ -1393,17 +1596,23 @@ static bool render_frame(struct vo *vo)
+@@ -1393,17 +1647,23 @@ static bool render_frame(struct vo *vo)
                  MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
          if (in->secondary_sync_mode_valid &&
              in->secondary_sync_mode != frame->display_synced)
@@ -959,7 +1092,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
              if (candidate.slot > 0 && candidate.wall > 0 && submit > 0) {
                  display_interval = in->secondary_physical.interval;
                  physical_point = candidate;
-@@ -1438,6 +1647,8 @@ static bool render_frame(struct vo *vo)
+@@ -1438,6 +1698,8 @@ static bool render_frame(struct vo *vo)
                  frame->display_synced ? presentation_time : frame->pts,
                  frame->display_synced);
          }
@@ -968,7 +1101,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          if (in->secondary_trace && presentation_time > 0)
              MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=%d ds=%d "
                      "target_ns=%"PRId64" interval_ns=%"PRId64
-@@ -1453,6 +1664,7 @@ static bool render_frame(struct vo *vo)
+@@ -1453,6 +1715,7 @@ static bool render_frame(struct vo *vo)
                                     in->secondary_last_draw);
  
          in->visible = vo->driver->draw_frame(vo, frame);
@@ -976,7 +1109,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  
          int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
-@@ -1521,7 +1733,52 @@ static bool render_frame(struct vo *vo)
+@@ -1521,10 +1784,56 @@ static bool render_frame(struct vo *vo)
                  in->secondary_last_draw, mp_time_ns(), cpu_cost,
                  in->secondary_gpu_cost, in->secondary_gpu_peak);
  
@@ -1030,7 +1163,11 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  
          stats_time_start(in->stats, "video-flip");
  
-@@ -1535,7 +1792,8 @@ static bool render_frame(struct vo *vo)
++        int64_t flip_budget_begin = in->secondary_split_budget ? mp_time_ns() : 0;
+         vo->driver->flip_page(vo);
+ 
+         struct vo_vsync_info vsync = {
+@@ -1535,7 +1844,8 @@ static bool render_frame(struct vo *vo)
              vo->driver->get_vsync(vo, &vsync);
  
          if (clock_rate > 0) {
@@ -1040,16 +1177,21 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
              secondary_ass_present_feedback(&in->secondary_presentation,
                                             vsync.last_queue_display_time);
              if (in->secondary_trace)
-@@ -1545,7 +1803,7 @@ static bool render_frame(struct vo *vo)
+@@ -1545,8 +1855,12 @@ static bool render_frame(struct vo *vo)
                          vsync.last_queue_display_time);
          } else {
              in->secondary_presentation = (struct secondary_ass_presentation){0};
 -            secondary_ass_physical_reset(&in->secondary_physical);
 +            secondary_reset_physical(vo, "clock_disabled");
          }
++        secondary_observe_flip_budget(vo, &vsync,
++            planned_audio ? &present_plan : NULL, in->secondary_last_draw + cpu_cost,
++            0, flip_budget_begin,
++            plan_guard_armed, !frame->repeat);
  
          // Make up some crap if presentation feedback is missing.
-@@ -1597,6 +1855,7 @@ done:
+         if (vsync.last_queue_display_time <= 0)
+@@ -1597,6 +1911,7 @@ done:
      if (!(vo->driver->caps & VO_CAP_FRAMEOWNER) || in->dropped_frame)
          talloc_free(frame);
      mp_mutex_unlock(&in->lock);
@@ -1057,7 +1199,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
  
      return more_frames;
  }
-@@ -1622,12 +1881,21 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1622,12 +1937,21 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
          in->current_frame->frame_id != grid_task->current_id ||
          (in->frame_queued ? in->frame_queued->frame_id : 0) != grid_task->queued_id ||
          in->secondary_physical.epoch != grid_task->epoch ||
@@ -1082,7 +1224,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          return false;
      }
      if (grid_task && (grid_task->deadline <= 0 || grid_task->submit_time <= 0 ||
-@@ -1680,6 +1948,13 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1680,6 +2004,13 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
          (int64_t)in->vsync_interval : MP_TIME_S_TO_NS(1.0 / 60);
      double secondary_rate = osd_get_secondary_refresh(vo->osd);
      double clock_rate = osd_get_secondary_clock_rate(vo->osd);
@@ -1096,7 +1238,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      int64_t presentation_time = clock_rate > 0 ?
          secondary_ass_predict_present(&in->secondary_presentation,
                                         mp_time_ns(), display_interval) : 0;
-@@ -1690,16 +1965,23 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1690,16 +2021,23 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
          secondary_ass_budget_affordable(in->secondary_render_cost,
              in->secondary_redraw_cost, video_duration,
              MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval));
@@ -1123,7 +1265,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          if (sample > 0 && prepare <= mp_time_ns() + display_interval / 4 &&
              next_sample.slot >= physical_point.slot)
          {
-@@ -1713,6 +1995,20 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1713,6 +2051,20 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
              presentation_time = physical_point.wall;
              display_interval = grid_task->interval;
          }
@@ -1144,7 +1286,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          physical_phase = physical_point.slot > 0 && physical_point.wall > 0;
      }
      if (frame->display_synced && clock_rate > 0) {
-@@ -1723,12 +2019,15 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1723,12 +2075,15 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
          }
      }
      bool secondary_target_updated = secondary_set_presentation(vo,
@@ -1161,7 +1303,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      if (in->secondary_trace && presentation_time > 0)
          MP_INFO(vo, "native-ass-draw: frame=%"PRIu64" fresh=0 ds=%d "
                  "target_ns=%"PRId64" interval_ns=%"PRId64
-@@ -1743,9 +2042,9 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1743,9 +2098,9 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
      // Capture them before feedback can refine the period or learned delay.
      int64_t trace_deadline = grid_task ? grid_task->deadline :
          secondary_ass_physical_cache_deadline(physical_point, display_interval,
@@ -1173,13 +1315,14 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
      uint64_t trace_epoch = grid_task ? grid_task->epoch : in->secondary_physical.epoch;
      int64_t draw_begin = mp_time_ns();
      if (grid_task && draw_begin >= grid_task->deadline) {
-@@ -1769,9 +2068,26 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+@@ -1769,10 +2124,30 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
      vo->driver->draw_frame(vo, frame);
      int64_t cpu_end = mp_time_ns();
      int64_t cpu_cost = cpu_end - in->secondary_last_draw;
 -    if (physical_phase)
 -        wait_until(vo, grid_task ? grid_task->submit_time :
 -            secondary_ass_physical_submit_time(&in->secondary_physical, presentation_time));
++    bool flip_budget_guard_armed = false;
 +    if (physical_phase) {
 +        if (planned_audio && present_plan.valid) {
 +            bool armed =
@@ -1188,6 +1331,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
 +                vo->driver->can_present_early &&
 +                vo->driver->can_present_early(vo, present_plan.generation,
 +                    present_plan.lifecycle_safe_wait, secondary_plan_wait_until);
++            flip_budget_guard_armed = armed;
 +            // Cached plans always keep the normal original lattice S.  The
 +            // armed backend restores absolute D after a lifecycle change.
 +            if (armed)
@@ -1201,9 +1345,11 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
 +        }
 +    }
      int64_t flip_call = in->secondary_trace && trace_deadline > 0 ? mp_time_ns() : 0;
++    int64_t flip_budget_begin = in->secondary_split_budget ? mp_time_ns() : 0;
      vo->driver->flip_page(vo);
      if (clock_rate > 0) {
-@@ -1781,7 +2097,8 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         struct vo_vsync_info vsync = {
+@@ -1781,7 +2156,8 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
          };
          if (vo->driver->get_vsync)
              vo->driver->get_vsync(vo, &vsync);
@@ -1213,7 +1359,17 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          secondary_ass_present_feedback(&in->secondary_presentation,
                                         vsync.last_queue_display_time);
          if (in->secondary_trace)
-@@ -1853,9 +2170,20 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1789,6 +2165,9 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                     " display_ns=%"PRId64"\n",
+                     secondary_target_updated ? presentation_time : 0,
+                     vsync.last_queue_display_time);
++        secondary_observe_flip_budget(vo, &vsync,
++            planned_audio ? &present_plan : NULL, cpu_end, 0,
++            flip_budget_begin, flip_budget_guard_armed, false);
+     }
+     // Presentation may wait for vsync. Include that blocking time in deadline
+     // headroom, but do not mistake a mostly idle wait for sustained GPU work.
+@@ -1853,9 +2232,23 @@ static MP_THREAD_VOID vo_thread(void *ptr)
      read_opts(vo);
      const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
      in->secondary_trace = trace && strcmp(trace, "1") == 0;
@@ -1231,10 +1387,13 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
 +    const char *present_plan = getenv("MPV_NATIVE_PRESENT_PLAN");
 +    in->secondary_present_plan = in->secondary_trace && present_plan &&
 +        strcmp(present_plan, "1") == 0;
++    const char *split_budget = getenv("MPV_NATIVE_SPLIT_BUDGET");
++    in->secondary_split_budget = in->secondary_trace && in->secondary_present_plan &&
++        in->secondary_present_grid && split_budget && strcmp(split_budget, "1") == 0;
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1910,10 +2238,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1910,10 +2303,19 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          int64_t secondary_probe = in->secondary_next_probe;
          int64_t secondary_duration = in->current_frame && !in->current_frame->display_synced
              ? in->current_frame->duration : 0;
@@ -1245,6 +1404,8 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
 +        int64_t thread_divisor = in->secondary_present_plan && in->secondary_present_grid
 +            ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
++        secondary_block_cost = secondary_cache_block_cost(vo,
++            secondary_plan_enabled(vo, secondary_ds, thread_divisor));
 +        struct secondary_ass_physical thread_planning_storage;
 +        const struct secondary_ass_physical *thread_planning_state =
 +            secondary_planning_state(vo, secondary_ds, 0,
@@ -1252,7 +1413,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
          struct secondary_ass_grid_task grid_task = {0};
          if (!working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
-@@ -1938,18 +2273,26 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1938,18 +2340,26 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                  if (secondary_duration >= in->secondary_physical.interval &&
                      in->secondary_physical.phase)
                  {
@@ -1283,7 +1444,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
                  }
                  if (sample_prepare > 0)
                      next = sample_prepare;
-@@ -1963,10 +2306,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1963,10 +2373,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                      secondary_duration >= in->secondary_physical.interval)
                  {
                      int64_t deadline = secondary_ass_physical_predict(
@@ -1299,7 +1460,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
                      headroom = secondary_ass_budget_before_deadline(
                          MPMAX(now, next), deadline, secondary_cost, cost,
                          MP_TIME_MS_TO_NS(1));
-@@ -1976,7 +2320,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1976,7 +2387,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                      wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
                      if (in->secondary_present_grid && physical_sample.slot > 0 &&
                          now >= next && !probe) {
@@ -1309,7 +1470,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
                          mp_mutex_lock(&in->lock);
                          if (divisor > 0 && in->current_frame && !in->frame_queued &&
                              divisor <= INT64_MAX / in->secondary_physical.interval &&
-@@ -1985,13 +2330,19 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1985,13 +2397,19 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                                  .point = physical_sample,
                                  .epoch = in->secondary_physical.epoch,
                                  .current_id = in->current_frame->frame_id,
@@ -1332,7 +1493,7 @@ index 3f888082578670770f82fa710684f0ea1398acd5..b9b30efa701a114c31ac72dcd97f4ced
                              };
                          mp_mutex_unlock(&in->lock);
                      }
-@@ -2008,7 +2359,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -2008,7 +2426,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
  
          if (send_reset) {
              mp_mutex_lock(&in->lock);
