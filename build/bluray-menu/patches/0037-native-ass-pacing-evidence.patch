@@ -1,9 +1,3 @@
-From 52c24b35c5de95382f1529477d5b81a38d9387c5 Mon Sep 17 00:00:00 2001
-From: mpv-Yaozhi Codex <codex@localhost>
-Date: Mon, 5 Oct 2026 17:25:00 +0800
-Subject: [PATCH] video: preserve sampler divisor when planning is off
-
----
 diff --git a/common/ass_pacing_record.c b/common/ass_pacing_record.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..b3648265af4c45825774f5045df251e23ee599e3
@@ -2775,10 +2769,10 @@ index 631a9e6ac8a9f306425679a287993a3b3131af8a..d94419936d5c7d922937876c1c8264f9
          (adjustment < 0 && sync_wall <= -adjustment))
 diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..86e70d1b8c1750b7d8c8040b673f8b4e67274114
+index 0000000000000000000000000000000000000000..cc6f4fc36592a9b93109f1c08bdd2a2c4a9cd1f3
 --- /dev/null
 +++ b/video/out/secondary_ass_present_plan.h
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,215 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_PRESENT_PLAN_H
 +#define MP_SECONDARY_ASS_PRESENT_PLAN_H
@@ -2844,44 +2838,98 @@ index 0000000000000000000000000000000000000000..86e70d1b8c1750b7d8c8040b673f8b4e
 +    const struct secondary_ass_physical *p, int64_t ready,
 +    struct secondary_ass_physical_point sampled, int64_t divisor)
 +{
-+    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
-+    struct secondary_ass_physical_point base = {0};
-+    bool sampled_valid = sampled.slot > view.last_base_slot &&
-+        sampled.wall > 0 &&
-+        secondary_ass_physical_point_at(&view, sampled.slot).slot == sampled.slot &&
-+        secondary_ass_physical_point_at(&view, sampled.slot).wall == sampled.wall;
-+    // Select the sampled logical slot only when its immutable submit deadline
-+    // is still ahead of the known render-ready boundary. The submit-time
-+    // predicate is equivalent to the exact deadline threshold
-+    // ready + (delay + 1) * T - guard, without changing delay learning.
-+    if (sampled_valid &&
-+        secondary_ass_physical_submit_time(&view, sampled.wall) > ready)
++    struct secondary_ass_physical_point none = {0};
++    if (ready <= 0 || !secondary_ass_physical_interval_valid(p->interval) ||
++        p->delay < 0 || p->delay > 4)
++        return none;
++    bool sampled_valid = sampled.slot > 0 && sampled.wall > 0 &&
++        secondary_ass_physical_point_at(p, sampled.slot).slot == sampled.slot &&
++        secondary_ass_physical_point_at(p, sampled.slot).wall == sampled.wall;
++    int64_t sampled_base_slot = sampled.slot - p->delay;
++    int64_t sampled_submit = sampled_valid ?
++        secondary_ass_physical_submit_time(p, sampled.wall) : 0;
++    // On a non-integral refresh ratio there is no divided lattice to walk.
++    // Retain the sampler's exact point whenever its immutable submit window
++    // is still open; only an occupied/late point may use the physical
++    // predictor below.
++    if (sampled_valid && divisor <= 0 &&
++        sampled_base_slot > p->last_base_slot && sampled_submit > ready)
 +        return sampled;
 +    if (sampled_valid && divisor > 0 &&
-+        divisor <= INT64_MAX / view.interval) {
-+        // A missed sampler tick is skipped on the same logical/divided lattice
-+        // that produced it. Never select an arbitrary physical slot for a
-+        // 24fps@120/144 stream, or the animation tick and render cadence drift.
-+        base = sampled;
-+        for (int n = 0; n < 4; n++) {
-+            if (base.slot > INT64_MAX - divisor)
-+                return (struct secondary_ass_physical_point){0};
-+            base = secondary_ass_physical_point_at(&view, base.slot + divisor);
-+            if (base.slot <= 0)
-+                return base;
-+            if (secondary_ass_physical_submit_time(&view, base.wall) > ready)
-+                return base;
++        divisor <= INT64_MAX / p->interval) {
++        int64_t guard = p->interval / 4;
++        if (guard > 1000000)
++            guard = 1000000;
++        int64_t period = divisor * p->interval;
++        // Choose the first still-submittable point on the original sampler
++        // lattice. Equality is missed. No loop limit can send a long stall
++        // through a wall-only fallback or change the physical phase.
++        int64_t skip = 0;
++        if (sampled_submit > 0) {
++            skip = ready >= sampled_submit ?
++                (ready - sampled_submit) / period + 1 : 0;
++        } else {
++            // A valid sampled point can be earlier than the first legal
++            // submit window during startup. Continue on the same lattice;
++            // never fall back to an unrelated wall-only slot.
++            int64_t delay_cycles = (int64_t)p->delay + 1;
++            if (delay_cycles > INT64_MAX / p->interval)
++                return none;
++            int64_t threshold = delay_cycles * p->interval;
++            if (sampled.wall > threshold ||
++                sampled.wall > INT64_MAX - guard)
++                return none;
++            int64_t sampled_submit = sampled.wall - threshold + guard;
++            if (sampled_submit > 0)
++                return none;
++            if (sampled_submit < 0 &&
++                ready > INT64_MAX + sampled_submit)
++                return none;
++            int64_t delta = ready - sampled_submit;
++            if (delta == INT64_MAX)
++                return none;
++            skip = delta / period + 1;
 +        }
-+        return (struct secondary_ass_physical_point){0};
++        int64_t base_slot = sampled.slot - p->delay;
++        if (base_slot <= p->last_base_slot) {
++            if (p->last_base_slot == INT64_MAX ||
++                (base_slot < 0 &&
++                 p->last_base_slot > INT64_MAX + base_slot))
++                return none;
++            int64_t occupied_delta = p->last_base_slot - base_slot;
++            if (occupied_delta == INT64_MAX)
++                return none;
++            int64_t occupied = occupied_delta / divisor + 1;
++            if (occupied > skip)
++                skip = occupied;
++        }
++        if (skip > (INT64_MAX - sampled.slot) / divisor)
++            return none;
++        struct secondary_ass_physical_point base =
++            secondary_ass_physical_point_at(p, sampled.slot + skip * divisor);
++        return base.slot > 0 &&
++            secondary_ass_physical_submit_time(p, base.wall) > ready ? base : none;
 +    }
-+    // With no identified divided sampler, retain the existing physical-grid
-+    // fallback, but advance only while the candidate's immutable submit time
-+    // is already missed. The phase and delay model remain untouched.
-+    base = secondary_ass_physical_predict_point(&view, ready);
-+    for (int n = 0; base.slot > 0 && n < 4 &&
-+         secondary_ass_physical_submit_time(&view, base.wall) <= ready; n++)
-+        base = secondary_ass_physical_predict_point(&view, base.wall);
-+    return base;
++    // No identified divided sampler: preserve the physical fallback. Feeding
++    // the exact submit threshold (including delay) into the existing
++    // predictor ensures S = wall - (delay + 1) * T + guard is strictly after
++    // ready.
++    int64_t guard = p->interval / 4;
++    if (guard > 1000000)
++        guard = 1000000;
++    int64_t delay_cycles = (int64_t)p->delay + 1;
++    if (delay_cycles > INT64_MAX / p->interval)
++        return none;
++    int64_t threshold = delay_cycles * p->interval;
++    if (threshold <= guard)
++        return none;
++    int64_t lead = threshold - guard;
++    if (ready > INT64_MAX - lead)
++        return none;
++    struct secondary_ass_physical_point base =
++        secondary_ass_physical_predict_point(p, ready + lead);
++    return base.slot > 0 &&
++        secondary_ass_physical_submit_time(p, base.wall) > ready ? base : none;
 +}
 +
 +static inline struct secondary_ass_present_plan secondary_ass_present_plan_fresh(
@@ -2890,7 +2938,7 @@ index 0000000000000000000000000000000000000000..86e70d1b8c1750b7d8c8040b673f8b4e
 +{
 +    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
 +    struct secondary_ass_physical_point base =
-+        secondary_ass_present_plan_fresh_base(p, ready, sampled, divisor);
++        secondary_ass_present_plan_fresh_base(&view, ready, sampled, divisor);
 +    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
 +    struct secondary_ass_physical_point target = base;
 +    if (base.slot > 0 && lower > base.slot)
