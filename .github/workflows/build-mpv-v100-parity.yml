@@ -660,6 +660,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          export LC_ALL=C
           # Replay the exact package patch glob on a fresh, disposable tree.
           # This keeps an invalid ancestor or patch-order regression from
           # consuming the dependency-build portion of the six-hour job.
@@ -674,6 +675,7 @@ jobs:
           timeout --foreground --kill-after=30s 120s \
             git -c protocol.version=2 fetch --no-tags --depth=1 origin "$MPV_COMMIT"
           git -c core.autocrlf=false checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$MPV_COMMIT"
 
           mapfile -t mpv_patches < <(
             find "$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake/packages" \
