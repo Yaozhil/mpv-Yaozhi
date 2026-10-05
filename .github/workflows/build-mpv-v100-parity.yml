@@ -656,6 +656,42 @@ jobs:
             --variant '${{ matrix.variant }}' \
             --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
 
+      - name: Preflight mpv patch chain before dependency build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Replay the exact package patch glob on a fresh, disposable tree.
+          # This keeps an invalid ancestor or patch-order regression from
+          # consuming the dependency-build portion of the six-hour job.
+          preflight_root="$(mktemp -d)"
+          trap 'rm -rf "$preflight_root"' EXIT
+          preflight_src="$preflight_root/mpv"
+          timeout --foreground --kill-after=20s 60s \
+            git -c init.defaultBranch=main init "$preflight_src"
+          git -C "$preflight_src" config core.autocrlf false
+          cd "$preflight_src"
+          git remote add origin https://github.com/mpv-player/mpv.git
+          timeout --foreground --kill-after=30s 120s \
+            git -c protocol.version=2 fetch --no-tags --depth=1 origin "$MPV_COMMIT"
+          git -c core.autocrlf=false checkout --detach FETCH_HEAD
+
+          mapfile -t mpv_patches < <(
+            find "$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake/packages" \
+              -maxdepth 1 -type f -name 'mpv-*.patch' -print | sort
+          )
+          test "${#mpv_patches[@]}" -gt 0
+          printf 'Preflight patch order (%s files):\n' "${#mpv_patches[@]}"
+          printf '  %s\n' "${mpv_patches[@]}"
+          for patch in "${mpv_patches[@]}"; do
+            git -c core.autocrlf=false \
+              -c user.name='CI patch preflight' \
+              -c user.email='ci-preflight@localhost' \
+              am --3way "$patch"
+          done
+          test -z "$(git status --porcelain)"
+          printf 'Preflight passed at %s after %s patches.\n' \
+            "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+
       - name: Restore reusable build cache
         id: build-cache
         uses: actions/cache@v5
