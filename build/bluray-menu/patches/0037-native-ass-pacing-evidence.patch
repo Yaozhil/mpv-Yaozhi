@@ -1,16 +1,15 @@
-From cf4c22765e82f8478b9cdb8a4ffb7ec96c9ecb1c Mon Sep 17 00:00:00 2001
+From f78fa7279e128403e0707a7b93f382094b6d4477 Mon Sep 17 00:00:00 2001
 From: Local verification <verification@localhost>
 Date: Mon, 5 Oct 2026 09:40:05 +0800
-Subject: [PATCH] video: integrate Native ASS pacing evidence on CI-applied
- source
+Subject: [PATCH] video: complete Native ASS pacing integration on CI base
 
 ---
  common/ass_pacing_record.c             | 432 +++++++++++
  common/ass_pacing_record.h             |  87 +++
  common/global.h                        |   2 +
- meson.build                            |  38 +
- player/core.h                          |   9 +
- player/main.c                          |  12 +
+ meson.build                            |   1 +
+ player/core.h                          |   6 +
+ player/main.c                          |   8 +
  player/video.c                         |  21 +-
  sub/dec_sub.c                          |  11 +
  sub/dec_sub.h                          |   4 +
@@ -27,7 +26,9 @@ Subject: [PATCH] video: integrate Native ASS pacing evidence on CI-applied
  video/out/secondary_ass_physical.h     | 332 ++++++++-
  video/out/secondary_ass_present_plan.h | 116 +++
  video/out/vo.c                         | 993 +++++++++++++++++++++++--
- 22 files changed, 3238 insertions(+), 88 deletions(-)
+ video/out/vo.h                         |  13 +
+ video/out/vo_gpu_next.c                |  96 ++-
+ 24 files changed, 3299 insertions(+), 92 deletions(-)
  create mode 100644 common/ass_pacing_record.c
  create mode 100644 common/ass_pacing_record.h
  create mode 100644 test/secondary_ass_physical.c
@@ -579,7 +580,7 @@ index 6cdbea5..96c6349 100644
  
  #endif
 diff --git a/meson.build b/meson.build
-index 5a34384..9d3533e 100644
+index 5a34384..149109b 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -78,6 +78,7 @@ sources = files(
@@ -590,59 +591,8 @@ index 5a34384..9d3533e 100644
      'common/av_common.c',
      'common/av_log.c',
      'common/codecs.c',
-@@ -711,6 +712,16 @@ if features['libarchive']
-                      'stream/stream_libarchive.c')
- endif
- 
-+# liborender is loaded at runtime (dlopen) against the vendored ABI header
-+# common/orender_abi.h — no build-time library or pkg-config dependency. See
-+# common/orender_dl.c for the search order and the version handshake.
-+features += {'orender': get_option('orender').allowed()}
-+if features['orender']
-+    sources += files('audio/decode/ad_orender.c',
-+                     'common/orender_dl.c',
-+                     'player/orender_overlay.c')
-+endif
-+
- libavdevice = dependency('libavdevice', version: '>= 60.3.100', required: get_option('libavdevice'))
- features += {'libavdevice': libavdevice.found()}
- if features['libavdevice']
-@@ -971,6 +982,33 @@ if features['wasapi']
-                      'audio/out/ao_wasapi_utils.c')
- endif
- 
-+# ao_asio includes Steinberg's ASIO SDK headers under the GPLv3 half of the
-+# SDK's dual licence, so it is a GPL-only file like ao_jack. Point -Dasio-sdk
-+# at the SDK root (the directory holding common/asio.h): only the headers are
-+# used, none of the SDK sources are compiled.
-+asio_opt = get_option('asio').require(win32).require(
-+    get_option('gpl'),
-+    error_message: 'the build is not GPL!',
-+)
-+asio_sdk = get_option('asio-sdk')
-+asio = false
-+if asio_sdk != ''
-+    asio = cc.has_header('objbase.h', required: asio_opt) and \
-+           cc.has_header('asio.h', args: ['-I' + asio_sdk / 'common'],
-+                         required: asio_opt)
-+elif asio_opt.enabled()
-+    error('-Dasio=enabled needs -Dasio-sdk=<path to the ASIO SDK>; ' +
-+          'get it from https://github.com/audiosdk/asio')
-+endif
-+features += {'asio': asio}
-+if features['asio']
-+    sources += files('audio/out/ao_asio.c')
-+    dependencies += declare_dependency(
-+        compile_args: ['-I' + asio_sdk / 'common'],
-+    )
-+    dependencies += cc.find_library('advapi32', required: false)
-+endif
-+
- 
- # video output dependencies
- caca_opt = get_option('caca').require(
 diff --git a/player/core.h b/player/core.h
-index 2889d35..bbc8b2d 100644
+index 2889d35..099b6b2 100644
 --- a/player/core.h
 +++ b/player/core.h
 @@ -389,6 +389,12 @@ typedef struct MPContext {
@@ -658,18 +608,8 @@ index 2889d35..bbc8b2d 100644
      int last_chapter;
  
      // Past timestamps etc.
-@@ -664,6 +670,9 @@ bool mp_load_scripts(struct MPContext *mpctx);
- void mp_load_builtin_scripts(struct MPContext *mpctx);
- int64_t mp_load_user_script(struct MPContext *mpctx, const char *fname);
- 
-+// orender_overlay.c (built only with the orender feature)
-+void mp_orender_overlay_start(struct MPContext *mpctx);
-+
- // sub.c
- void redraw_subs(struct MPContext *mpctx);
- void reset_subtitle_state(struct MPContext *mpctx);
 diff --git a/player/main.c b/player/main.c
-index 0ef3d7f..3398468 100644
+index 0ef3d7f..9fadbcd 100644
 --- a/player/main.c
 +++ b/player/main.c
 @@ -39,6 +39,7 @@
@@ -701,17 +641,6 @@ index 0ef3d7f..3398468 100644
      mpctx->statusline = mp_log_new(mpctx, mpctx->log, "!statusline");
  
      mpctx->stats = stats_ctx_create(mpctx, mpctx->global, "main");
-@@ -441,6 +449,10 @@ int mp_initialize(struct MPContext *mpctx, char **options)
- 
-     mp_load_scripts(mpctx);
- 
-+#if HAVE_ORENDER
-+    mp_orender_overlay_start(mpctx);
-+#endif
-+
-     if (opts->force_vo == 2 && handle_force_window(mpctx, false) < 0)
-         return -1;
- 
 diff --git a/player/video.c b/player/video.c
 index 6043022..08490c0 100644
 --- a/player/video.c
@@ -4383,6 +4312,286 @@ index 5f89d98..058aa86 100644
              } else {
                  wait_vo(vo, MPMIN(wait_until, now + max_interval));
              }
+diff --git a/video/out/vo.h b/video/out/vo.h
+index a3d1d9e..bb3b5e6 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -301,6 +301,9 @@ struct vo_vsync_info {
+     uint32_t secondary_sync_refresh_count, secondary_present_refresh_count;
+     uint64_t secondary_present_id;
+     uint64_t secondary_submit_id;
++    bool secondary_submit_valid;
++    int secondary_submit_sync_interval;
++    uint64_t secondary_submit_generation;
+     // Explicit invalidity resets phase/history; temporary zero statistics do not.
+     bool secondary_phase_reset;
+ 
+@@ -422,6 +425,13 @@ struct vo_driver {
+      */
+     void (*flip_page)(struct vo *vo);
+ 
++    // Optional fail-closed gate for submitting a fresh frame before its
++    // original wait target. The callback must validate the current swapchain
++    // generation and sync policy at the final decision point.
++    bool (*can_present_early)(struct vo *vo, uint64_t generation,
++                              int64_t original_target,
++                              void (*wait)(struct vo *, int64_t));
++
+     /*
+      * Return presentation feedback. The implementation should not touch fields
+      * it doesn't support; the info fields are preinitialized to neutral values.
+@@ -475,6 +485,9 @@ struct vo {
+     struct mp_log *log; // Using e.g. "[vo/vdpau]" as prefix
+     void *priv;
+     struct mpv_global *global;
++    // Internal diagnostic identity. vo_seq is immutable after creation;
++    // draw/frame scope is owned by the VO thread and cleared after feedback.
++    uint64_t pacing_vo_seq, pacing_draw_seq, pacing_frame_id;
+     union {
+         struct vo_x11_state *x11;
+         struct vo_w32_state *w32;
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 4d144ec..a0d39db 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -30,6 +30,7 @@
+ 
+ #include "config.h"
+ #include "common/common.h"
++#include "common/ass_pacing_record.h"
+ #include "common/stats.h"
+ #include "misc/io_utils.h"
+ #include "options/m_config.h"
+@@ -60,6 +61,7 @@
+ #if HAVE_D3D11 && defined(PL_HAVE_D3D11)
+ #include <libplacebo/d3d11.h>
+ #include "video/out/d3d11/ra_d3d11.h"
++#include "video/out/d3d11/context.h"
+ #include "osdep/windows_utils.h"
+ #endif
+ 
+@@ -150,6 +152,8 @@ struct priv {
+     bool frame_pending;
+     bool paused;
+     bool timing_diagnostics;
++    bool gpu_marker_diagnostics;
++    uint64_t gpu_marker_frame_id;
+     int64_t timing_start;
+     unsigned timing_draw, timing_redraw, timing_flip, timing_mix;
+     uint64_t timing_frame_id;
+@@ -188,6 +192,28 @@ struct priv {
+ static void update_render_options(struct vo *vo);
+ static void update_lut(struct priv *p, struct user_lut *lut);
+ 
++// CPU call boundaries only. Completion/Ready/Display remain separate evidence.
++static void pacing_gpu_stage(struct vo *vo, unsigned stage, int result)
++{
++    if (!mp_ass_pacing_enabled(vo->global))
++        return;
++    struct mp_ass_pacing_record record = {
++        .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
++        .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++        .v = {stage, result},
++    };
++    mp_ass_pacing_record(vo->global, MP_ASS_PACING_GPU_STAGE, &record);
++}
++
++static void pacing_gpu_marker(struct vo *vo, unsigned stage)
++{
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    struct priv *p = vo->priv;
++    if (p->gpu_marker_diagnostics)
++        ra_d3d11_ctx_gpu_marker_stage(p->ra_ctx, p->gpu_marker_frame_id, stage);
++#endif
++}
++
+ // [Luna] Keep image-subtitle color handling available to the shared package
+ // when migrating the core past the upstream Blu-ray menu merge.
+ enum image_subs_colorspace_mode {
+@@ -820,9 +846,12 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+     struct mp_image *mpi = frame->user_data;
+     struct frame_priv *fp = mpi->priv;
+     struct priv *p = fp->vo->priv;
++    pacing_gpu_stage(fp->vo, 130, 0);
+     if (!hwdec_reconfig(p, &p->hwdec_mapper, &p->hwdec_timer, fp->hwdec,
+-                        &mpi->params))
++                        &mpi->params)) {
++        pacing_gpu_stage(fp->vo, 131, -1);
+         return false;
++    }
+ 
+     stats_time_start(p->stats, "hwdec-map");
+     timer_pool_start(p->hwdec_timer);
+@@ -830,6 +859,7 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+         MP_ERR(p, "Mapping hardware decoded surface failed.\n");
+         timer_pool_stop(p->hwdec_timer);
+         stats_time_end(p->stats, "hwdec-map");
++        pacing_gpu_stage(fp->vo, 131, -2);
+         return false;
+     }
+ 
+@@ -837,6 +867,7 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+         if (!(frame->planes[n].texture = hwdec_get_tex(p, p->hwdec_mapper, n))) {
+             timer_pool_stop(p->hwdec_timer);
+             stats_time_end(p->stats, "hwdec-map");
++            pacing_gpu_stage(fp->vo, 131, -3);
+             return false;
+         }
+     }
+@@ -845,6 +876,9 @@ static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+     p->hwdec_perf = timer_pool_measure(p->hwdec_timer);
+     stats_time_end(p->stats, "hwdec-map");
+ 
++    pacing_gpu_stage(fp->vo, 131, 1);
++    pacing_gpu_marker(fp->vo, 3);
++
+     return true;
+ }
+ 
+@@ -868,21 +902,30 @@ static bool hwdec_acquire_el(pl_gpu gpu, struct pl_frame *frame)
+     struct mp_image *el_mpi = bl_mpi->enhancement_layer;
+     struct frame_priv *fp = bl_mpi->priv;
+     struct priv *p = fp->vo->priv;
++    pacing_gpu_stage(fp->vo, 132, 0);
+     if (!hwdec_reconfig(p, &p->el_hwdec_mapper, &p->el_hwdec_timer,
+-                        fp->el_hwdec, &el_mpi->params))
++                        fp->el_hwdec, &el_mpi->params)) {
++        pacing_gpu_stage(fp->vo, 133, -1);
+         return false;
++    }
+ 
+     if (ra_hwdec_mapper_map(p->el_hwdec_mapper, el_mpi) < 0) {
+         MP_ERR(p, "Mapping enhancement-layer hwdec surface failed.\n");
++        pacing_gpu_stage(fp->vo, 133, -2);
+         return false;
+     }
+ 
+     for (int n = 0; n < frame->num_planes; n++) {
+         if (!(frame->planes[n].texture =
+-                hwdec_get_tex(p, p->el_hwdec_mapper, n)))
++                hwdec_get_tex(p, p->el_hwdec_mapper, n))) {
++            pacing_gpu_stage(fp->vo, 133, -3);
+             return false;
++        }
+     }
+ 
++    pacing_gpu_stage(fp->vo, 133, 1);
++    pacing_gpu_marker(fp->vo, 4);
++
+     return true;
+ }
+ 
+@@ -1371,6 +1414,12 @@ static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
+ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ {
+     struct priv *p = vo->priv;
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    if (p->gpu_marker_diagnostics) {
++        ra_d3d11_ctx_gpu_marker_draw_begin(p->ra_ctx);
++        p->gpu_marker_frame_id = frame->frame_id;
++    }
++#endif
+     pl_options pars = p->pars;
+     pl_gpu gpu = p->gpu;
+     update_options(vo);
+@@ -1605,8 +1654,11 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     }
+ 
+     struct pl_swapchain_frame swframe;
++    pacing_gpu_stage(vo, 100, 0);
++    pacing_gpu_marker(vo, 1);
+     bool should_draw = sw->fns->start_frame(sw, NULL); // for wayland logic
+     if (!should_draw || !pl_swapchain_start_frame(p->sw, &swframe)) {
++        pacing_gpu_stage(vo, 101, -1);
+         if (frame->current) {
+             // Advance the queue state to the current PTS to discard unused frames
+             struct pl_queue_params qparams = *pl_queue_params(
+@@ -1619,6 +1671,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         }
+         return VO_FALSE;
+     }
++    pacing_gpu_stage(vo, 101, 1);
+ 
+     bool valid = false;
+     p->is_interpolated = false;
+@@ -1712,7 +1765,10 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         }
+         p->last_pts = qparams.pts;
+ 
+-        switch (pl_queue_update(p->queue, &mix, &qparams)) {
++        pacing_gpu_stage(vo, 120, 0);
++        int queue_status = pl_queue_update(p->queue, &mix, &qparams);
++        pacing_gpu_stage(vo, 121, queue_status);
++        switch (queue_status) {
+         case PL_QUEUE_ERR:
+             MP_ERR(vo, "Failed updating frames!\n");
+             goto done;
+@@ -1827,7 +1883,10 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     // Render frame
+     stats_time_start(p->stats, "render");
+     int64_t render_start = p->timing_diagnostics ? mp_time_ns() : 0;
++    pacing_gpu_stage(vo, 140, 0);
++    pacing_gpu_marker(vo, 2);
+     bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
++    pacing_gpu_stage(vo, 141, render_ok);
+     if (p->timing_diagnostics) {
+         int64_t ns = mp_time_ns() - render_start;
+         p->timing_render_ns += ns;
+@@ -1869,11 +1928,30 @@ done:
+     if (!valid) // clear with purple to indicate error
+         pl_tex_clear(gpu, swframe.fbo, (float[4]){ 0.5, 0.0, 1.0, 1.0 });
+ 
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    if (p->gpu_marker_diagnostics)
++        ra_d3d11_ctx_gpu_marker_draw_end(p->ra_ctx, p->gpu_marker_frame_id);
++#endif
++    pacing_gpu_stage(vo, 150, 0);
+     pl_gpu_flush(gpu);
++    pacing_gpu_stage(vo, 151, 1);
+     p->frame_pending = true;
+     return VO_TRUE;
+ }
+ 
++static bool can_present_early(struct vo *vo, uint64_t generation,
++                              int64_t original_target,
++                              void (*wait)(struct vo *, int64_t))
++{
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    struct priv *p = vo->priv;
++    return ra_d3d11_ctx_can_present_early(p->ra_ctx, generation,
++                                        original_target, wait);
++#else
++    return false;
++#endif
++}
++
+ static void flip_page(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+@@ -2610,6 +2688,15 @@ static int preinit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+     p->timing_diagnostics = getenv("MPV_NATIVE_TIMING") != NULL;
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    const char *gpu_marker = getenv("MPV_NATIVE_GPU_MARKER");
++    const char *ass_trace = getenv("MPV_NATIVE_ASS_TRACE");
++    const char *ass_diagnostic = getenv("MPV_NATIVE_ASS_DIAGNOSTIC");
++    bool diagnostic = (ass_trace && strcmp(ass_trace, "1") == 0) ||
++        (ass_diagnostic && strcmp(ass_diagnostic, "1") == 0);
++    p->gpu_marker_diagnostics = gpu_marker && strcmp(gpu_marker, "1") == 0 &&
++                                diagnostic;
++#endif
+     p->opts_cache = m_config_cache_alloc(p, vo->global, &gl_video_conf);
+     p->next_opts_cache = m_config_cache_alloc(p, vo->global, &gl_next_conf);
+     p->next_opts = p->next_opts_cache->opts;
+@@ -3098,6 +3185,7 @@ const struct vo_driver video_out_gpu_next = {
+     .get_image_ts = get_image,
+     .draw_frame = draw_frame,
+     .flip_page = flip_page,
++    .can_present_early = can_present_early,
+     .get_vsync = get_vsync,
+     .wait_events = wait_events,
+     .wakeup = wakeup,
 -- 
 2.54.0.windows.1
 

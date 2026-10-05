@@ -693,6 +693,22 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+          # Use actual declarations and consumer expressions, rather than
+          # inferring a stand-in struct from the fields used by the consumer.
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-integration.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-${{ matrix.variant }}.json" \
+            | python3 -c 'import json, sys; r = json.load(sys.stdin); print(json.dumps({k: r.get(k) for k in ("status", "error")} | {"meson": r.get("meson"), "compile_diagnostics": r.get("compile", {}).get("diagnostics"), "closure_errors": r.get("compile", {}).get("closure_errors")}, indent=2))'
+
+      - name: Upload Native ASS integration preflight evidence
+        if: always() && hashFiles('native-ass-integration-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-native-ass-integration-${{ matrix.variant }}
+          path: native-ass-integration-${{ matrix.variant }}.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Restore reusable build cache
         id: build-cache
@@ -1063,7 +1079,8 @@ jobs:
           test -f artifacts/dovi-rpu-probe.exe
 
       - name: Preserve dependency cache after a failed build
-        if: always() && failure() && (steps.build.outcome == 'failure' || steps.build.outcome == 'success')
+        if: always() && !cancelled() && (steps.build.outcome == 'failure' || (failure() && steps.build.outcome == 'success'))
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: |
