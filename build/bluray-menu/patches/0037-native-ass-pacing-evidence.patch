@@ -1,43 +1,12 @@
-From f78fa7279e128403e0707a7b93f382094b6d4477 Mon Sep 17 00:00:00 2001
-From: Local verification <verification@localhost>
-Date: Mon, 5 Oct 2026 09:40:05 +0800
-Subject: [PATCH] video: complete Native ASS pacing integration on CI base
+From d50d2f71637c633a88708c0eb05b163293b823f3 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi Codex <codex@localhost>
+Date: Mon, 5 Oct 2026 16:05:00 +0800
+Subject: [PATCH] video: Native ASS logical sample-slot scheduling
 
 ---
- common/ass_pacing_record.c             | 432 +++++++++++
- common/ass_pacing_record.h             |  87 +++
- common/global.h                        |   2 +
- meson.build                            |   1 +
- player/core.h                          |   6 +
- player/main.c                          |   8 +
- player/video.c                         |  21 +-
- sub/dec_sub.c                          |  11 +
- sub/dec_sub.h                          |   4 +
- sub/osd.c                              |  96 ++-
- sub/osd.h                              |   6 +
- sub/osd_state.h                        |   3 +
- sub/sd.h                               |   2 +
- sub/sd_ass.c                           |  13 +
- test/meson.build                       |   5 +
- test/secondary_ass_physical.c          | 370 +++++++++
- video/out/d3d11/context.c              | 696 ++++++++++++++++-
- video/out/d3d11/context.h              |  18 +
- video/out/secondary_ass_flip_budget.h  |  60 ++
- video/out/secondary_ass_physical.h     | 332 ++++++++-
- video/out/secondary_ass_present_plan.h | 116 +++
- video/out/vo.c                         | 993 +++++++++++++++++++++++--
- video/out/vo.h                         |  13 +
- video/out/vo_gpu_next.c                |  96 ++-
- 24 files changed, 3299 insertions(+), 92 deletions(-)
- create mode 100644 common/ass_pacing_record.c
- create mode 100644 common/ass_pacing_record.h
- create mode 100644 test/secondary_ass_physical.c
- create mode 100644 video/out/secondary_ass_flip_budget.h
- create mode 100644 video/out/secondary_ass_present_plan.h
-
 diff --git a/common/ass_pacing_record.c b/common/ass_pacing_record.c
 new file mode 100644
-index 0000000..b364826
+index 0000000000000000000000000000000000000000..b3648265af4c45825774f5045df251e23ee599e3
 --- /dev/null
 +++ b/common/ass_pacing_record.c
 @@ -0,0 +1,432 @@
@@ -475,7 +444,7 @@ index 0000000..b364826
 +}
 diff --git a/common/ass_pacing_record.h b/common/ass_pacing_record.h
 new file mode 100644
-index 0000000..309b6a4
+index 0000000000000000000000000000000000000000..309b6a4e9d28c26da2723025958b2b1ae1d35861
 --- /dev/null
 +++ b/common/ass_pacing_record.h
 @@ -0,0 +1,87 @@
@@ -567,7 +536,7 @@ index 0000000..309b6a4
 +
 +#endif
 diff --git a/common/global.h b/common/global.h
-index 6cdbea5..96c6349 100644
+index 6cdbea552df3a2ab75bf87f33ab2ff052094ecaa..96c63497392682432cab30115616fe4092adcfb4 100644
 --- a/common/global.h
 +++ b/common/global.h
 @@ -12,6 +12,8 @@ struct mpv_global {
@@ -580,7 +549,7 @@ index 6cdbea5..96c6349 100644
  
  #endif
 diff --git a/meson.build b/meson.build
-index 5a34384..149109b 100644
+index 5a34384e42a5f73643778fc5e8dd39a6e557b2e3..149109b14f8c8279806c68762c1524934e6a642a 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -78,6 +78,7 @@ sources = files(
@@ -592,7 +561,7 @@ index 5a34384..149109b 100644
      'common/av_log.c',
      'common/codecs.c',
 diff --git a/player/core.h b/player/core.h
-index 2889d35..099b6b2 100644
+index 2889d352bdd53a91d072097e96fe35ea4804ecb0..099b6b206ebf9946c9caf0448ec007cd26f80538 100644
 --- a/player/core.h
 +++ b/player/core.h
 @@ -389,6 +389,12 @@ typedef struct MPContext {
@@ -609,7 +578,7 @@ index 2889d35..099b6b2 100644
  
      // Past timestamps etc.
 diff --git a/player/main.c b/player/main.c
-index 0ef3d7f..9fadbcd 100644
+index 0ef3d7f6d65813a411d52d399807295e92b73886..9fadbcdc7df9e4fb54eafb20b45405261ea04457 100644
 --- a/player/main.c
 +++ b/player/main.c
 @@ -39,6 +39,7 @@
@@ -642,7 +611,7 @@ index 0ef3d7f..9fadbcd 100644
  
      mpctx->stats = stats_ctx_create(mpctx, mpctx->global, "main");
 diff --git a/player/video.c b/player/video.c
-index 6043022..08490c0 100644
+index 60430224d10b15da28a13556d25ccb223ad541f8..08490c039cf95b22ab5e4a4ac53175a6ec002cd8 100644
 --- a/player/video.c
 +++ b/player/video.c
 @@ -114,6 +114,8 @@ void reset_video_state(struct MPContext *mpctx)
@@ -681,7 +650,7 @@ index 6043022..08490c0 100644
          }
      }
 diff --git a/sub/dec_sub.c b/sub/dec_sub.c
-index 33b3878..6feafa6 100644
+index 33b3878660ddd1de93a1b3581c4bbaec36b6f4b0..6feafa6b3f0aa06750baebf2f905221734ba9ff1 100644
 --- a/sub/dec_sub.c
 +++ b/sub/dec_sub.c
 @@ -421,6 +421,13 @@ void sub_redecode_cached_packets(struct dec_sub *sub)
@@ -713,7 +682,7 @@ index 33b3878..6feafa6 100644
      mp_mutex_unlock(&sub->lock);
      return res;
 diff --git a/sub/dec_sub.h b/sub/dec_sub.h
-index 8b590d5..67dd08e 100644
+index 8b590d5ca39999135375e78478ffce970c22ef24..67dd08e13ab8558e2c07898a5ab044dc765bad46 100644
 --- a/sub/dec_sub.h
 +++ b/sub/dec_sub.h
 @@ -14,6 +14,7 @@ struct demux_packet;
@@ -735,7 +704,7 @@ index 8b590d5..67dd08e 100644
  char *sub_ass_get_extradata(struct dec_sub *sub);
  struct sd_times sub_get_times(struct dec_sub *sub, double pts);
 diff --git a/sub/osd.c b/sub/osd.c
-index 703422a..e5bf7da 100644
+index 703422a7d37a283b3eb01e8e15754edf612bec7d..e5bf7da9fdf9867ceafe2612d99619868cb8cbcd 100644
 --- a/sub/osd.c
 +++ b/sub/osd.c
 @@ -23,6 +23,7 @@
@@ -910,7 +879,7 @@ index 703422a..e5bf7da 100644
      } else if (obj->type == OSDTYPE_EXTERNAL2 ||
                 obj->type == OSDTYPE_DISC_MENU) {
 diff --git a/sub/osd.h b/sub/osd.h
-index 888cc1c..fd2c33e 100644
+index 888cc1c07fb6b0dd758831a7788f3bb5e4f83434..fd2c33e47c441e83f0730a9c5b7d0a30aed40d0f 100644
 --- a/sub/osd.h
 +++ b/sub/osd.h
 @@ -221,6 +221,7 @@ double osd_get_secondary_clock_rate(struct osd_state *osd);
@@ -934,7 +903,7 @@ index 888cc1c..fd2c33e 100644
  
  struct osd_progbar_state {
 diff --git a/sub/osd_state.h b/sub/osd_state.h
-index 81627d1..7481d3b 100644
+index 81627d15daa711e8eb14a76bbe57be76a91c7195..7481d3bb877fd11f5618ca5387943809a211daf7 100644
 --- a/sub/osd_state.h
 +++ b/sub/osd_state.h
 @@ -79,6 +79,7 @@ struct osd_state {
@@ -955,7 +924,7 @@ index 81627d1..7481d3b 100644
      bool want_redraw;
      bool want_redraw_notification;
 diff --git a/sub/sd.h b/sub/sd.h
-index d7cea26..03e1d7d 100644
+index d7cea265257312ec64d29b647f427f182dd0506d..03e1d7d108ee3c04dc8d8e79918a45a029ce4a69 100644
 --- a/sub/sd.h
 +++ b/sub/sd.h
 @@ -26,6 +26,8 @@ struct sd {
@@ -968,7 +937,7 @@ index d7cea26..03e1d7d 100644
      struct attachment_list *attachments;
      struct mp_codec_params *codec;
 diff --git a/sub/sd_ass.c b/sub/sd_ass.c
-index fd7552d..0e8f9f3 100644
+index fd7552d6b97e854feb9b06fc87a6aa2dde97853c..0e8f9f323e584bf896243b22417ce1f1d7cae338 100644
 --- a/sub/sd_ass.c
 +++ b/sub/sd_ass.c
 @@ -31,6 +31,7 @@
@@ -999,7 +968,7 @@ index fd7552d..0e8f9f3 100644
          MP_INFO(sd, "native-ass-sample: pts=%.9f ass_ms=%lld\n", pts, ts);
  
 diff --git a/test/meson.build b/test/meson.build
-index ed20640..7502865 100644
+index ed2064034675ee949180773d686e309445002230..7502865b1576fadacb882ffc3cd561b84b64bbb4 100644
 --- a/test/meson.build
 +++ b/test/meson.build
 @@ -99,6 +99,11 @@ test('linked-list', linked_list)
@@ -1016,7 +985,7 @@ index ed20640..7502865 100644
  
 diff --git a/test/secondary_ass_physical.c b/test/secondary_ass_physical.c
 new file mode 100644
-index 0000000..a7491e1
+index 0000000000000000000000000000000000000000..a7491e1630c20cacd9586c9858cf1b83ccf0f0ad
 --- /dev/null
 +++ b/test/secondary_ass_physical.c
 @@ -0,0 +1,370 @@
@@ -1391,7 +1360,7 @@ index 0000000..a7491e1
 +    return 0;
 +}
 diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
-index da65e2a..3a44dca 100644
+index da65e2a2f6e766ba591d8c845bb08d6a8fdd29a6..3a44dca0a0e815799ce70aa0b24f602f8909c821 100644
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
 @@ -20,6 +20,7 @@
@@ -2225,7 +2194,7 @@ index da65e2a..3a44dca 100644
  {
      if (ra->swapchain->fns != &d3d11_swapchain)
 diff --git a/video/out/d3d11/context.h b/video/out/d3d11/context.h
-index 640533b..e89b52c 100644
+index 640533b878d93dd14a0602cb651fe5928a767b41..e89b52c8a6570522eeb80e76fca0bb2f3072e79d 100644
 --- a/video/out/d3d11/context.h
 +++ b/video/out/d3d11/context.h
 @@ -1,6 +1,7 @@
@@ -2264,7 +2233,7 @@ index 640533b..e89b52c 100644
 +                                 uint32_t stage);
 diff --git a/video/out/secondary_ass_flip_budget.h b/video/out/secondary_ass_flip_budget.h
 new file mode 100644
-index 0000000..df7d538
+index 0000000000000000000000000000000000000000..df7d5382732466b3027c9d34d0afaf90f04013bd
 --- /dev/null
 +++ b/video/out/secondary_ass_flip_budget.h
 @@ -0,0 +1,60 @@
@@ -2329,7 +2298,7 @@ index 0000000..df7d538
 +
 +#endif
 diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
-index 631a9e6..d944199 100644
+index 631a9e6ac8a9f306425679a287993a3b3131af8a..d94419936d5c7d922937876c1c8264f99557f298 100644
 --- a/video/out/secondary_ass_physical.h
 +++ b/video/out/secondary_ass_physical.h
 @@ -16,14 +16,26 @@ struct secondary_ass_physical {
@@ -2806,10 +2775,10 @@ index 631a9e6..d944199 100644
          (adjustment < 0 && sync_wall <= -adjustment))
 diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
 new file mode 100644
-index 0000000..d19d8a7
+index 0000000000000000000000000000000000000000..7002ceb3f97c2a29adb31ce9364ba29d743856f7
 --- /dev/null
 +++ b/video/out/secondary_ass_present_plan.h
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,126 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_PRESENT_PLAN_H
 +#define MP_SECONDARY_ASS_PRESENT_PLAN_H
@@ -2871,12 +2840,22 @@ index 0000000..d19d8a7
 +}
 +
 +static inline struct secondary_ass_present_plan secondary_ass_present_plan_fresh(
-+    const struct secondary_ass_physical *p, int64_t ready)
++    const struct secondary_ass_physical *p, int64_t ready,
++    struct secondary_ass_physical_point sampled)
 +{
 +    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
-+    // The existing strict next-cycle rule also handles exact-boundary ready.
-+    struct secondary_ass_physical_point base =
-+        secondary_ass_physical_predict_point(&view, ready);
++    // Fresh rendering must follow the ASS sampler's already identified
++    // logical sample slot. Re-predicting from render completion makes a
++    // single CPU/GPU tail cross a vblank boundary, then alternates 1/3-slot
++    // gaps while the clock is otherwise continuous. A late draw is judged
++    // against this immutable target; it must not move the phase forward.
++    struct secondary_ass_physical_point base = {0};
++    if (sampled.slot > view.last_base_slot && sampled.wall > 0 &&
++        secondary_ass_physical_point_at(&view, sampled.slot).slot == sampled.slot &&
++        secondary_ass_physical_point_at(&view, sampled.slot).wall == sampled.wall)
++        base = sampled;
++    else
++        base = secondary_ass_physical_predict_point(&view, ready);
 +    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
 +    struct secondary_ass_physical_point target = base;
 +    if (base.slot > 0 && lower > base.slot)
@@ -2927,7 +2906,7 @@ index 0000000..d19d8a7
 +
 +#endif
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 5f89d98..058aa86 100644
+index 5f89d98dd78216ec69bd84cc32a3f0863e98b6c9..9562f7fbb3ee970d8526badf52329d5290cc9b2f 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -40,14 +40,17 @@
@@ -3670,7 +3649,7 @@ index 5f89d98..058aa86 100644
          bool physical_phase = clock_rate > 0 && !frame->display_synced &&
              in->secondary_physical.phase && native_rate > 0 &&
              duration >= in->secondary_physical.interval &&
-@@ -1325,21 +1844,32 @@ static bool render_frame(struct vo *vo)
+@@ -1325,21 +1844,34 @@ static bool render_frame(struct vo *vo)
                  MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
          if (in->secondary_sync_mode_valid &&
              in->secondary_sync_mode != frame->display_synced)
@@ -3694,11 +3673,13 @@ index 5f89d98..058aa86 100644
 +                mp_time_ns() + in->secondary_render_cost);
 +            if (planned_audio)
 +                present_plan = secondary_ass_present_plan_fresh(
-+                    &in->secondary_physical, physical_ready);
++                    &in->secondary_physical, physical_ready, native_point);
 +            struct secondary_ass_physical_point candidate =
 +                planned_audio ? present_plan.target :
-+                secondary_ass_physical_predict_point(&in->secondary_physical,
-+                                                     physical_ready);
++                (native_point.slot > in->secondary_physical.last_base_slot &&
++                 native_point.wall > 0 ? native_point :
++                 secondary_ass_physical_predict_point(&in->secondary_physical,
++                                                      physical_ready));
 +            int64_t submit = planned_audio
 +                ? (present_plan.valid ? present_plan.submit : 0)
 +                : secondary_ass_physical_submit_time(
@@ -3715,7 +3696,7 @@ index 5f89d98..058aa86 100644
          } else if (clock_rate > 0 && frame->display_synced) {
              // Only sample the identified queued display slot. Primary video's
              // draw/flip timing and ideal-frame authority remain unchanged.
-@@ -1350,8 +1880,13 @@ static bool render_frame(struct vo *vo)
+@@ -1350,8 +1882,13 @@ static bool render_frame(struct vo *vo)
              }
          }
          physical_phase = physical_point.slot > 0 && !frame->display_synced;
@@ -3731,7 +3712,7 @@ index 5f89d98..058aa86 100644
          if (clock_rate > 0 && frame->current &&
              (frame->display_synced || !frame->repeat)) {
              double media_pts = frame->current->pts +
-@@ -1360,20 +1895,32 @@ static bool render_frame(struct vo *vo)
+@@ -1360,20 +1897,32 @@ static bool render_frame(struct vo *vo)
                  frame->display_synced ? presentation_time : frame->pts,
                  frame->display_synced);
          }
@@ -3767,7 +3748,7 @@ index 5f89d98..058aa86 100644
          double secondary_rate = osd_get_secondary_refresh(vo->osd);
          int64_t render_cost = 0;
          if (secondary_rate > 0) {
-@@ -1440,10 +1987,56 @@ static bool render_frame(struct vo *vo)
+@@ -1440,10 +1989,56 @@ static bool render_frame(struct vo *vo)
                  in->secondary_last_draw, mp_time_ns(), cpu_cost,
                  in->secondary_gpu_cost, in->secondary_gpu_peak);
  
@@ -3825,7 +3806,7 @@ index 5f89d98..058aa86 100644
          vo->driver->flip_page(vo);
  
          struct vo_vsync_info vsync = {
-@@ -1454,17 +2047,24 @@ static bool render_frame(struct vo *vo)
+@@ -1454,17 +2049,24 @@ static bool render_frame(struct vo *vo)
              vo->driver->get_vsync(vo, &vsync);
  
          if (clock_rate > 0) {
@@ -3853,7 +3834,7 @@ index 5f89d98..058aa86 100644
  
          // Make up some crap if presentation feedback is missing.
          if (vsync.last_queue_display_time <= 0)
-@@ -1515,18 +2115,61 @@ done:
+@@ -1515,18 +2117,61 @@ done:
      if (!(vo->driver->caps & VO_CAP_FRAMEOWNER) || in->dropped_frame)
          talloc_free(frame);
      mp_mutex_unlock(&in->lock);
@@ -3917,7 +3898,7 @@ index 5f89d98..058aa86 100644
      // A seek or live resize can interrupt the short preparation wait. Take
      // the retained-frame reference only if this exact cache task still exists.
      if (current_id && (!in->hasframe || in->paused || in->send_reset ||
-@@ -1537,13 +2180,13 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+@@ -1537,13 +2182,13 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
          in->frame_queued->frame_id != queued_id))
      {
          mp_mutex_unlock(&in->lock);
@@ -3933,7 +3914,7 @@ index 5f89d98..058aa86 100644
      }
  
      bool full_redraw = in->dropped_frame;
-@@ -1565,6 +2208,13 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+@@ -1565,6 +2210,13 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
          (int64_t)in->vsync_interval : MP_TIME_S_TO_NS(1.0 / 60);
      double secondary_rate = osd_get_secondary_refresh(vo->osd);
      double clock_rate = osd_get_secondary_clock_rate(vo->osd);
@@ -3947,7 +3928,7 @@ index 5f89d98..058aa86 100644
      int64_t presentation_time = clock_rate > 0 ?
          secondary_ass_predict_present(&in->secondary_presentation,
                                         mp_time_ns(), display_interval) : 0;
-@@ -1575,21 +2225,51 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+@@ -1575,21 +2227,51 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
          secondary_ass_budget_affordable(in->secondary_render_cost,
              in->secondary_redraw_cost, video_duration,
              MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval));
@@ -4003,7 +3984,7 @@ index 5f89d98..058aa86 100644
      }
      if (frame->display_synced && clock_rate > 0) {
          physical_point = secondary_ass_physical_queued_point(&in->secondary_physical);
-@@ -1598,23 +2278,85 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+@@ -1598,23 +2280,85 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
              display_interval = in->secondary_physical.interval;
          }
      }
@@ -4099,7 +4080,7 @@ index 5f89d98..058aa86 100644
      vo->driver->flip_page(vo);
      if (clock_rate > 0) {
          struct vo_vsync_info vsync = {
-@@ -1623,13 +2365,18 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+@@ -1623,13 +2367,18 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
          };
          if (vo->driver->get_vsync)
              vo->driver->get_vsync(vo, &vsync);
@@ -4120,7 +4101,7 @@ index 5f89d98..058aa86 100644
      }
      // Presentation may wait for vsync. Include that blocking time in deadline
      // headroom, but do not mistake a mostly idle wait for sustained GPU work.
-@@ -1647,8 +2394,24 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
+@@ -1647,8 +2396,24 @@ static void do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id)
          mp_mutex_unlock(&in->lock);
      }
  
@@ -4145,7 +4126,7 @@ index 5f89d98..058aa86 100644
  }
  
  static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
-@@ -1679,6 +2442,37 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1679,6 +2444,37 @@ static MP_THREAD_VOID vo_thread(void *ptr)
      read_opts(vo);
      const char *trace = getenv("MPV_NATIVE_ASS_TRACE");
      in->secondary_trace = trace && strcmp(trace, "1") == 0;
@@ -4183,7 +4164,7 @@ index 5f89d98..058aa86 100644
      update_display_fps(vo);
      vo_event(vo, VO_EVENT_WIN_STATE);
  
-@@ -1733,10 +2527,20 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1733,10 +2529,20 @@ static MP_THREAD_VOID vo_thread(void *ptr)
          int64_t secondary_probe = in->secondary_next_probe;
          int64_t secondary_duration = in->current_frame && !in->current_frame->display_synced
              ? in->current_frame->duration : 0;
@@ -4204,7 +4185,7 @@ index 5f89d98..058aa86 100644
          if (!working && secondary_eligible && secondary_rate > 0) {
              int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
              interval = MPMAX(interval, in->secondary_physical.phase &&
-@@ -1754,14 +2558,32 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1754,14 +2560,32 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                  // Prepare the next ASS sample at its selection boundary,
                  // keeping the sampler and presentation timer on one grid.
                  int64_t sample_time = osd_get_secondary_next_sample_time(vo->osd);
@@ -4239,7 +4220,7 @@ index 5f89d98..058aa86 100644
                  }
                  if (sample_prepare > 0)
                      next = sample_prepare;
-@@ -1775,10 +2597,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1775,10 +2599,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                      secondary_duration >= in->secondary_physical.interval)
                  {
                      int64_t deadline = secondary_ass_physical_predict(
@@ -4255,7 +4236,7 @@ index 5f89d98..058aa86 100644
                      headroom = secondary_ass_budget_before_deadline(
                          MPMAX(now, next), deadline, secondary_cost, cost,
                          MP_TIME_MS_TO_NS(1));
-@@ -1786,6 +2609,34 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1786,6 +2611,34 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                  if (headroom) {
                      redraw |= now >= next;
                      wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
@@ -4290,7 +4271,7 @@ index 5f89d98..058aa86 100644
                  } else if (in->secondary_trace) {
                      MP_INFO(vo, "native-ass-schedule: now_ns=%"PRId64
                          " next_ns=%"PRId64" deadline_ns=%"PRId64
-@@ -1799,7 +2650,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1799,7 +2652,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
  
          if (send_reset) {
              mp_mutex_lock(&in->lock);
@@ -4299,7 +4280,7 @@ index 5f89d98..058aa86 100644
              mp_mutex_unlock(&in->lock);
              vo->driver->control(vo, VOCTRL_RESET, NULL);
          }
-@@ -1811,8 +2662,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+@@ -1811,8 +2664,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
              // Some windowing platforms break if we submit frames too fast.
              if (vo->previous_redraw_time + max_interval <= now) {
                  vo->driver->control(vo, VOCTRL_REDRAW, NULL);
@@ -4313,7 +4294,7 @@ index 5f89d98..058aa86 100644
                  wait_vo(vo, MPMIN(wait_until, now + max_interval));
              }
 diff --git a/video/out/vo.h b/video/out/vo.h
-index a3d1d9e..bb3b5e6 100644
+index a3d1d9ee97d96a777c12c53b177e87f793300872..bb3b5e6bcf1bcacaf59b0e602b6ef08224214779 100644
 --- a/video/out/vo.h
 +++ b/video/out/vo.h
 @@ -301,6 +301,9 @@ struct vo_vsync_info {
@@ -4351,7 +4332,7 @@ index a3d1d9e..bb3b5e6 100644
          struct vo_x11_state *x11;
          struct vo_w32_state *w32;
 diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 4d144ec..a0d39db 100644
+index 4d144ec42563dceef033d907ab7e78646da01ca8..a0d39db27add68844edb9501076d8513da552915 100644
 --- a/video/out/vo_gpu_next.c
 +++ b/video/out/vo_gpu_next.c
 @@ -30,6 +30,7 @@
@@ -4592,6 +4573,3 @@ index 4d144ec..a0d39db 100644
      .get_vsync = get_vsync,
      .wait_events = wait_events,
      .wakeup = wakeup,
--- 
-2.54.0.windows.1
-
