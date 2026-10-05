@@ -1,3 +1,9 @@
+From ed04b286b996d4717d1172c4345c99aec9103d43 Mon Sep 17 00:00:00 2001
+From: Local verification <verification@localhost>
+Date: Mon, 5 Oct 2026 18:20:00 +0800
+Subject: [PATCH] video: preserve logical ASS submit phase
+
+---
 diff --git a/common/ass_pacing_record.c b/common/ass_pacing_record.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..b3648265af4c45825774f5045df251e23ee599e3
@@ -979,14 +985,15 @@ index ed2064034675ee949180773d686e309445002230..7502865b1576fadacb882ffc3cd561b8
  
 diff --git a/test/secondary_ass_physical.c b/test/secondary_ass_physical.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7491e1630c20cacd9586c9858cf1b83ccf0f0ad
+index 0000000000000000000000000000000000000000..f0ff3bdaa3275f5ea2b7776eb62dc424b0c6caf9
 --- /dev/null
 +++ b/test/secondary_ass_physical.c
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,439 @@
 +#include <stdint.h>
 +
 +#include "test_utils.h"
 +#include "video/out/secondary_ass_physical.h"
++#include "video/out/secondary_ass_present_plan.h"
 +
 +static const int64_t origin = INT64_C(1000000000);
 +
@@ -1339,6 +1346,73 @@ index 0000000000000000000000000000000000000000..a7491e1630c20cacd9586c9858cf1b83
 +    assert_false(p.submitted[0].gap_excluded);
 +}
 +
++static void test_fresh_submit_slots(int64_t interval)
++{
++    const int divisors[] = {0, 1, 2, 5, 6, 10};
++    for (int delay = 0; delay <= 4; delay++) {
++        for (unsigned n = 0; n < sizeof(divisors) / sizeof(divisors[0]); n++) {
++            int divisor = divisors[n];
++            int step = divisor > 0 ? divisor : 1;
++            struct secondary_ass_physical p = make_state(interval);
++            p.delay = delay;
++            struct secondary_ass_physical_point sample = point(interval, 200);
++            int64_t submit = secondary_ass_physical_submit_time(&p, sample.wall);
++            const int64_t ready_values[] = {
++                submit - 1, submit, submit + 1,
++                submit + 100 * step * interval,
++            };
++            for (unsigned j = 0; j < sizeof(ready_values) / sizeof(ready_values[0]); j++) {
++                int64_t ready = ready_values[j];
++                struct secondary_ass_physical before = p;
++                struct secondary_ass_physical_point expected = sample;
++                // Independent exhaustive oracle: the first legal point on
++                // the original lattice, not merely any future point.
++                while (secondary_ass_physical_submit_time(&p, expected.wall) <= ready)
++                    expected = point(interval, expected.slot + step);
++                struct secondary_ass_physical_point actual =
++                    secondary_ass_present_plan_fresh_base(&p, ready, sample, divisor);
++                assert_int_equal(actual.slot, expected.slot);
++                assert_int_equal(actual.wall, expected.wall);
++                assert_memcmp(&p, &before, sizeof(p));
++            }
++            p.last_base_slot = sample.slot - delay;
++            struct secondary_ass_physical_point actual =
++                secondary_ass_present_plan_fresh_base(&p, submit - 1, sample, divisor);
++            assert_int_equal(actual.slot, sample.slot + step);
++        }
++    }
++
++    struct secondary_ass_physical p = make_state(interval);
++    p.delay = 4;
++    p.last_base_slot = INT64_MAX;
++    assert_int_equal(secondary_ass_present_plan_fresh_base(&p, origin,
++                     point(interval, 101), 5).slot, 0);
++    p.last_base_slot = 0;
++    struct secondary_ass_physical_point fallback =
++        secondary_ass_present_plan_fresh_base(&p, origin,
++            (struct secondary_ass_physical_point){0}, 0);
++    struct secondary_ass_physical_point malformed =
++        secondary_ass_present_plan_fresh_base(&p, origin,
++            (struct secondary_ass_physical_point){INT64_MIN, 1}, 0);
++    assert_int_equal(malformed.slot, fallback.slot);
++    assert_int_equal(malformed.wall, fallback.wall);
++    assert_int_equal(secondary_ass_present_plan_fresh_base(&p, INT64_MAX,
++                     point(interval, 200), 5).slot, 0);
++
++    // Startup can expose a valid sample before a legal submit window.
++    p = (struct secondary_ass_physical){
++        .phase = 1, .phase_slot = 1, .interval = interval, .epoch = 7,
++    };
++    struct secondary_ass_physical_point sample = {1, 1};
++    struct secondary_ass_physical_point actual =
++        secondary_ass_present_plan_fresh_base(&p, 1, sample, 5);
++    assert_int_equal(actual.slot, 6);
++    assert_true(secondary_ass_physical_submit_time(&p, actual.wall) > 1);
++    p.outlier_pending = true;
++    assert_int_equal(secondary_ass_present_plan_fresh_base(&p, origin,
++                     sample, 5).slot, 0);
++}
++
 +int main(void)
 +{
 +    const int rates[] = {60, 120, 144, 165, 240, 360, 480};
@@ -1350,6 +1424,7 @@ index 0000000000000000000000000000000000000000..a7491e1630c20cacd9586c9858cf1b83
 +        test_gap_history(interval);
 +        test_cleared_phase_bootstrap(interval);
 +        test_planned_base_and_clock_domains(interval);
++        test_fresh_submit_slots(interval);
 +    }
 +    return 0;
 +}
@@ -2769,10 +2844,10 @@ index 631a9e6ac8a9f306425679a287993a3b3131af8a..d94419936d5c7d922937876c1c8264f9
          (adjustment < 0 && sync_wall <= -adjustment))
 diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc6f4fc36592a9b93109f1c08bdd2a2c4a9cd1f3
+index 0000000000000000000000000000000000000000..4d06f5a9de262d8d744b4be370aae682b1a6c83c
 --- /dev/null
 +++ b/video/out/secondary_ass_present_plan.h
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,195 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_SECONDARY_ASS_PRESENT_PLAN_H
 +#define MP_SECONDARY_ASS_PRESENT_PLAN_H
@@ -2845,7 +2920,7 @@ index 0000000000000000000000000000000000000000..cc6f4fc36592a9b93109f1c08bdd2a2c
 +    bool sampled_valid = sampled.slot > 0 && sampled.wall > 0 &&
 +        secondary_ass_physical_point_at(p, sampled.slot).slot == sampled.slot &&
 +        secondary_ass_physical_point_at(p, sampled.slot).wall == sampled.wall;
-+    int64_t sampled_base_slot = sampled.slot - p->delay;
++    int64_t sampled_base_slot = sampled_valid ? sampled.slot - p->delay : 0;
 +    int64_t sampled_submit = sampled_valid ?
 +        secondary_ass_physical_submit_time(p, sampled.wall) : 0;
 +    // On a non-integral refresh ratio there is no divided lattice to walk.
@@ -2855,41 +2930,28 @@ index 0000000000000000000000000000000000000000..cc6f4fc36592a9b93109f1c08bdd2a2c
 +    if (sampled_valid && divisor <= 0 &&
 +        sampled_base_slot > p->last_base_slot && sampled_submit > ready)
 +        return sampled;
++    if (divisor > 0 && divisor > INT64_MAX / p->interval)
++        return none;
 +    if (sampled_valid && divisor > 0 &&
 +        divisor <= INT64_MAX / p->interval) {
 +        int64_t guard = p->interval / 4;
 +        if (guard > 1000000)
 +            guard = 1000000;
++        int64_t threshold = ((int64_t)p->delay + 1) * p->interval;
++        int64_t lead = threshold - guard;
++        if (ready > INT64_MAX - lead)
++            return none;
++        int64_t required_wall = ready + lead;
++        if (required_wall < threshold)
++            required_wall = threshold;
 +        int64_t period = divisor * p->interval;
 +        // Choose the first still-submittable point on the original sampler
 +        // lattice. Equality is missed. No loop limit can send a long stall
 +        // through a wall-only fallback or change the physical phase.
-+        int64_t skip = 0;
-+        if (sampled_submit > 0) {
-+            skip = ready >= sampled_submit ?
-+                (ready - sampled_submit) / period + 1 : 0;
-+        } else {
-+            // A valid sampled point can be earlier than the first legal
-+            // submit window during startup. Continue on the same lattice;
-+            // never fall back to an unrelated wall-only slot.
-+            int64_t delay_cycles = (int64_t)p->delay + 1;
-+            if (delay_cycles > INT64_MAX / p->interval)
-+                return none;
-+            int64_t threshold = delay_cycles * p->interval;
-+            if (sampled.wall > threshold ||
-+                sampled.wall > INT64_MAX - guard)
-+                return none;
-+            int64_t sampled_submit = sampled.wall - threshold + guard;
-+            if (sampled_submit > 0)
-+                return none;
-+            if (sampled_submit < 0 &&
-+                ready > INT64_MAX + sampled_submit)
-+                return none;
-+            int64_t delta = ready - sampled_submit;
-+            if (delta == INT64_MAX)
-+                return none;
-+            skip = delta / period + 1;
-+        }
++        // Also skip early startup points whose wall precedes the first
++        // legal submit window. All subtractions remain nonnegative.
++        int64_t skip = sampled.wall <= required_wall ?
++            (required_wall - sampled.wall) / period + 1 : 0;
 +        int64_t base_slot = sampled.slot - p->delay;
 +        if (base_slot <= p->last_base_slot) {
 +            if (p->last_base_slot == INT64_MAX ||
@@ -2910,20 +2972,13 @@ index 0000000000000000000000000000000000000000..cc6f4fc36592a9b93109f1c08bdd2a2c
 +        return base.slot > 0 &&
 +            secondary_ass_physical_submit_time(p, base.wall) > ready ? base : none;
 +    }
-+    // No identified divided sampler: preserve the physical fallback. Feeding
-+    // the exact submit threshold (including delay) into the existing
-+    // predictor ensures S = wall - (delay + 1) * T + guard is strictly after
-+    // ready.
++    // The predictor selects a base and then adds delay cycles to the returned
++    // target. Feed it the base threshold, not the target threshold; adding
++    // delay here too would skip otherwise submittable physical slots.
 +    int64_t guard = p->interval / 4;
 +    if (guard > 1000000)
 +        guard = 1000000;
-+    int64_t delay_cycles = (int64_t)p->delay + 1;
-+    if (delay_cycles > INT64_MAX / p->interval)
-+        return none;
-+    int64_t threshold = delay_cycles * p->interval;
-+    if (threshold <= guard)
-+        return none;
-+    int64_t lead = threshold - guard;
++    int64_t lead = p->interval - guard;
 +    if (ready > INT64_MAX - lead)
 +        return none;
 +    struct secondary_ass_physical_point base =
@@ -4660,3 +4715,5 @@ index 4d144ec42563dceef033d907ab7e78646da01ca8..a0d39db27add68844edb9501076d8513
      .get_vsync = get_vsync,
      .wait_events = wait_events,
      .wakeup = wakeup,
+-- 
+2.50.1
