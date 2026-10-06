@@ -726,6 +726,28 @@ jobs:
             mpv-v100-atmos-ubuntu-gcc64-
             mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
 
+      - name: Verify and preserve pinned GCC source archive
+        id: gcc-source-archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          archive=winbuild/mpv-winbuild-cmake/src_packages/gcc/gcc-14-20251205.tar.xz
+          if [ -f "$archive" ]; then
+            echo "b05c932de5c478cf9b64a4f2cbdf1de9b37a4845614ff8bc0e0563cd1e716f69ea0fe070ef9bf5ec1fccc0658705ec76cef536ac8dc4ca4c32cf81dad8588c37  $archive" | sha512sum --check --strict
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload verified pinned GCC source archive
+        if: steps.gcc-source-archive.outputs.available == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: gcc-14-20251205-source-${{ matrix.variant }}
+          path: winbuild/mpv-winbuild-cmake/src_packages/gcc/gcc-14-20251205.tar.xz
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Reset cached patched sources before building
         shell: bash
         run: |
@@ -815,7 +837,7 @@ jobs:
               download_complete=yes
               break
             fi
-            echo "::warning::Dependency download attempt ${attempt}/3 was throttled; retrying unfinished sources"
+            echo "::warning::Dependency download attempt ${attempt}/3 failed; retrying unfinished sources"
             sleep $((attempt * 15))
           done
           test "$download_complete" = yes
@@ -1079,7 +1101,7 @@ jobs:
           test -f artifacts/dovi-rpu-probe.exe
 
       - name: Preserve dependency cache after a failed build
-        if: always() && !cancelled() && (steps.build.outcome == 'failure' || (failure() && steps.build.outcome == 'success'))
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
@@ -1091,7 +1113,7 @@ jobs:
           key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
 
       - name: Collect failed build logs
-        if: steps.build.outcome == 'failure'
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
         shell: bash
         run: |
           find winbuild/mpv-winbuild-cmake/build64 -type f \
@@ -1100,7 +1122,7 @@ jobs:
           7za a build-logs.7z @build-log-files.txt
 
       - name: Upload failed build logs
-        if: steps.build.outcome == 'failure'
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
         uses: actions/upload-artifact@v6
         with:
           name: mpv-v100-${{ matrix.variant }}-build-logs
@@ -1111,7 +1133,7 @@ jobs:
           retention-days: 7
 
       - name: Stop after failed build
-        if: steps.build.outcome == 'failure'
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
         run: exit 1
 
       - name: Verify package contents
