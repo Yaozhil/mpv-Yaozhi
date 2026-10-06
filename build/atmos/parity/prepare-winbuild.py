@@ -70,6 +70,27 @@ shutil.copyfile(root/'build/bluray-menu/patches/0032-dovi-rpu-enhancement-metada
 shutil.copyfile(root/'build/bluray-menu/patches/0033-player-version-brand.patch', packages/'mpv-9027-player-version-brand.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch', packages/'mpv-9028-secondary-ass-continuous-clock.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0037-native-ass-pacing-evidence.patch', packages/'mpv-9029-native-ass-pacing-evidence.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0038-secondary-ass-quiet-gap-hold.patch', packages/'mpv-9030-secondary-ass-quiet-gap-hold.patch')
+# ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
+# were independently checked to have the same pinned SHA256; retaining
+# URL_HASH means a mirror cannot silently change the dependency bytes.
+iconv=packages/'libiconv.cmake'
+iconv_text=iconv.read_text()
+assert 'libiconv-1.18.tar.gz' in iconv_text
+assert 'SHA256=3B08F5F4F9B4EB82F151A7040BFD6FE6C6FB922EFE4B1659C66EA933276965E8' in iconv_text
+old_url='    URL https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.18.tar.gz\n'
+new_url=(
+    '    URL https://mirrors.kernel.org/gnu/libiconv/libiconv-1.18.tar.gz\n'
+    '        https://ftp.nluug.nl/pub/gnu/libiconv/libiconv-1.18.tar.gz\n'
+    '        https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.18.tar.gz\n'
+)
+assert iconv_text.count(old_url)==1
+iconv_text=iconv_text.replace(old_url,new_url,1)
+marker='    URL_HASH SHA256=3B08F5F4F9B4EB82F151A7040BFD6FE6C6FB922EFE4B1659C66EA933276965E8\n'
+assert iconv_text.count(marker)==1
+iconv_text=iconv_text.replace(marker,marker+'    TIMEOUT 120\n    INACTIVITY_TIMEOUT 30\n',1)
+iconv.write_text(iconv_text)
+
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
