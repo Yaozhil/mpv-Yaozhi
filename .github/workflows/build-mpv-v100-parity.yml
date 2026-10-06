@@ -2,6 +2,20 @@ name: "Build V1.0.0 main and Atmos parity candidates"
 
 on:
   workflow_dispatch:
+    inputs:
+      fast_native_preflight:
+        description: Run only the bounded V22 CPU GCC preflight
+        type: boolean
+        required: false
+        default: false
+      expected_main_tree:
+        description: Required only for fast preflight; root-frozen main tree (40 lowercase hex)
+        type: string
+        required: false
+      expected_atmos_tree:
+        description: Required only for fast preflight; root-frozen Atmos tree (40 lowercase hex)
+        type: string
+        required: false
   pull_request:
     branches: [codex/v100-core-parity-20260907]
     paths:
@@ -21,7 +35,15 @@ permissions:
   contents: read
 
 jobs:
+  fast-native-preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.fast_native_preflight }}
+    uses: ./.github/workflows/native-ass-fast-gcc-preflight.yml
+    with:
+      expected_main_tree: ${{ inputs.expected_main_tree }}
+      expected_atmos_tree: ${{ inputs.expected_atmos_tree }}
+
   build:
+    if: ${{ !inputs.fast_native_preflight }}
     strategy:
       fail-fast: false
       matrix:
@@ -1544,6 +1566,7 @@ jobs:
             -MetadataProbePath (Join-Path $artifact "object-metadata-probe.exe")
 
   build-orender:
+    if: ${{ !inputs.fast_native_preflight }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:

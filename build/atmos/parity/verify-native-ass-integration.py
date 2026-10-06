@@ -26,6 +26,8 @@ FUNCTIONS = (
     "secondary_observe_flip_budget", "secondary_planning_state",
     "secondary_trace_plan", "secondary_trace_plan_missed",
     "secondary_plan_stale_reason",
+    "wakeup_locked", "vo_is_ready_for_frame", "vo_queue_frame",
+    "secondary_publish_queue_hint",
 )
 CONSUMERS = (
     "video/out/vo.c", "video/out/d3d11/context.c",
@@ -37,6 +39,7 @@ HEADERS = (
     "video/out/secondary_ass_presentation.h",
     "video/out/secondary_ass_physical.h",
     "video/out/secondary_ass_present_plan.h",
+    "sub/secondary_ass_clock.h", "video/out/secondary_ass_queue_lead.h",
 )
 
 
@@ -183,7 +186,7 @@ def consumer_expressions(path, text):
     return expressions
 
 
-def compile_gate(source, cc, read):
+def compile_gate(source, cc, read, include_osd_getter=True):
     vo_header = read("video/out/vo.h")
     vo_source = read("video/out/vo.c")
     thread_header = read("osdep/threads-win32.h")
@@ -196,9 +199,45 @@ def compile_gate(source, cc, read):
     if len(thread_aliases) != 6:
         raise ValueError("real Windows thread typedef closure changed")
     chunks.append("\n".join(thread_aliases))
+    # Preserve actual inline mpv lock/broadcast declarations and bodies. Only
+    # the Windows OS call endpoints remain opaque platform boundaries.
+    chunks.append("void AcquireSRWLockExclusive(SRWLOCK *);\n"
+                  "void ReleaseSRWLockExclusive(SRWLOCK *);\n"
+                  "void WakeAllConditionVariable(CONDITION_VARIABLE *);\n"
+                  "int SetEvent(HANDLE);\n")
+    thread_functions = functions(thread_header)
+    platform_full = []
+    for name in ("mp_mutex_lock", "mp_mutex_unlock", "mp_cond_broadcast"):
+        if name not in thread_functions:
+            raise ValueError(f"actual Windows thread function missing: {name}")
+        function = thread_functions[name]
+        chunks.append(f'#line {function["line"]} "osdep/threads-win32.h"\n{function["text"]}\n')
+        platform_full.append({"file": "osdep/threads-win32.h", "function": name,
+                              "line": function["line"], "sha256": hashlib.sha256(function["text"].encode()).hexdigest()})
     for header in HEADERS:
         read(header)
         chunks.append(f'#include "{header}"\n')
+    # The injected compilation closure cannot hide a missing real include.
+    if len(re.findall(r'^\s*#include\s+"secondary_ass_queue_lead.h"\s*$', vo_source, re.M)) != 1:
+        raise ValueError("actual vo.c queue-lead include missing/duplicated")
+    common = read("common/common.h")
+    for macro in ("MPMIN", "MPMAX"):
+        found = re.findall(r"^#define\s+" + macro + r"\([^\n]+", common, re.M)
+        if len(found) != 1:
+            raise ValueError(f"real macro closure changed: {macro}")
+        chunks += found
+    assertion = read("misc/mp_assert.h")
+    chunks.append('#include "misc/mp_assert.h"\n')
+    masked_vo_header = mask_c(vo_header)
+    for token in ("VO_EVENT_LIVE_RESIZING", "VO_CAP_NORETAIN"):
+        candidates = []
+        for match in re.finditer(r"\benum\s*\{", masked_vo_header):
+            end = balanced(masked_vo_header, masked_vo_header.index("{", match.start()))
+            if re.search(r"\b" + token + r"\b", masked_vo_header[match.start():end]):
+                candidates.append(vo_header[match.start():end] + ";")
+        if len(candidates) != 1:
+            raise ValueError(f"real enum closure changed: {token}")
+        chunks += candidates
     constants = re.findall(r"^#define\s+VO_MAX_REQ_FRAMES\s+[^\n]+", vo_header, re.M)
     if len(constants) != 1:
         raise ValueError("real VO_MAX_REQ_FRAMES declaration missing")
@@ -223,6 +262,10 @@ def compile_gate(source, cc, read):
     if not timer_decl or not scope_decl:
         raise ValueError("real timer/OSD prototype closure changed")
     chunks.append(timer_decl[0] + "\n" + scope_decl[0] + "\n")
+    unit_macros = re.findall(r"^#define\s+MP_TIME_S_TO_NS\([^\n]+", timer, re.M)
+    if len(unit_macros) != 1:
+        raise ValueError("real timer conversion macro closure changed")
+    chunks += unit_macros
     # Keep the real mpv declarations and alias used by the new span helpers.
     # GetCurrentThreadId is an explicit opaque platform-call boundary here;
     # its Windows SDK calling convention/ABI still requires the full build.
@@ -231,6 +274,8 @@ def compile_gate(source, cc, read):
         ("osdep/threads-win32.h", thread_header, "mp_thread_cpu_time_ns", "int64_t"),
         ("video/out/vo.h", vo_header, "vo_pacing_span_at", "void"),
         ("video/out/vo.h", vo_header, "vo_pacing_span_now", "void"),
+        ("sub/osd.h", osd, "osd_get_secondary_refresh", "double"),
+        ("sub/osd.h", osd, "osd_get_secondary_sample_snapshot", "struct secondary_ass_sample_snapshot"),
     ):
         matches = list(re.finditer(r"\b" + returns + r"\s+" + name +
                                   r"\s*\([^;{}]*\)\s*;", mask_c(text)))
@@ -249,7 +294,7 @@ def compile_gate(source, cc, read):
     alias = aliases[0]
     chunks.append("DWORD GetCurrentThreadId(void);\n" + thread_header[alias.start():alias.end()] + "\n")
     chunks.append("void integration_log(const char *, ...);\n#define MP_INFO(obj, ...) integration_log(__VA_ARGS__)\n")
-    full = []
+    full = list(platform_full)
     for name in FUNCTIONS:
         if name not in actual_functions:
             raise ValueError(f"required actual VO function absent: {name}")
@@ -257,6 +302,48 @@ def compile_gate(source, cc, read):
         chunks.append(f'#line {function["line"]} "video/out/vo.c"\n{function["text"]}\n')
         full.append({"file": "video/out/vo.c", "function": name, "line": function["line"],
                      "sha256": hashlib.sha256(function["text"].encode()).hexdigest()})
+    # Compile the actual render-frame current-token condition without pulling
+    # unrelated image/GPU APIs or synthesizing an mpv struct from its fields.
+    render = actual_functions.get("render_frame")
+    if not render:
+        raise ValueError("actual render_frame definition missing")
+    condition = re.search(r"\bbool\s+current\s*=\s*[^;]*\bsecondary_ass_queue_lead_current\s*\([^;]+;", render["masked"])
+    sample = re.search(r"\bstruct\s+secondary_ass_sample_snapshot\s+queue_sample\s*=[^;]+;", render["masked"])
+    token = re.search(r"\bstruct\s+secondary_ass_queue_token\s*\*\s*token\s*=[^;]+;", render["masked"])
+    internal = re.search(r"\bstruct\s+vo_internal\s*\*\s*in\s*=[^;]+;", render["masked"])
+    if not all((condition, sample, token, internal)):
+        raise ValueError("real render_frame queue-current call/context closure changed")
+    fragments = []
+    chunks.append("\nstatic void integration_render_queue_current_call(struct vo *vo) {\n")
+    for match in (internal, sample, token, condition):
+        text = render["text"][match.start():match.end()]
+        line = render["line"] + render["masked"].count("\n", 0, match.start())
+        chunks.append(f'#line {line} "video/out/vo.c"\n{text}\n')
+        fragments.append({"file": "video/out/vo.c", "function": "render_frame", "line": line,
+                          "sha256": hashlib.sha256(text.encode()).hexdigest()})
+    chunks.append("(void)current;\n}\n")
+    thread = actual_functions.get("vo_thread")
+    if not thread or len(re.findall(r"\bsecondary_publish_queue_hint\s*\(\s*vo\s*\)", thread["masked"])) != 1:
+        raise ValueError("actual vo_thread queue-hint publisher invocation missing/duplicated")
+    osd_source = read("sub/osd.c")
+    osd_functions = functions(osd_source)
+    getter = osd_functions.get("osd_get_secondary_sample_snapshot")
+    if not getter:
+        raise ValueError("actual OSD snapshot getter definition missing")
+    if include_osd_getter:
+        if len(re.findall(r'^\s*#include\s+"osd_state.h"\s*$', osd_source, re.M)) != 1:
+            raise ValueError("actual osd.c osd_state include missing/duplicated")
+        maximum_parts = re.findall(r"^#define\s+MAX_OSD_PARTS\s+[^\n]+", osd, re.M)
+        if len(maximum_parts) != 1:
+            raise ValueError("real MAX_OSD_PARTS closure changed")
+        chunks += maximum_parts
+        state, line = declaration(read("sub/osd_state.h"), "osd_state")
+        declarations.append({"file": "sub/osd_state.h", "struct": "osd_state", "line": line,
+                             "sha256": hashlib.sha256(state.encode()).hexdigest()})
+        chunks.append(f'#line {line} "sub/osd_state.h"\n{state}\n')
+        chunks.append(f'#line {getter["line"]} "sub/osd.c"\n{getter["text"]}\n')
+        full.append({"file": "sub/osd.c", "function": "osd_get_secondary_sample_snapshot",
+                     "line": getter["line"], "sha256": hashlib.sha256(getter["text"].encode()).hexdigest()})
     gpu_functions = functions(read("video/out/vo_gpu_next.c"))
     closure_errors = []
     stage = gpu_functions.get("pacing_gpu_stage")
@@ -305,12 +392,19 @@ def compile_gate(source, cc, read):
                   "verbatim_full_functions": full, "actual_member_operand_count": len(operands),
                   "actual_member_operands": operands,
                   "translation_sha256": hashlib.sha256(generated.encode()).hexdigest(),
+                  "queue_osd_getter_requested": include_osd_getter,
+                  "queue_osd_getter_compiled": include_osd_getter and completed.returncode == 0,
+                  "verbatim_queue_render_condition_fragments": fragments,
+                  "queue_gate_scope": "REAL_OSD_STATE_GETTER_AND_COMPLETE_VO_QUEUE_FUNCTIONS" if include_osd_getter else
+                                      "VO_QUEUE_ONLY_NOT_OSD_GETTER_COMPILATION; TCC DOES NOT SUPPORT REAL _Atomic",
                   "scope": "REAL_COMPLETE_DECLARATIONS_SELECTED_VERBATIM_FUNCTIONS_AND_GPU_MEMBER_OPERANDS_NOT_FULL_TRANSLATION_UNITS",
                   "boundary_stubs": ["opaque Windows OS HANDLE/DWORD/condition/once/lock types; no platform ABI assertion",
+                                     "Windows Acquire/Release SRWLock, condition broadcast and SetEvent endpoints; actual mpv wrappers verbatim, no SDK ABI assertion",
                                      "GetCurrentThreadId prototype boundary; no Windows calling convention/SDK ABI assertion",
                                      "logging function/macro boundary; all format argument expressions remain compiled",
                                      "can_present_early compiled with HAVE_D3D11=0; real D3D11 branch is not compiled"],
                   "not_covered": ["full vo.c/d3d11/context.c/vo_gpu_next.c translation units and their external SDK APIs",
+                                  "OSD getter actual body/complete osd_state when --queue-vo-only; this limited mode cannot substitute for default GCC gate",
                                   "Meson dependency discovery, linker, optimization, ABI, threading, runtime, GPU, Display/frame pacing"]}
     return result
 
@@ -321,23 +415,34 @@ def main():
     parser.add_argument("--variant", required=True, choices=("main", "atmos"))
     parser.add_argument("--cc", required=True, type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--queue-vo-only", action="store_true",
+                        help="Limited local TCC diagnostic only; leaves actual OSD getter compilation unverified")
     args = parser.parse_args()
     source = args.source.resolve()
     hashes = {}
+    cached = {}
 
     def read(path):
+        if path in cached:
+            return cached[path]
         data = (source / path).read_bytes()
         hashes[path] = hashlib.sha256(data).hexdigest()
-        return data.decode("utf-8")
+        cached[path] = data.decode("utf-8")
+        return cached[path]
 
     result = {"source": str(source), "variant": args.variant,
               "runtime_verified": False, "gpu_started": False, "full_build_verified": False}
     try:
         result["meson"] = meson_check(source, args.variant, read)
         # Collect C evidence even if Meson fails; do not hide a second blocker.
-        result["compile"] = compile_gate(source, args.cc.resolve(), read)
+        result["compile"] = compile_gate(source, args.cc.resolve(), read, not args.queue_vo_only)
         success = result["meson"]["pass"] and result["compile"]["pass"]
-        result["status"] = "LIMITED_REAL_DECLARATION_CONSUMER_COMPILE_PASS_NOT_FULL_BUILD_OR_RUNTIME" if success else "INTEGRATION_GATE_FAIL"
+        changed = [path for path,digest in hashes.items()
+                   if hashlib.sha256((source/path).read_bytes()).hexdigest() != digest]
+        result["inputs_changed_during_gate"] = changed
+        success = success and not changed
+        result["status"] = ("VO_QUEUE_ONLY_COMPILE_PASS_OSD_GETTER_UNVERIFIED_NOT_FULL_BUILD_OR_RUNTIME" if args.queue_vo_only else
+                            "LIMITED_REAL_DECLARATION_CONSUMER_COMPILE_PASS_NOT_FULL_BUILD_OR_RUNTIME") if success else "INTEGRATION_GATE_FAIL"
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         success = False
         result["status"] = "INTEGRATION_GATE_FAIL"

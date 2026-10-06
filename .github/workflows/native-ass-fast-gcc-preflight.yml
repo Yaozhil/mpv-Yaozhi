@@ -1,0 +1,89 @@
+name: Native ASS fast GCC preflight
+
+on:
+  workflow_call:
+    inputs:
+      expected_main_tree:
+        required: true
+        type: string
+      expected_atmos_tree:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      expected_main_tree:
+        description: Root-frozen exact V22 main Git tree (40 lowercase hex)
+        required: true
+        type: string
+      expected_atmos_tree:
+        description: Root-frozen exact V22 Atmos Git tree (40 lowercase hex)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ass-fast-gcc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPECTED_MAIN_TREE: ${{ inputs.expected_main_tree }}
+      EXPECTED_ATMOS_TREE: ${{ inputs.expected_atmos_tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check explicit inputs and refusal boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build/atmos/parity/test-native-ass-fast-preflight.py --self-test
+          python3 build/atmos/parity/test-native-ass-fast-preflight.py --validate-inputs \
+            --expected-main-tree "$EXPECTED_MAIN_TREE" \
+            --expected-atmos-tree "$EXPECTED_ATMOS_TREE"
+      - name: Download and verify exact upstream archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/native-ass-fast"
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 90 \
+            'https://codeload.github.com/mpv-player/mpv/tar.gz/c318236b8882af860f16f936225430ad053a2179' \
+            --output "$RUNNER_TEMP/native-ass-fast/upstream.tar.gz"
+          echo "4d104937a06fbac23e79eb91019b4ee834ea516eb4b8d5574acae15c3fc8933d  $RUNNER_TEMP/native-ass-fast/upstream.tar.gz" | sha256sum --check --strict
+      - name: Replay all exact main and existing Atmos patch layers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build/atmos/parity/verify-source.py \
+            --archive "$RUNNER_TEMP/native-ass-fast/upstream.tar.gz" \
+            --work "$RUNNER_TEMP/native-ass-fast/replay" \
+            > "$RUNNER_TEMP/native-ass-fast/replay.log" 2>&1
+      - name: Compile both real default GCC closures and require negative refusals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build/atmos/parity/test-native-ass-fast-preflight.py \
+            --source "$RUNNER_TEMP/native-ass-fast/replay/mpv-c318236b8882af860f16f936225430ad053a2179" \
+            --archive "$RUNNER_TEMP/native-ass-fast/upstream.tar.gz" \
+            --work "$RUNNER_TEMP/native-ass-fast/checks" \
+            --cc "$(command -v gcc)" \
+            --expected-main-tree "$EXPECTED_MAIN_TREE" \
+            --expected-atmos-tree "$EXPECTED_ATMOS_TREE"
+      - name: Preserve bounded preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ass-fast-gcc-preflight-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/native-ass-fast/replay.log
+            ${{ runner.temp }}/native-ass-fast/replay/verification.json
+            ${{ runner.temp }}/native-ass-fast/checks/fast-preflight.json
+            ${{ runner.temp }}/native-ass-fast/checks/positive-main.json
+            ${{ runner.temp }}/native-ass-fast/checks/positive-atmos.json
+          if-no-files-found: warn
+          retention-days: 14

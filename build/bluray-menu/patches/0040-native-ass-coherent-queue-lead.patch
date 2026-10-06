@@ -1,0 +1,1339 @@
+From e88232a260f8a1764f1df7747e162ebcdb63adee Mon Sep 17 00:00:00 2001
+From: Local verification <verification@localhost>
+Date: Wed, 7 Oct 2026 07:04:42 +0800
+Subject: [PATCH] vo: add opt-in coherent Native ASS queue admission
+
+---
+ sub/osd.c                            |  25 ++
+ sub/osd.h                            |   2 +
+ sub/secondary_ass_clock.h            |  10 +
+ test/meson.build                     |   5 +
+ test/queue_lead_actual_review.py     | 513 +++++++++++++++++++++++++++
+ test/queue_lead_review.md            |  41 +++
+ test/secondary_ass_queue_lead.c      | 146 ++++++++
+ video/out/secondary_ass_queue_lead.h | 120 +++++++
+ video/out/vo.c                       | 217 ++++++++++-
+ 9 files changed, 1072 insertions(+), 7 deletions(-)
+ create mode 100644 test/queue_lead_actual_review.py
+ create mode 100644 test/queue_lead_review.md
+ create mode 100644 test/secondary_ass_queue_lead.c
+ create mode 100644 video/out/secondary_ass_queue_lead.h
+
+diff --git a/sub/osd.c b/sub/osd.c
+index 69ec4b4..4f42482 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -402,6 +402,31 @@ int64_t osd_get_secondary_physical_sample_divisor(struct osd_state *osd)
+     return divisor;
+ }
+ 
++struct secondary_ass_sample_snapshot osd_get_secondary_sample_snapshot(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    struct secondary_ass_sampler *s = &osd->secondary_sampler;
++    struct secondary_ass_sample_snapshot snapshot = {
++        .held = osd->secondary_sample_held, .force = s->force,
++        .rate = osd->secondary_has_output ? osd->secondary_rate : 0,
++        .speed = osd->secondary_speed,
++        .requested_speed = osd->secondary_requested_speed,
++        .epoch = s->epoch, .divisor = s->divisor,
++        .next_slot = secondary_ass_sampler_next_slot(s),
++        .next_wall = secondary_ass_sampler_next_wall(s),
++        .phase_wall = s->phase_wall, .phase_slot = s->phase_slot,
++        .interval = s->physical_interval,
++    };
++    snapshot.valid = snapshot.rate > 0 && !snapshot.held && !snapshot.force &&
++        osd->secondary_physical_phase && osd->secondary_clock.valid &&
++        !osd->secondary_clock.display_synced && s->valid && s->physical_slots &&
++        s->rate == snapshot.rate && s->epoch == osd->secondary_physical_epoch &&
++        snapshot.epoch && snapshot.divisor > 0 && snapshot.next_slot > 0 &&
++        snapshot.next_wall > 0;
++    mp_mutex_unlock(&osd->lock);
++    return snapshot;
++}
++
+ void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
+                                 bool display_synced)
+ {
+diff --git a/sub/osd.h b/sub/osd.h
+index 8798b0e..178e5a5 100644
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -222,6 +222,8 @@ int64_t osd_get_secondary_next_sample_time(struct osd_state *osd);
+ int64_t osd_get_secondary_physical_next_sample_time(struct osd_state *osd);
+ int64_t osd_get_secondary_physical_next_sample_slot(struct osd_state *osd);
+ int64_t osd_get_secondary_physical_sample_divisor(struct osd_state *osd);
++struct secondary_ass_sample_snapshot;
++struct secondary_ass_sample_snapshot osd_get_secondary_sample_snapshot(struct osd_state *osd);
+ void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
+     int64_t target_wall, int64_t target_slot, int64_t phase_wall,
+     int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall);
+diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
+index bc36b6e..3ef2344 100644
+--- a/sub/secondary_ass_clock.h
++++ b/sub/secondary_ass_clock.h
+@@ -33,6 +33,16 @@ struct secondary_ass_sampler {
+     int64_t phase_wall, phase_slot, physical_interval;
+ };
+ 
++// One OSD-lock snapshot for optional queue admission. This is an observation,
++// not permission to change a sampler tick or a presentation target.
++struct secondary_ass_sample_snapshot {
++    bool valid, held, force;
++    double rate, speed, requested_speed;
++    uint64_t epoch;
++    int64_t next_slot, next_wall, divisor;
++    int64_t phase_wall, phase_slot, interval;
++};
++
+ static inline void secondary_ass_sampler_reset(struct secondary_ass_sampler *sampler)
+ {
+     *sampler = (struct secondary_ass_sampler){0};
+diff --git a/test/meson.build b/test/meson.build
+index 7502865..682042d 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -104,6 +104,11 @@ secondary_ass_physical = executable('secondary-ass-physical',
+     link_with: test_utils)
+ test('secondary-ass-physical', secondary_ass_physical)
+ 
++secondary_ass_queue_lead = executable('secondary-ass-queue-lead',
++    'secondary_ass_queue_lead.c', include_directories: incdir,
++    dependencies: libm)
++test('secondary-ass-queue-lead', secondary_ass_queue_lead)
++
+ format = executable('format', files('format.c'), include_directories: incdir, link_with: test_utils)
+ test('format', format)
+ 
+diff --git a/test/queue_lead_actual_review.py b/test/queue_lead_actual_review.py
+new file mode 100644
+index 0000000..cffd3f6
+--- /dev/null
++++ b/test/queue_lead_actual_review.py
+@@ -0,0 +1,513 @@
++from pathlib import Path
++from hashlib import sha256
++import json
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[1]
++TCC = Path('G:/mpv_config/.codex-build/tools/tcc-win64/tcc/tcc.exe')
++OUT = Path('G:/mpv_config/.codex-build/danmaku-regular-jitter-20261002/review/isolation/native-spans-v21-20261006/runtime-v21/v22-coherent-queue-lead')
++OUT.mkdir(parents=True, exist_ok=True)
++
++
++def extract(text, marker):
++    start = text.index(marker)
++    opening = text.index('{', start)
++    cursor, depth = opening + 1, 1
++    while depth:
++        depth += (text[cursor] == '{') - (text[cursor] == '}')
++        cursor += 1
++    return text[start:cursor]
++
++
++vo = (ROOT / 'video/out/vo.c').read_text(encoding='utf-8')
++osd = (ROOT / 'sub/osd.c').read_text(encoding='utf-8')
++ready = extract(vo, 'bool vo_is_ready_for_frame(')
++original_ready = extract(Path('G:/v21-runtime/video/out/vo.c').read_text(encoding='utf-8'),
++                         'bool vo_is_ready_for_frame(').replace('vo_is_ready_for_frame(',
++                                                               'vo_is_ready_original(', 1)
++queue = extract(vo, 'void vo_queue_frame(')
++publish = extract(vo, 'static void secondary_publish_queue_hint(')
++getter = extract(osd, 'struct secondary_ass_sample_snapshot osd_get_secondary_sample_snapshot(')
++slot_getter = extract(osd, 'int64_t osd_get_secondary_physical_next_sample_slot(')
++time_getter = extract(osd, 'int64_t osd_get_secondary_physical_next_sample_time(')
++planning = extract(vo, 'static const struct secondary_ass_physical *secondary_planning_state(')
++next_sample = extract(vo, 'static struct secondary_ass_physical_point secondary_next_sample(')
++read_opts = extract(vo, 'static void read_opts(struct vo *vo)')
++queue_params = extract(vo, 'void vo_set_queue_params(')
++forget = extract(vo, 'static void forget_frames(struct vo *vo)\n{')
++promotion_guard = extract(vo, 'if (in->frame_queued && in->secondary_queue_pending.old_admission > 0)')
++promotion_start = vo.index('if (in->frame_queued) {', vo.index('static bool render_frame('))
++promotion = vo[promotion_start:vo.index(' else if (in->paused', promotion_start)]
++held_begin = vo.index('int64_t queue_resume =', vo.index('static MP_THREAD_VOID vo_thread(void *ptr)\n{'))
++held_wait = vo[held_begin:vo.index('        if (in->wakeup_pts)', held_begin)]
++grid = extract(vo, 'if (divisor > 0 && in->current_frame &&\n                            (!in->frame_queued || queue_held)')
++assert grid + ';' in vo
++grid += ';'
++held_plan_begin = vo.index('struct secondary_ass_present_plan held_cache_plan =')
++held_plan = vo[held_plan_begin:vo.index(';', held_plan_begin) + 1]
++unbound = extract(vo, 'if (queue_held && grid_task.point.slot <= 0) {')
++flag_begin = vo.index('const char *queue_lead = getenv(')
++flag_end = vo.index('    mp_dispatch_set_wakeup_fn', flag_begin)
++flag = vo[flag_begin:flag_end]
++assert flag_begin < vo.index('    if (mp_thread_create(')
++
++c = r'''
++#include <stdio.h>
++#include <stdint.h>
++#include <stdbool.h>
++#include <assert.h>
++#include <math.h>
++#include <string.h>
++#include "video/out/secondary_ass_queue_lead.h"
++#include "common/ass_pacing_record.h"
++#define MPMAX(a,b) ((a)>(b)?(a):(b))
++#define MPMIN(a,b) ((a)<(b)?(a):(b))
++#define MPCLAMP(x,a,b) MPMAX(a,MPMIN(x,b))
++#define MP_TIME_S_TO_NS(s) ((s) * INT64_C(1000000000))
++#define VO_CAP_NORETAIN 1
++#define VO_CAP_UNTIMED 2
++#define VO_EVENT_LIVE_RESIZING 4
++#define VO_MAX_REQ_FRAMES 8
++#define MP_INFO(...) ((void)0)
++#define mp_assert assert
++#define talloc_free(p) ((void)(p))
++struct vo_frame { int num_vsyncs; bool display_synced, still; int64_t duration,pts; uint64_t frame_id; };
++struct vo_driver { int caps; void *can_present_early; };
++struct vo_opts { double timing_offset; };
++struct osd_state { int lock; bool secondary_has_output,secondary_sample_held,secondary_physical_phase;
++ double secondary_rate,secondary_speed,secondary_requested_speed;
++ uint64_t secondary_physical_epoch; struct secondary_ass_sampler secondary_sampler;
++ struct secondary_ass_clock secondary_clock; };
++struct vo_internal { int lock; struct vo_frame *frame_queued,*current_frame;
++ int64_t timing_offset,secondary_render_cost,secondary_redraw_cost,secondary_next_probe;
++ int64_t flip_queue_offset,wakeup_pts; double reported_display_fps,vsync_interval;
++ bool secondary_queue_lead,paused,hasframe,hasframe_rendered,dropped_frame,send_reset,rendering;
++ bool secondary_present_plan,secondary_present_grid,secondary_schedule_trace;
++ int queued_events,req_frames,frame_refs; uint64_t current_frame_id;
++ int64_t drop_count,delayed_count;
++ struct secondary_ass_physical secondary_physical;
++ struct secondary_ass_queue_hint secondary_queue_hint;
++ struct secondary_ass_queue_token secondary_queue_admission,secondary_queue_pending;
++ int64_t secondary_queue_resume;
++};
++struct vo { struct vo_internal *in; struct osd_state *osd; struct vo_driver *driver;
++ bool config_ok; struct vo_opts *opts; struct mpv_global *global;
++ uint64_t pacing_vo_seq; int64_t previous_redraw_time; };
++struct secondary_ass_grid_task { struct secondary_ass_physical_point point;
++ uint64_t epoch,current_id,queued_id; int64_t divisor,interval,deadline,submit_time;
++ int delay; double rate; bool plan_enabled; struct secondary_ass_present_plan plan; };
++static int64_t clock_ns; static int *vo_lock; static unsigned checks,wakeups; static int lock_depth;
++static struct mp_ass_pacing_record recorded;
++static double refresh_override;
++#define CHECK(x) do { assert(x); checks++; } while (0)
++static int64_t mp_time_ns(void) { return clock_ns; }
++static void mp_mutex_lock(int *lock) { assert(!*lock); *lock=1; if(lock==vo_lock)lock_depth++; }
++static void mp_mutex_unlock(int *lock) { assert(*lock); *lock=0; if(lock==vo_lock)lock_depth--; }
++static double osd_get_secondary_refresh(struct osd_state *osd) {
++ assert(!lock_depth); return refresh_override>0 ? refresh_override :
++ (osd->secondary_has_output ? osd->secondary_rate : 0); }
++static void wakeup_locked(struct vo *vo) { assert(vo->in->lock); wakeups++; }
++bool mp_ass_pacing_enabled(struct mpv_global *unused) { (void)unused;return true; }
++void mp_ass_pacing_record(struct mpv_global *unused, uint32_t kind, const struct mp_ass_pacing_record *rec) {
++ (void)unused;(void)kind;recorded=*rec; }
++static bool secondary_plan_enabled(struct vo *vo, bool ds, int64_t divisor) {
++ return vo->in->secondary_present_plan && vo->in->secondary_present_grid && !ds && divisor>0; }
++''' + getter + '\n' + slot_getter + '\n' + time_getter + '\n' + planning + '\n' + next_sample + '\n' + publish + '\n' + ready + '\n' + original_ready + '\n' + queue + '\n' + read_opts + '\n' + queue_params + '\n' + forget + r'''
++static bool promotion_boundary(struct vo *vo, int64_t *selected_D) {
++ struct vo_internal *in=vo->in;
++ struct secondary_ass_sample_snapshot queue_sample=osd_get_secondary_sample_snapshot(vo->osd);
++ struct secondary_ass_present_plan early_plan={0};
++ mp_mutex_lock(&in->lock);
++''' + promotion_guard + '\n' + promotion + r'''
++ *selected_D=early_plan.valid ? early_plan.target.wall : 0;
++ mp_mutex_unlock(&in->lock);return true;
++done:
++ mp_mutex_unlock(&in->lock);return false;
++}
++static bool held_grid(struct vo *vo, int64_t *wait_result, uint64_t *queued_result) {
++ struct vo_internal *in=vo->in;int64_t now=clock_ns,wait_until=now+1000000000;
++''' + held_wait + r'''
++ struct secondary_ass_grid_task grid_task={0};
++ int64_t divisor=2,secondary_duration=in->current_frame->duration;
++ double secondary_rate=72;bool secondary_ds=false;
++ bool send_reset=in->send_reset;
++ struct secondary_ass_physical thread_planning_storage=secondary_ass_present_plan_view(&in->secondary_physical);
++ const struct secondary_ass_physical *thread_planning_state=&thread_planning_storage;
++ struct secondary_ass_physical_point physical_sample=secondary_ass_physical_point_at(&in->secondary_physical,110);
++''' + held_plan + '\n' + grid + r'''
++ *wait_result=wait_until;*queued_result=grid_task.queued_id;
++ return grid_task.point.slot>0;
++}
++static bool unbound_redraw(struct vo *vo, bool queue_held, bool bound, int64_t *wait_result) {
++ int64_t queue_resume=vo->in->secondary_queue_resume,wait_until=clock_ns+1;
++ bool redraw=true;struct secondary_ass_grid_task grid_task={0};
++ grid_task.point.slot=bound?110:0;
++''' + unbound + r'''
++ *wait_result=wait_until;return redraw;
++}
++static unsigned flag_bits;
++static char *fixture_getenv(const char *name) {
++ const char *names[]={"MPV_NATIVE_QUEUE_LEAD","MPV_NATIVE_ASS_DIAGNOSTIC",
++ "MPV_NATIVE_ASS_TRACE","MPV_NATIVE_PRESENT_GRID","MPV_NATIVE_PRESENT_PLAN"};
++ for(unsigned i=0;i<5;i++) if(!strcmp(names[i],name))return flag_bits&(1u<<i)?"1":NULL;
++ return NULL;
++}
++#define getenv fixture_getenv
++static void initialize_flag(struct vo *vo) {
++''' + flag + r'''
++}
++static void setup(struct vo *vo, struct vo_internal *in, struct osd_state *osd,
++ struct vo_frame *retained, struct vo_driver *driver) {
++ const int64_t T=6944481;
++ *retained=(struct vo_frame){.duration=16666666,.frame_id=42};
++ *driver=(struct vo_driver){.can_present_early=(void*)1};
++ *in=(struct vo_internal){.current_frame=retained,.hasframe=true,.timing_offset=50000000,
++ .vsync_interval=T,.reported_display_fps=1e9/T,.secondary_render_cost=2000000,
++ .secondary_redraw_cost=500000,.secondary_next_probe=2000000000,
++ .secondary_queue_lead=true,.secondary_present_grid=true,.secondary_present_plan=true,
++ .secondary_physical={.phase=1000000000,.phase_slot=100,.interval=T,.epoch=5,
++ .last_base_slot=108,.success_generation=3,.success_contiguous=true,
++ .sync_segment_consistent=true,.historical_id=10,.success_first_id=11,.success_last_id=11}};
++ *osd=(struct osd_state){.secondary_has_output=true,.secondary_physical_phase=true,
++ .secondary_rate=1e9/(2*T),.secondary_speed=1,.secondary_requested_speed=1,
++ .secondary_physical_epoch=5,.secondary_clock={.valid=true,.speed=1},
++ .secondary_sampler={.valid=true,.physical_slots=true,.rate=1e9/(2*T),.epoch=5,
++ .origin_slot=108,.divisor=2,.phase_wall=1000000000,.phase_slot=100,.physical_interval=T}};
++ static struct vo_opts opts;opts=(struct vo_opts){.timing_offset=.05};
++ *vo=(struct vo){.in=in,.osd=osd,.driver=driver,.config_ok=true,.opts=&opts};vo_lock=&in->lock;
++ refresh_override=0;
++ secondary_publish_queue_hint(vo);
++}
++struct feedback_coverage { int rate; unsigned samples,canonical,same_lattice,old_eligible,new_eligible; };
++static struct feedback_coverage coverage[6];
++static void continuous_feedback(struct vo *vo, struct vo_internal *in,
++ struct osd_state *osd, struct vo_frame *retained, struct vo_driver *driver) {
++ const int rates[]={60,120,144,165,240,360};
++ for(unsigned r=0;r<6;r++) {
++  setup(vo,in,osd,retained,driver);
++  int64_t T=1000000000/rates[r],divisor=(rates[r]+119)/120;
++  struct secondary_ass_physical *p=&in->secondary_physical;
++  p->interval=T;p->last_base_slot=100;p->sync_slot=100;p->sync_count=100;
++  p->sync_qpc_ns=p->measure_qpc_ns=p->phase;p->measure_count=100;
++  in->vsync_interval=T;in->reported_display_fps=1e9/T;
++  retained->duration=41666667;osd->secondary_rate=1e9/(divisor*T);
++  secondary_ass_sampler_reset(&osd->secondary_sampler);
++  struct secondary_ass_physical_point first=secondary_ass_physical_point_at(p,100+divisor);
++  CHECK(secondary_ass_physical_submit_planned_point(p,11,p->epoch,first,first));
++  coverage[r].rate=rates[r];
++  for(uint64_t history=11;history<75;history++) {
++   int64_t old_phase=p->phase,old_slot=p->phase_slot;
++   struct secondary_ass_physical_point future=secondary_ass_physical_point_at(p,old_slot+2*divisor);
++   CHECK(secondary_ass_physical_submit_planned_point(p,history+1,p->epoch,future,future));
++   CHECK(secondary_ass_sampler_update_physical(&osd->secondary_sampler,
++    &osd->secondary_clock,osd->secondary_rate,future.wall,future.slot,
++    old_phase,old_slot,T,p->epoch));
++   struct secondary_ass_sample_snapshot raw=osd_get_secondary_sample_snapshot(osd);
++   struct secondary_ass_physical_point before=secondary_next_sample(vo,divisor);
++   int64_t F=before.wall-1000000;
++   struct secondary_ass_present_plan before_plan=secondary_ass_present_plan_fresh(p,F,before);
++   secondary_ass_physical_update_observed(p,false,0,(struct secondary_ass_physical_point){0},
++    p->sync_qpc_ns+divisor*T,old_phase+divisor*T,
++    p->sync_count+divisor,p->sync_count+divisor,history,T);
++   secondary_ass_physical_record_present(p,true,history+1,3,1);
++   struct secondary_ass_sample_snapshot after_raw=osd_get_secondary_sample_snapshot(osd);
++   struct secondary_ass_physical_point actual=secondary_next_sample(vo,divisor);
++   struct secondary_ass_present_plan actual_plan=secondary_ass_present_plan_fresh(p,F,actual);
++   CHECK(raw.valid && p->epoch==raw.epoch && !p->outlier_pending && p->sync_segment_consistent);
++   CHECK(secondary_ass_sample_snapshot_equal(&raw,&after_raw));
++   CHECK(secondary_ass_sample_snapshot_equal(&raw,&(struct secondary_ass_sample_snapshot){
++    .valid=true,.rate=osd->secondary_rate,.speed=1,.requested_speed=1,.epoch=p->epoch,
++    .next_slot=raw.next_slot,.next_wall=raw.next_wall,.divisor=divisor,
++    .phase_wall=old_phase,.phase_slot=old_slot,.interval=T}));
++   CHECK(before.slot==actual.slot && before.wall==actual.wall &&
++    before_plan.valid && actual_plan.valid && before_plan.target.wall==actual_plan.target.wall &&
++    before_plan.submit==actual_plan.submit && before_plan.epoch==actual_plan.epoch);
++   secondary_publish_queue_hint(vo);
++   struct secondary_ass_queue_token candidate=secondary_ass_queue_lead_make(
++    &in->secondary_queue_hint,&raw,F,T+2000000,in->timing_offset,in->secondary_redraw_cost);
++   CHECK(candidate.valid==(divisor>1));
++   CHECK(!candidate.valid || (candidate.plan.base.slot==actual.slot &&
++    candidate.plan.target.wall==actual.wall && candidate.plan.submit==actual_plan.submit));
++   clock_ns=F-divisor*T-2000000;in->wakeup_pts=0;
++   bool admitted=vo_is_ready_for_frame(vo,F) && in->secondary_queue_admission.valid;
++   CHECK(admitted==(divisor>1));
++   CHECK(!admitted || (in->secondary_queue_admission.fresh_due==F &&
++    in->secondary_queue_admission.plan.target.wall==actual.wall));
++   coverage[r].samples++;coverage[r].canonical++;
++   coverage[r].same_lattice++;
++   // These are the exact literal-coordinate predicates removed from make,
++   // evaluated on the same dynamic inputs, not a loose tolerance model.
++   coverage[r].old_eligible+=candidate.valid && raw.interval==p->interval &&
++    raw.phase_wall==p->phase && raw.phase_slot==p->phase_slot && raw.next_wall==actual.wall;
++   coverage[r].new_eligible+=admitted;
++  }
++ }
++}
++static void feedback_changes(struct vo *vo, struct vo_internal *in,
++ struct osd_state *osd, struct vo_frame *retained, struct vo_frame *incoming,
++ struct vo_driver *driver) {
++ // Run the actual observed-feedback adapter before and after capture. A
++ // normal reanchor preserves D/S exactly; a 1 ns or 200 us wall change must
++ // never retarget a captured plan. Large jitter and missing counts do not
++ // authorize the new early path, and neither is treated as a mode reset.
++ for(int change=0;change<6;change++) {
++  setup(vo,in,osd,retained,driver);
++  struct secondary_ass_physical *p=&in->secondary_physical;
++  int64_t T=p->interval,F=secondary_next_sample(vo,2).wall-1000000;
++  p->sync_qpc_ns=p->measure_qpc_ns=p->phase;p->sync_slot=p->phase_slot;
++  p->sync_count=p->measure_count=100;
++  struct secondary_ass_physical_point history=secondary_ass_physical_point_at(p,102);
++  CHECK(secondary_ass_physical_submit_planned_point(p,11,p->epoch,history,history));
++  clock_ns=F-2*T-2000000;
++  CHECK(vo_is_ready_for_frame(vo,F));
++  *incoming=(struct vo_frame){.pts=F,.duration=16666666};vo_queue_frame(vo,incoming);
++  struct secondary_ass_queue_token captured=in->secondary_queue_pending;
++  int64_t jitter=change==1?1:change==2?200000:change==3?T/3:0;
++  uint32_t count=change==4?105:102;
++  if(change==5) {
++   p->period_count=p->period_next=2;p->periods[0]=p->periods[1]=T+1;
++   p->measure_qpc_ns-=72*T;p->measure_count-=72;
++  }
++  secondary_ass_physical_update_observed(p,false,0,(struct secondary_ass_physical_point){0},
++   p->sync_qpc_ns+2*T+jitter,p->phase+2*T+jitter,count,count,11,T);
++  secondary_ass_physical_record_present(p,true,12,3,1);
++  CHECK(p->epoch==captured.plan.epoch && osd->secondary_sampler.phase_slot==100);
++  CHECK(p->outlier_pending==(change==3));
++  CHECK(p->sync_segment_consistent==(change!=3 && change!=4));
++  CHECK(p->phase_slot==(change==3?100:102));
++  CHECK(p->interval==(change==5?T+1:T));
++  int64_t selected=0;bool promoted=promotion_boundary(vo,&selected);
++  if(promoted!=(change==0)) fprintf(stderr,"feedback change=%d promoted=%d interval=%lld pending=%d resume=%lld now=%lld\n",
++   change,promoted,(long long)p->interval,in->secondary_queue_pending.valid,
++   (long long)in->secondary_queue_resume,(long long)clock_ns);
++  CHECK(promoted==(change==0));
++  CHECK(incoming->pts==F && captured.fresh_due==F &&
++   captured.plan.target.wall==F+1000000 && captured.plan.submit==F+1000000-T+1000000);
++  CHECK(change==0 ? selected==captured.plan.target.wall :
++   !selected && in->frame_queued==incoming && in->current_frame==retained &&
++   in->secondary_queue_resume==captured.old_admission);
++ }
++ // Before capture, benign jitter/refinement remains useful on the existing
++ // caller's exact projection, while ambiguous jitter/count loss refuses the
++ // extra queue right and preserves the baseline path.
++ for(int refine=0;refine<4;refine++) {
++  setup(vo,in,osd,retained,driver);
++  struct secondary_ass_physical *p=&in->secondary_physical;int64_t T=p->interval;
++  int64_t initial_F=secondary_next_sample(vo,2).wall-1000000;
++  p->sync_qpc_ns=p->measure_qpc_ns=p->phase;p->sync_slot=p->phase_slot;
++  p->sync_count=p->measure_count=100;
++  struct secondary_ass_physical_point history=secondary_ass_physical_point_at(p,102);
++  CHECK(secondary_ass_physical_submit_planned_point(p,11,p->epoch,history,history));
++  if(refine==1) { p->period_count=p->period_next=2;p->periods[0]=p->periods[1]=T+1;
++   p->measure_qpc_ns-=72*T;p->measure_count-=72; }
++  int64_t jitter=refine==0?200000:refine==2?T/3:0;
++  uint32_t count=refine==3?105:102;
++  secondary_ass_physical_update_observed(p,false,0,(struct secondary_ass_physical_point){0},
++   p->sync_qpc_ns+2*T+jitter,p->phase+2*T+jitter,count,count,11,T);
++  secondary_ass_physical_record_present(p,true,12,3,1);
++  struct secondary_ass_sample_snapshot raw=osd_get_secondary_sample_snapshot(osd);
++  struct secondary_ass_physical_point point=secondary_next_sample(vo,2);
++  struct secondary_ass_present_plan plan=secondary_ass_present_plan_fresh(p,point.wall-1000000,point);
++  secondary_publish_queue_hint(vo);
++  int64_t F=point.wall>0?point.wall-1000000:initial_F;
++  clock_ns=F-2*p->interval-2000000;
++  if(refine>=2) {
++   CHECK(!vo_is_ready_for_frame(vo,F) && !in->secondary_queue_admission.valid);
++   CHECK(p->epoch==raw.epoch && osd->secondary_sampler.phase_slot==100);
++   CHECK(p->outlier_pending==(refine==2) && !p->sync_segment_consistent);
++   CHECK(in->wakeup_pts==F-T-2000000);continue;
++  }
++  CHECK(vo_is_ready_for_frame(vo,F) && in->secondary_queue_admission.valid);
++  CHECK(in->secondary_queue_admission.plan.target.wall==point.wall &&
++   in->secondary_queue_admission.plan.submit==plan.submit && raw.interval==T);
++  *incoming=(struct vo_frame){.pts=F,.duration=16666666};vo_queue_frame(vo,incoming);
++  CHECK(in->secondary_queue_pending.valid && incoming->pts==F);
++  int64_t selected=0;CHECK(promotion_boundary(vo,&selected));
++  CHECK(selected==point.wall && plan.interval==T+refine && !p->outlier_pending);
++ }
++}
++int main(void) {
++ struct vo vo;struct vo_internal in;struct osd_state osd;struct vo_frame retained,newframe;struct vo_driver driver;
++ setup(&vo,&in,&osd,&retained,&driver);
++ int64_t D=secondary_ass_physical_point_at(&in.secondary_physical,110).wall;
++ int64_t F=D-1000000;
++ clock_ns=F-2*in.secondary_physical.interval-2000000;
++ in.secondary_queue_lead=false;CHECK(!vo_is_ready_for_frame(&vo,F));
++ int64_t old_admission=in.wakeup_pts;
++ in.secondary_queue_lead=true;in.wakeup_pts=0;
++ clock_ns=F-2*in.secondary_physical.interval-2000000-1;
++ CHECK(!vo_is_ready_for_frame(&vo,F));
++ CHECK(!in.secondary_queue_admission.valid);
++ CHECK(in.wakeup_pts==clock_ns+1);
++ clock_ns++;
++ CHECK(vo_is_ready_for_frame(&vo,F));
++ CHECK(in.secondary_queue_admission.valid);
++ newframe=(struct vo_frame){.pts=F,.duration=16666666};vo_queue_frame(&vo,&newframe);
++ CHECK(newframe.pts==F && in.frame_queued==&newframe && in.current_frame==&retained);
++ CHECK(recorded.v[1]==F && recorded.v[3]==old_admission && recorded.v[5]==110);
++ int64_t selected_D=0;CHECK(promotion_boundary(&vo,&selected_D));
++ CHECK(selected_D==D && in.current_frame==&newframe && !in.frame_queued);
++ // Every stale case is applied after admission and before promotion. The
++ // queue retains ownership, the original boundary is finite, and no stale D
++ // is silently chosen. Exact bound cache tasks remain available while held.
++ for(int change=0;change<11;change++) {
++  setup(&vo,&in,&osd,&retained,&driver);clock_ns=F-2*in.secondary_physical.interval-2000000;
++  CHECK(vo_is_ready_for_frame(&vo,F));newframe=(struct vo_frame){.pts=F,.duration=16666666};
++  vo_queue_frame(&vo,&newframe);
++  switch(change) {
++  case 0: osd.secondary_sampler.tick++;break;
++  case 1: osd.secondary_sampler.force=true;break;
++  case 2: osd.secondary_sample_held=true;break;
++  case 3: osd.secondary_rate=60;break;
++  case 4: in.secondary_physical.epoch++;break;
++  case 5: in.secondary_physical.success_generation++;break;
++  case 6: in.secondary_redraw_cost=5000000;break;
++  case 7: in.queued_events|=VO_EVENT_LIVE_RESIZING;break;
++  case 8: in.send_reset=true;break;
++  case 9: newframe.still=true;break;
++  case 10: newframe.duration=1; in.secondary_queue_pending.valid=false;break;
++  }
++  CHECK(!promotion_boundary(&vo,&selected_D));
++  CHECK(in.current_frame==&retained && in.frame_queued==&newframe && newframe.pts==F);
++  CHECK(!in.secondary_queue_pending.valid && in.secondary_queue_resume==old_admission);
++  int64_t wait=0;uint64_t queued=0;bool bound=held_grid(&vo,&wait,&queued);
++  CHECK(bound==(change!=7 && change!=8));
++  CHECK(wait==old_admission && wait>clock_ns && queued==(bound?newframe.frame_id:0));
++  CHECK(!unbound_redraw(&vo,true,false,&wait));CHECK(wait==old_admission && wait>clock_ns+1);
++  CHECK(unbound_redraw(&vo,true,true,&wait));
++  clock_ns=old_admission;CHECK(promotion_boundary(&vo,&selected_D));
++  CHECK(selected_D==0 && in.current_frame==&newframe && !in.secondary_queue_resume);
++ }
++ // Independent counterexample: the first rate read belongs to an older
++ // budget while the coherent sampler/hint already belongs to a newer rate.
++ setup(&vo,&in,&osd,&retained,&driver);
++ osd.secondary_rate=1e9/in.secondary_physical.interval;
++ osd.secondary_sampler.rate=osd.secondary_rate;osd.secondary_sampler.divisor=1;
++ osd.secondary_sampler.origin_slot=109;retained.duration=13000000;
++ in.secondary_render_cost=6500000;in.reported_display_fps=0;
++ secondary_publish_queue_hint(&vo);refresh_override=1e9/(2*in.secondary_physical.interval);
++ clock_ns=F-in.secondary_physical.interval-2000000;
++ CHECK(!vo_is_ready_for_frame(&vo,F));CHECK(!in.secondary_queue_admission.valid);
++ CHECK(in.wakeup_pts==F-8500000);
++ // A timing cap shrink must restore the later baseline admission; a stale
++ // captured cap must not consume cache 110 early as a fresh frame.
++ setup(&vo,&in,&osd,&retained,&driver);clock_ns=F-2*in.secondary_physical.interval-2000000;
++ CHECK(vo_is_ready_for_frame(&vo,F));newframe=(struct vo_frame){.pts=F,.duration=16666666};
++ vo_queue_frame(&vo,&newframe);vo.opts->timing_offset=.002;read_opts(&vo);
++ CHECK(!in.secondary_queue_pending.valid && in.secondary_queue_pending.fresh_due==F);
++ CHECK(in.secondary_queue_pending.old_admission==F-2000000);
++ CHECK(!promotion_boundary(&vo,&selected_D));CHECK(newframe.pts==F && in.current_frame==&retained);
++ clock_ns=F-2000000;CHECK(promotion_boundary(&vo,&selected_D));CHECK(selected_D==0);
++ for(int shift=-1;shift<=1;shift+=2) {
++  setup(&vo,&in,&osd,&retained,&driver);clock_ns=F-2*in.secondary_physical.interval-2000000;
++  CHECK(vo_is_ready_for_frame(&vo,F));newframe=(struct vo_frame){.pts=F,.duration=16666666};
++  vo_queue_frame(&vo,&newframe);vo_set_queue_params(&vo,shift*1000000,1,2);
++  CHECK(!in.secondary_queue_pending.valid && in.secondary_queue_pending.fresh_due==F);
++  CHECK(in.secondary_queue_pending.old_admission==old_admission-shift*1000000);
++  CHECK(!promotion_boundary(&vo,&selected_D));CHECK(newframe.pts==F && in.current_frame==&retained);
++  clock_ns=old_admission-shift*1000000;CHECK(promotion_boundary(&vo,&selected_D));CHECK(selected_D==0);
++ }
++ setup(&vo,&in,&osd,&retained,&driver);clock_ns=F-2*in.secondary_physical.interval-2000000;
++ CHECK(vo_is_ready_for_frame(&vo,F));newframe=(struct vo_frame){.pts=F,.duration=16666666};
++ vo_queue_frame(&vo,&newframe);mp_mutex_lock(&in.lock);forget_frames(&vo);mp_mutex_unlock(&in.lock);
++ CHECK(!in.frame_queued && !in.hasframe && !in.secondary_queue_pending.old_admission);
++ CHECK(!in.secondary_queue_hint.valid && !in.secondary_queue_admission.valid && !in.secondary_queue_resume);
++ // Incoming duration is unknown at readiness. A new shorter video frame may
++ // fail the existing pressure budget even though the retained frame passes.
++ setup(&vo,&in,&osd,&retained,&driver);retained.duration=50000000;
++ in.secondary_render_cost=11000000;secondary_publish_queue_hint(&vo);
++ clock_ns=F-2*in.secondary_physical.interval-2000000;
++ CHECK(vo_is_ready_for_frame(&vo,F));newframe=(struct vo_frame){.pts=F,.duration=16666666};
++ vo_queue_frame(&vo,&newframe);CHECK(!in.secondary_queue_pending.valid);
++ CHECK(!promotion_boundary(&vo,&selected_D));CHECK(newframe.pts==F && in.current_frame==&retained);
++ setup(&vo,&in,&osd,&retained,&driver);clock_ns=F-2*in.secondary_physical.interval-2000000;
++ in.secondary_queue_lead=false;CHECK(!vo_is_ready_for_frame(&vo,F));CHECK(in.wakeup_pts==old_admission);
++ CHECK(vo_is_ready_for_frame(&vo,-1));CHECK(!in.secondary_queue_admission.valid);
++ setup(&vo,&in,&osd,&retained,&driver);in.secondary_redraw_cost=5000000;
++ secondary_publish_queue_hint(&vo);CHECK(!vo_is_ready_for_frame(&vo,F));
++ CHECK(!in.secondary_queue_admission.valid && in.wakeup_pts==old_admission);
++ // The OSD snapshot is one lock transaction; invalid/held/forced states
++ // never get authority even if the old integer sampler still exists.
++ setup(&vo,&in,&osd,&retained,&driver);CHECK(osd_get_secondary_sample_snapshot(&osd).valid);
++ osd.secondary_sample_held=true;CHECK(!osd_get_secondary_sample_snapshot(&osd).valid);
++ osd.secondary_sample_held=false;osd.secondary_sampler.force=true;CHECK(!osd_get_secondary_sample_snapshot(&osd).valid);
++ for(flag_bits=0;flag_bits<32;flag_bits++) {
++  initialize_flag(&vo);
++  CHECK(in.secondary_queue_lead==((flag_bits&1)&& (flag_bits&6) && (flag_bits&8) && (flag_bits&16)));
++ }
++ continuous_feedback(&vo,&in,&osd,&retained,&driver);
++ feedback_changes(&vo,&in,&osd,&retained,&newframe,&driver);
++ // The default-off path is checked against the unchanged V21 actual function,
++ // including budget/probe states and queue/DS/readiness boundaries.
++ const int rates[]={60,120,144,165,240,360};
++ for(unsigned r=0;r<6;r++) for(int state=0;state<6;state++)
++ for(int budget=0;budget<6;budget++) for(int edge=-1;edge<=1;edge++) {
++  setup(&vo,&in,&osd,&retained,&driver);in.secondary_queue_lead=false;
++  in.reported_display_fps=rates[r];in.vsync_interval=1e9/rates[r];
++  osd.secondary_rate=budget==0?0:(rates[r]>120?rates[r]/2.0:rates[r]);
++  retained.duration=budget<2?41666667:budget<4?16666666:5000000;
++  in.secondary_render_cost=budget%2?7000000:2000000;
++  in.secondary_redraw_cost=budget%3?1000000:8000000;
++  in.secondary_next_probe=budget%2?0:2000000000;
++  in.timing_offset=state%2?2000000:50000000;
++  retained.display_synced=state==2;retained.num_vsyncs=state==3?1:0;
++  if(state==4)in.frame_queued=&newframe;
++  if(state==5)in.current_frame=NULL;
++  struct vo_internal a=in,b=in;struct vo va=vo,vb=vo;va.in=&a;vb.in=&b;
++  clock_ns=F-(int64_t)(in.vsync_interval+2000000)+edge;
++  unsigned start=wakeups;vo_lock=&a.lock;bool candidate=vo_is_ready_for_frame(&va,F);
++  unsigned candidate_wakes=wakeups-start;start=wakeups;
++  vo_lock=&b.lock;bool original=vo_is_ready_original(&vb,F);
++  CHECK(candidate==original);CHECK(a.wakeup_pts==b.wakeup_pts);
++  CHECK(candidate_wakes==wakeups-start);
++ }
++ vo_lock=&in.lock;
++ CHECK(lock_depth==0 && !in.lock && !osd.lock);
++ printf("{\"checks\":%u,\"passed\":true,\"wakeups\":%u,\"feedback_coverage\":[",checks,wakeups);
++ for(unsigned r=0;r<6;r++) printf("%s{\"rate\":%d,\"samples\":%u,\"canonical\":%u,"
++  "\"same_lattice\":%u,\"old_literal_guard_eligible\":%u,\"candidate_eligible\":%u}",
++  r?",":"",coverage[r].rate,coverage[r].samples,coverage[r].canonical,
++  coverage[r].same_lattice,coverage[r].old_eligible,coverage[r].new_eligible);
++ printf("]}\n");
++ return 0;
++}
++'''
++(OUT / 'actual-source-fragments.c').write_text(c, encoding='utf-8')
++proc = subprocess.run([str(TCC), '-I' + str(ROOT), '-run', '-'],
++                      input=c, text=True, capture_output=True, timeout=30)
++if proc.returncode:
++    raise RuntimeError(proc.stderr + proc.stdout)
++actual = json.loads(proc.stdout)
++pure_results = {}
++for name, flags in (('ordinary', []), ('NDEBUG', ['-D', 'NDEBUG'])):
++    pure = subprocess.run([str(TCC), *flags, '-I' + str(ROOT), '-run',
++                           str(ROOT / 'test/secondary_ass_queue_lead.c')],
++                          text=True, capture_output=True, timeout=30)
++    if pure.returncode:
++        raise RuntimeError(pure.stderr + pure.stdout)
++    pure_results[name] = json.loads(pure.stdout)
++files = ('sub/osd.c', 'sub/osd.h', 'sub/secondary_ass_clock.h', 'video/out/vo.c',
++         'video/out/secondary_ass_queue_lead.h', 'test/secondary_ass_queue_lead.c',
++         'test/queue_lead_actual_review.py', 'test/meson.build', 'test/queue_lead_review.md')
++report = {
++    'status': 'V22_ISOLATED_ACTUAL_C_CPU_BOUNDARY_ONLY',
++    'actual_C': actual,
++    'pure_C': pure_results,
++    'compiler_sha256': sha256(TCC.read_bytes()).hexdigest(),
++    'source_head': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
++    'source_sha256': {f: sha256((ROOT / f).read_bytes()).hexdigest() for f in files},
++    'actual_source_fragment_sha256': sha256(c.encode()).hexdigest(),
++    'original_V21_readiness_renamed_for_fixture_sha256': sha256(original_ready.encode()).hexdigest(),
++    'original_V21_vo_sha256': sha256(Path('G:/v21-runtime/video/out/vo.c').read_bytes()).hexdigest(),
++    'GPU_started': False, 'CI_started': False, 'production_changed': False,
++    'pacing_acceptance': False, 'GPU_allowed': False, 'CI_allowed': False,
++    'limitations': [
++        'Full readiness, queue, getter, hint, planning_state, next_sample, physical slot/time getters, read_opts, queue_params and forget functions; promotion and outer-grid are exact source fragments, not the whole VO thread.',
++        'Dynamic feedback coverage is a deterministic actual-C fixture, not a replay of raw GPU events or runtime eligibility/performance coverage.',
++        'Mock synchronization proves the inspected lock order only; no OS scheduler or GPU completion timing is modeled.',
++        'Runtime lifecycle, audio/video pacing, HDR quality and shared immediate-context contention remain unverified.',
++        'No extrapolation that Ready moves one-for-one with earlier queue admission.',
++    ],
++}
++(OUT / 'actual-C-evidence.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
++print(json.dumps(report, ensure_ascii=False, indent=2))
+diff --git a/test/queue_lead_review.md b/test/queue_lead_review.md
+new file mode 100644
+index 0000000..a3298ea
+--- /dev/null
++++ b/test/queue_lead_review.md
+@@ -0,0 +1,41 @@
++# V22 coherent queue lead：隔离 CPU 候选范围
++
++本候选仅用于后续因果诊断，默认关闭。当前没有核心完整构建、GPU 采集或 Display/phase 验收许可，不能把 CPU 检查写成微顿修复结论。
++
++## 开关与准入
++
++- 必须显式 `MPV_NATIVE_QUEUE_LEAD=1`，同时启用 `MPV_NATIVE_ASS_DIAGNOSTIC=1` 或 `MPV_NATIVE_ASS_TRACE=1`，以及 `MPV_NATIVE_PRESENT_GRID=1`、`MPV_NATIVE_PRESENT_PLAN=1`。
++- immutable 开关在创建 VO、启动线程前读取，core 不与 VO 初始化写入竞争。
++- 只对有 retained frame、非暂停/非 still/非 display-sync、保留图像的定时 VO、具有 `can_present_early` 接口的路径尝试新准入。
++- OSD 单锁快照必须有效、有输出、非 held/force，并与已发布 readonly VO hint 的 epoch、phase、interval、rate、speed、divisor、next slot/wall 一致。core 不读取正在更新的 physical ledger，不在 VO lock 内获取 OSD lock。
++- raw snapshot 的 phase/interval/wall 只用于上述 OSD 身份同步。正常 history feedback 会把 physical anchor 移到新历史点，而 sampler 保留上一 draw 的坐标；next D 与既有 `secondary_next_sample` 一致，投影同一整数 next slot 到最新已发布 physical state。不要求两套坐标锚字段字面相等，不写改 sampler/phase，也不引入误差容差。
++- 必须通过原有 affordable budget；第一次独立 rate 读取与单锁快照不一致时拒绝新准入。incoming frame duration 在 readiness 时未知，因此 queue 与 promotion 前均按实际 duration 重验原 budget。
++- next ASS D 不得在当前 F 之前；其原 cache prepare 必须严格晚于原 admission cap。5 ms redraw 的 cache110→fresh112 反例、exact tie、更早 cache 都拒绝。
++- 新 lead 最多为一个现有 native 分频间隔加 2 ms，且不超过现有 timing offset。60/120 Hz 的 divisor1 不获得额外 lead；144/165/240/360 Hz 的 CPU 示例只说明可验证子集，不是实体效果。
++
++## 失效与目标守恒
++
++- admission token 只是已识别槽的观测，不更新 OSD tick、physical ledger、媒体 PTS、音频同步或既有 phase/S/D 模型。
++- 在 early admission 之前调用 readiness 会安排该有限边界的 wakeup，但不授予 token。到达边界后必须重新检查。
++- 队列取得 frame 所有权后，promotion 前 token 再失效会 latch，不能凭后来的相同快照复活。captured F 与 frame PTS 不写改。
++- promotion 必须保持 captured plan.interval，以及同 base/target slot 的当前 wall 精确等于 captured wall。同格点换锚可通过；实质 1 ns 改墙或 period 变化也会撤销早权限，不能重新命名已选 D/S。count 丢失导致 `sync_segment_consistent=false` 时拒绝；单次 QPC jitter 沿原模型处理，不重建 epoch/phase。
++- queue/promotion 的实际 incoming budget 使用 captured plan.interval，而不是旧 sampler 的局部 interval；正常 period 细化发生在 capture 前时，与既有 caller 的最新投影一致。
++- 在原 admission 之前，失效 frame 仍留在 queued，VO 不在函数内等待。外层沿原 retained cache headroom/slot 调度，以 current/queued ID 绑定原 grid task；无合法 task 时保留 manual redraw 请求，并用锁内捕获的有限 resume 等待，普通外部 wakeup 仍能中断。
++- 已知 live resize/reset/invalid plan 不反复生成必定被拒绝的 held grid；无绑定 task 不落入 legacy free redraw，也不沿 `now+1` 忙循环。
++- timing offset 缩小、flip queue params 更新、seek/forget 会撤销新权限。对仍 queued 的 frame 恢复该参数下保守的 baseline admission；未修改 core 的参数处理、PTS 或 autosync 算法。
++- 一旦 fresh draw 实际使用有效 plan，继续原 base/target/S 和 lifecycle-safe wait；cached Present 策略、Sync1 ledger、历史 delay 学习、画质及默认 copy 路径不改。
++
++## 已执行验证
++
++- `test/secondary_ass_queue_lead.c`：149 项 pure C 检查，覆盖六种刷新率、正常 redraw 子集、5 ms joint counterexample、exact tie、更早 sample、同格点换锚、capture 前 period 细化、capture 后 1 ns 改墙与 count segment 失效。`NDEBUG` 下 CHECK 仍实际执行。
++- `test/queue_lead_actual_review.py`：完整当前 readiness/queue/OSD getter/hint/planning_state/next_sample/physical slot-time getter/read_opts/queue_params/forget 函数，以及 promotion、held grid、有限等待的精确源码片段；含与未修改 V21 readiness 的 648 组默认 off 输入比较。输出只标记 CPU boundary。
++- 六个刷新率分别 64 次实际 `update_observed` → 保留旧 sampler → getter → publish → readiness 连续反馈链。384/384 与现有 caller 的同 logical slot 投影及 D/S/epoch 严格守恒；旧字面锚比较 0/384 可触发；144/165/240/360 Hz 新候选各 64/64 可触发，60/120 Hz 仍各 0/64。另验 capture 前后微小 QPC jitter、单次大 jitter、count 跳失及实际 period 中位更新；这只是构造输入的功能覆盖，不是实际 GPU 覆盖率或增益证明。
++- `test/meson.build` 已登记 standalone `secondary-ass-queue-lead`，后续完整构建须启用 tests 并实际执行 `meson test -C <builddir> secondary-ass-queue-lead`。仅登记不算执行；本机已用 TCC 实际执行普通与 NDEBUG 版本。
++
++## 尚未证明
++
++- 不是完整 VO 线程、操作系统调度或 GPU/Present/Ready/Display 模型；readonly hint 的实际覆盖率、wake tail 和生命周期交错仍需正式运行验证。
++- 不假设早入队多少，Ready 就等量提前多少。更早 core 解码仍可能增加共享 immediate context 竞争。
++- 未验证音视频、HDR/ICC/LUT、生命周期、长期 phase、其它实体刷新率。不能用平均 FPS、0 drop、编译通过或这些 CPU 检查替代 ≤1% frame pacing 验收。
++
++生产、V21 原始记录、现用 Lua、默认配置和更新公告保持不变。
+diff --git a/test/secondary_ass_queue_lead.c b/test/secondary_ass_queue_lead.c
+new file mode 100644
+index 0000000..740037d
+--- /dev/null
++++ b/test/secondary_ass_queue_lead.c
+@@ -0,0 +1,146 @@
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "video/out/secondary_ass_queue_lead.h"
++
++static unsigned checks;
++#define CHECK(expr) do { \
++    if (!(expr)) { \
++        fprintf(stderr, "check failed at line %d: %s\n", __LINE__, #expr); \
++        abort(); \
++    } \
++    checks++; \
++} while (0)
++
++static struct secondary_ass_queue_hint fixture(int64_t interval, int64_t divisor)
++{
++    struct secondary_ass_queue_hint hint = {
++        .valid = true, .retained_id = 42, .duration = 41666667,
++        .physical = {
++            .phase = 1000000000, .phase_slot = 100, .interval = interval,
++            .last_base_slot = 108, .epoch = 5, .success_generation = 3,
++            .success_contiguous = true, .sync_segment_consistent = true,
++            .historical_id = 10, .success_first_id = 11, .success_last_id = 11,
++        },
++    };
++    struct secondary_ass_physical_point point =
++        secondary_ass_physical_point_at(&hint.physical, 110);
++    hint.sample = (struct secondary_ass_sample_snapshot){
++        .valid = true, .rate = 1e9 / (interval * divisor),
++        .speed = 1, .requested_speed = 1, .epoch = 5,
++        .next_slot = point.slot, .next_wall = point.wall, .divisor = divisor,
++        .phase_wall = hint.physical.phase, .phase_slot = 100, .interval = interval,
++    };
++    return hint;
++}
++
++int main(void)
++{
++    const int rates[] = {60, 120, 144, 165, 240, 360};
++    for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
++        int64_t T = 1000000000 / rates[i];
++        int64_t divisor = rates[i] <= 120 ? 1 : rates[i] / 120 + (rates[i] % 120 != 0);
++        struct secondary_ass_queue_hint hint = fixture(T, divisor);
++        int64_t F = hint.sample.next_wall - 1000000;
++        int64_t oldlead = T + 2000000;
++        struct secondary_ass_queue_token token = secondary_ass_queue_lead_make(
++            &hint, &hint.sample, F, oldlead, 50000000, 500000);
++        CHECK(token.valid == (divisor > 1));
++        if (!token.valid)
++            continue;
++        CHECK(token.fresh_due == F);
++        CHECK(token.old_admission == F - oldlead);
++        CHECK(token.admission < token.old_admission);
++        CHECK(token.plan.target.slot == 110 && token.plan.base.slot == 110);
++        CHECK(token.plan.submit == hint.sample.next_wall - T +
++            (T / 4 < 1000000 ? T / 4 : 1000000));
++        CHECK(secondary_ass_queue_lead_current(&token, &hint.sample,
++            &hint.physical, 42, F, 500000));
++        // Feedback reexpresses one lattice with a newer anchor while the
++        // sampler still owns its previous draw coordinates. This must be a
++        // useful candidate, not an always-rejecting safety guard.
++        struct secondary_ass_queue_hint rebased = hint;
++        rebased.physical.phase += 2 * T;
++        rebased.physical.phase_slot += 2;
++        struct secondary_ass_queue_token same = secondary_ass_queue_lead_make(
++            &rebased, &hint.sample, F, oldlead, 50000000, 500000);
++        CHECK(same.valid && same.plan.target.wall == token.plan.target.wall &&
++            same.plan.submit == token.plan.submit && same.fresh_due == F);
++        CHECK(secondary_ass_queue_lead_current(&token, &hint.sample,
++            &rebased.physical, 42, F, 500000));
++        // A period refinement before capture uses the current physical
++        // projection. Neither the raw OSD snapshot nor its phase is written.
++        rebased.physical.interval++;
++        int64_t refined_D = secondary_ass_physical_point_at(
++            &rebased.physical, hint.sample.next_slot).wall;
++        same = secondary_ass_queue_lead_make(&rebased, &hint.sample,
++            refined_D - 1000000, oldlead, 50000000, 500000);
++        CHECK(same.valid && same.plan.interval == T + 1 &&
++            same.plan.target.wall == refined_D && hint.sample.interval == T);
++        CHECK(!secondary_ass_queue_lead_current(&token, &hint.sample,
++            &rebased.physical, 42, F, 500000));
++        // A post-capture wall change, even 1 ns, cannot rename chosen D/S.
++        rebased.physical.interval = T;
++        rebased.physical.phase++;
++        CHECK(!secondary_ass_queue_lead_current(&token, &hint.sample,
++            &rebased.physical, 42, F, 500000));
++        for (int64_t redraw = 500000; redraw <= 2000000; redraw += 500000)
++            CHECK(secondary_ass_queue_lead_make(&hint, &hint.sample, F,
++                oldlead, 50000000, redraw).valid);
++        CHECK(!secondary_ass_queue_lead_make(&hint, &hint.sample, F,
++            oldlead, 50000000, 5000000).valid);
++        int64_t tie_cost = (T / 4 < 1000000 ? T / 4 : 1000000) + 3000000;
++        CHECK(!secondary_ass_queue_lead_make(&hint, &hint.sample, F,
++            oldlead, 50000000, tie_cost).valid);
++        CHECK(!secondary_ass_queue_lead_make(&hint, &hint.sample,
++            hint.sample.next_wall + 1, oldlead, 50000000, 500000).valid);
++        for (int change = 0; change < 16; change++) {
++            struct secondary_ass_sample_snapshot sample = hint.sample;
++            struct secondary_ass_physical physical = hint.physical;
++            uint64_t retained = 42;
++            int64_t due = F, cost = 500000;
++            switch (change) {
++            case 0: sample.held = true; break;
++            case 1: sample.force = true; break;
++            case 2: sample.valid = false; break;
++            case 3: sample.next_slot += divisor; break;
++            case 4: sample.next_wall++; break;
++            case 5: sample.rate += 1; break;
++            case 6: sample.requested_speed += .1; break;
++            case 7: physical.epoch++; break;
++            case 8: physical.success_generation++; break;
++            case 9: physical.phase++; break;
++            case 10: physical.last_base_slot = 110; break;
++            case 11: physical.outlier_pending = true; break;
++            case 12: retained++; break;
++            case 13: due++; break;
++            case 14: cost = 5000000; break;
++            case 15: physical.sync_segment_consistent = false; break;
++            }
++            CHECK(!secondary_ass_queue_lead_current(&token, &sample,
++                &physical, retained, due, cost));
++        }
++        // The former no-earlier-cache-only proposal changes the joint event
++        // order at redraw=5 ms. Actual cache helper and plan ledger show why
++        // the new prepare/admission guard must refuse it.
++        struct secondary_ass_physical view = secondary_ass_present_plan_view(&hint.physical);
++        int64_t prepare = secondary_ass_physical_render_slot_time(&view,
++            hint.sample.next_wall, 5000000);
++        if (rates[i] == 144) {
++            CHECK(F - divisor * T - 2000000 < prepare && prepare < F - oldlead);
++            struct secondary_ass_physical after_cache = hint.physical;
++            struct secondary_ass_physical_point old_sample =
++                secondary_ass_physical_point_at(&after_cache, 110);
++            CHECK(secondary_ass_physical_submit_planned_point(&after_cache, 12,
++                after_cache.epoch, old_sample, old_sample));
++            struct secondary_ass_present_plan original = secondary_ass_present_plan_fresh(
++                &after_cache, F, secondary_ass_physical_point_at(&after_cache, 112));
++            CHECK(original.target.slot == 112 && token.plan.target.slot == 110);
++        }
++        hint.physical.interval = 0;
++        CHECK(!secondary_ass_queue_lead_make(&hint, &hint.sample, F,
++            oldlead, 50000000, 500000).valid);
++    }
++    printf("{\"checks\":%u,\"passed\":true}\n", checks);
++    return 0;
++}
+diff --git a/video/out/secondary_ass_queue_lead.h b/video/out/secondary_ass_queue_lead.h
+new file mode 100644
+index 0000000..07748e8
+--- /dev/null
++++ b/video/out/secondary_ass_queue_lead.h
+@@ -0,0 +1,120 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_QUEUE_LEAD_H
++#define MP_SECONDARY_ASS_QUEUE_LEAD_H
++
++#include "secondary_ass_present_plan.h"
++#include "../../sub/secondary_ass_clock.h"
++
++struct secondary_ass_queue_hint {
++    bool valid;
++    uint64_t retained_id;
++    int64_t duration, earliest_redraw;
++    struct secondary_ass_sample_snapshot sample;
++    struct secondary_ass_physical physical;
++};
++
++struct secondary_ass_queue_token {
++    bool valid;
++    uint64_t retained_id;
++    int64_t fresh_due, old_lead, old_admission, admission;
++    struct secondary_ass_sample_snapshot sample;
++    struct secondary_ass_present_plan plan;
++};
++
++static inline bool secondary_ass_sample_snapshot_equal(
++    const struct secondary_ass_sample_snapshot *a,
++    const struct secondary_ass_sample_snapshot *b)
++{
++    return a->valid && b->valid && !a->held && !b->held && !a->force && !b->force &&
++        isfinite(a->rate) && isfinite(a->speed) && isfinite(a->requested_speed) &&
++        a->rate > 0 && a->speed > 0 && a->requested_speed > 0 &&
++        a->rate == b->rate && a->speed == b->speed &&
++        a->requested_speed == b->requested_speed && a->epoch == b->epoch &&
++        a->next_slot == b->next_slot && a->next_wall == b->next_wall &&
++        a->divisor == b->divisor && a->phase_wall == b->phase_wall &&
++        a->phase_slot == b->phase_slot && a->interval == b->interval;
++}
++
++static inline struct secondary_ass_queue_token secondary_ass_queue_lead_make(
++    const struct secondary_ass_queue_hint *hint,
++    const struct secondary_ass_sample_snapshot *sample,
++    int64_t fresh_due, int64_t old_lead, int64_t maximum_lead,
++    int64_t redraw_cost)
++{
++    struct secondary_ass_queue_token token = {0};
++    const struct secondary_ass_physical *p = &hint->physical;
++    if (!hint->valid || !hint->retained_id || old_lead <= 0 ||
++        maximum_lead <= old_lead || fresh_due <= maximum_lead ||
++        !secondary_ass_sample_snapshot_equal(&hint->sample, sample) ||
++        !p->success_contiguous || !p->success_generation || p->outlier_pending ||
++        !secondary_ass_physical_interval_valid(p->interval) ||
++        sample->epoch != p->epoch ||
++        sample->divisor <= 0 || sample->divisor > INT64_MAX / p->interval ||
++        hint->duration < sample->divisor * p->interval)
++        return token;
++    struct secondary_ass_physical_point point =
++        secondary_ass_physical_point_at(p, sample->next_slot);
++    // The sampler owns logical opportunity identity. Feedback may reanchor or
++    // refine the physical coordinates between draws; secondary_next_sample()
++    // also projects this integer slot through the latest physical state.
++    // Keep the raw snapshot for coherence, without interpreting its old wall
++    // coordinates as the current display model.
++    if (point.wall < fresh_due)
++        return token;
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t prepare = secondary_ass_physical_render_slot_time(&view,
++        point.wall, redraw_cost);
++    int64_t old_admission = fresh_due - old_lead;
++    // Even a cache slot at/after F must not change cache->fresh event order.
++    // Exact ties belong to the original path. This rejects the 5 ms redraw
++    // counterexample where an earlier queue consumes cache 110 as fresh 110.
++    if (prepare <= old_admission || hint->earliest_redraw >= point.wall)
++        return token;
++    struct secondary_ass_present_plan plan =
++        secondary_ass_present_plan_fresh(p, fresh_due, point);
++    if (!plan.valid || plan.base.slot != point.slot ||
++        plan.target.slot != point.slot || !plan.fifo_known ||
++        !secondary_ass_present_plan_current(p, &plan))
++        return token;
++    int64_t lead = sample->divisor * p->interval;
++    if (lead > INT64_MAX - 2000000)
++        return token;
++    lead += 2000000;
++    if (lead > maximum_lead)
++        lead = maximum_lead;
++    if (lead <= old_lead)
++        return token;
++    return (struct secondary_ass_queue_token){
++        .valid = true, .retained_id = hint->retained_id,
++        .fresh_due = fresh_due, .old_lead = old_lead,
++        .old_admission = old_admission, .admission = fresh_due - lead,
++        .sample = *sample, .plan = plan,
++    };
++}
++
++static inline bool secondary_ass_queue_lead_current(
++    const struct secondary_ass_queue_token *token,
++    const struct secondary_ass_sample_snapshot *sample,
++    const struct secondary_ass_physical *p, uint64_t retained_id,
++    int64_t fresh_due, int64_t redraw_cost)
++{
++    if (!token->valid || token->retained_id != retained_id ||
++        token->fresh_due != fresh_due ||
++        !secondary_ass_sample_snapshot_equal(&token->sample, sample) ||
++        !p->success_contiguous || !p->sync_segment_consistent || p->outlier_pending ||
++        p->interval != token->plan.interval ||
++        !secondary_ass_present_plan_current(p, &token->plan))
++        return false;
++    // A different anchor for the exact same lattice is harmless. A changed
++    // captured wall or period is not: do not retarget the already chosen D/S.
++    if (secondary_ass_physical_point_at(p, token->plan.base.slot).wall !=
++            token->plan.base.wall ||
++        secondary_ass_physical_point_at(p, token->plan.target.slot).wall !=
++            token->plan.target.wall)
++        return false;
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    return secondary_ass_physical_render_slot_time(&view,
++        token->plan.base.wall, redraw_cost) > token->old_admission;
++}
++
++#endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index a39b263..ff9f2ae 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -44,6 +44,7 @@
+ #include "secondary_ass_presentation.h"
+ #include "secondary_ass_physical.h"
+ #include "secondary_ass_present_plan.h"
++#include "secondary_ass_queue_lead.h"
+ #include "aspect.h"
+ #include "dr_helper.h"
+ #include "input/input.h"
+@@ -186,6 +187,11 @@ struct vo_internal {
+     bool secondary_fifo_present; // isolated opt-in FIFO submission experiment
+     bool secondary_present_plan; // isolated planned-base consumption experiment
+     bool secondary_split_budget; // opt-in measured submission envelope forecast
++    bool secondary_queue_lead; // opt-in coherent native queue admission
++    struct secondary_ass_queue_hint secondary_queue_hint; // copied under lock
++    struct secondary_ass_queue_token secondary_queue_admission; // core, under lock
++    struct secondary_ass_queue_token secondary_queue_pending; // under lock
++    int64_t secondary_queue_resume; // deferred promotion, under lock
+     struct secondary_ass_flip_budget secondary_flip_budget; // VO thread only
+     struct mp_ass_pacing_record pacing_draw_record; // diagnostic, VO thread only
+     struct mp_ass_pacing_record pacing_plan_record;
+@@ -562,7 +568,21 @@ static void read_opts(struct vo *vo)
+     struct vo_internal *in = vo->in;
+ 
+     mp_mutex_lock(&in->lock);
+-    in->timing_offset = (uint64_t)(MP_TIME_S_TO_NS(vo->opts->timing_offset));
++    int64_t timing_offset = (uint64_t)(MP_TIME_S_TO_NS(vo->opts->timing_offset));
++    if (in->secondary_queue_lead && in->timing_offset != timing_offset) {
++        in->secondary_queue_hint.valid = false;
++        in->secondary_queue_admission.valid = false;
++        struct secondary_ass_queue_token *token = &in->secondary_queue_pending;
++        token->valid = false;
++        if (token->old_admission > 0 && timing_offset >= 0 &&
++            timing_offset < token->old_lead)
++        {
++            // A smaller configured cap moves baseline admission later. Keep
++            // F intact and return the early queued image to that later cap.
++            token->old_admission = token->fresh_due - timing_offset;
++        }
++    }
++    in->timing_offset = timing_offset;
+     mp_mutex_unlock(&in->lock);
+ }
+ 
+@@ -636,6 +656,18 @@ static struct vo *vo_create(bool probing, struct mpv_global *global,
+         .estimated_vsync_jitter = -1,
+         .stats = stats_ctx_create(vo, global, "vo"),
+     };
++    // Core reads this immutable flag. Set it before publishing the VO rather
++    // than racing initialization on the VO thread after its init barrier.
++    const char *queue_lead = getenv("MPV_NATIVE_QUEUE_LEAD");
++    const char *queue_diagnostic = getenv("MPV_NATIVE_ASS_DIAGNOSTIC");
++    const char *queue_trace = getenv("MPV_NATIVE_ASS_TRACE");
++    const char *queue_grid = getenv("MPV_NATIVE_PRESENT_GRID");
++    const char *queue_plan = getenv("MPV_NATIVE_PRESENT_PLAN");
++    vo->in->secondary_queue_lead = queue_lead && !strcmp(queue_lead, "1") &&
++        ((queue_diagnostic && !strcmp(queue_diagnostic, "1")) ||
++         (queue_trace && !strcmp(queue_trace, "1"))) &&
++        queue_grid && !strcmp(queue_grid, "1") &&
++        queue_plan && !strcmp(queue_plan, "1");
+     mp_dispatch_set_wakeup_fn(vo->in->dispatch, dispatch_wakeup_cb, vo);
+     mp_mutex_init(&vo->in->lock);
+     mp_cond_init(&vo->in->wakeup);
+@@ -1043,6 +1075,10 @@ static void forget_frames(struct vo *vo)
+     in->delayed_count = 0;
+     talloc_free(in->frame_queued);
+     in->frame_queued = NULL;
++    in->secondary_queue_hint = (struct secondary_ass_queue_hint){0};
++    in->secondary_queue_admission = (struct secondary_ass_queue_token){0};
++    in->secondary_queue_pending = (struct secondary_ass_queue_token){0};
++    in->secondary_queue_resume = 0;
+     in->current_frame_id += VO_MAX_REQ_FRAMES + 1;
+     // don't unref current_frame; we always want to be able to redraw it
+     if (in->current_frame) {
+@@ -1296,7 +1332,11 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+ {
+     struct vo_internal *in = vo->in;
+     double secondary_rate = osd_get_secondary_refresh(vo->osd);
++    struct secondary_ass_sample_snapshot queue_sample = in->secondary_queue_lead
++        ? osd_get_secondary_sample_snapshot(vo->osd)
++        : (struct secondary_ass_sample_snapshot){0};
+     mp_mutex_lock(&in->lock);
++    in->secondary_queue_admission = (struct secondary_ass_queue_token){0};
+     bool r = vo->config_ok && !in->frame_queued &&
+              (!in->current_frame || in->current_frame->num_vsyncs < 1);
+     if (r && next_pts >= 0) {
+@@ -1323,6 +1363,29 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+             lead = MPMIN(lead, MPMAX(minimum,
+                 in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
+         }
++        if (in->secondary_queue_lead && affordable && !probe &&
++            in->current_frame && !in->current_frame->still && !in->paused &&
++            queue_sample.rate == secondary_rate &&
++            in->current_frame->frame_id == in->secondary_queue_hint.retained_id &&
++            in->hasframe && !in->dropped_frame && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) &&
++            vo->driver->can_present_early &&
++            in->flip_queue_offset >= 0 &&
++            next_pts > in->flip_queue_offset)
++        {
++            struct secondary_ass_queue_token token = secondary_ass_queue_lead_make(
++                &in->secondary_queue_hint, &queue_sample,
++                next_pts - in->flip_queue_offset, lead, in->timing_offset,
++                in->secondary_redraw_cost);
++            if (token.valid && now < token.old_admission) {
++                lead = token.fresh_due - token.admission;
++                // An early check must schedule the new admission boundary,
++                // but it does not grant an ownership token until that wake.
++                if (now >= token.admission)
++                    in->secondary_queue_admission = token;
++            }
++        }
+         next_pts -= lead;
+         next_pts -= in->flip_queue_offset;
+         if (next_pts > now)
+@@ -1354,6 +1417,9 @@ bool vo_is_visible(struct vo *vo)
+ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+ {
+     struct vo_internal *in = vo->in;
++    struct secondary_ass_sample_snapshot queue_sample = in->secondary_queue_lead
++        ? osd_get_secondary_sample_snapshot(vo->osd)
++        : (struct secondary_ass_sample_snapshot){0};
+     mp_mutex_lock(&in->lock);
+     mp_assert(vo->config_ok && !in->frame_queued &&
+            (!in->current_frame || in->current_frame->num_vsyncs < 1));
+@@ -1367,10 +1433,35 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+     bool queue_ds = trace_queue && frame->display_synced;
+     uint64_t retained_id = trace_queue && in->current_frame
+         ? in->current_frame->frame_id : 0;
++    in->secondary_queue_pending = in->secondary_queue_admission;
++    in->secondary_queue_admission = (struct secondary_ass_queue_token){0};
++    in->secondary_queue_resume = 0;
++    struct secondary_ass_queue_token *queue_token = &in->secondary_queue_pending;
++    if (queue_token->valid) {
++        int64_t due = in->flip_queue_offset >= 0 && frame->pts > in->flip_queue_offset
++            ? frame->pts - in->flip_queue_offset : 0;
++        bool coherent = !frame->display_synced && !frame->still &&
++            frame->duration >= queue_token->sample.divisor * queue_token->plan.interval &&
++            secondary_ass_budget_affordable(in->secondary_render_cost,
++                in->secondary_redraw_cost, frame->duration,
++                MPMAX(MP_TIME_S_TO_NS(1.0 / queue_token->sample.rate),
++                      queue_token->plan.interval)) &&
++            in->current_frame && !in->paused && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            secondary_ass_sample_snapshot_equal(&queue_token->sample, &queue_sample) &&
++            queue_token->retained_id == in->current_frame->frame_id &&
++            queue_token->fresh_due == due;
++        queue_token->valid = coherent;
++        if (!coherent && due > queue_token->old_lead)
++            queue_token->old_admission = due - queue_token->old_lead;
++        if (frame->display_synced || due <= queue_token->old_lead)
++            *queue_token = (struct secondary_ass_queue_token){0};
++    }
+     in->hasframe = true;
+     frame->frame_id = ++(in->current_frame_id);
+     uint64_t queued_id = trace_queue ? frame->frame_id : 0;
+     in->frame_queued = frame;
++    struct secondary_ass_queue_token recorded_queue_token = *queue_token;
+     in->wakeup_pts = frame->display_synced
+                    ? 0 : frame->pts + MPMAX(frame->duration, 0);
+     wakeup_locked(vo);
+@@ -1379,7 +1470,9 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+         struct mp_ass_pacing_record record = {
+             .event_ns = queue_ns, .vo_seq = vo->pacing_vo_seq,
+             .frame_id = queued_id, .flags = queue_ds,
+-            .v = {(int64_t)retained_id, queue_pts, queue_duration},
++            .v = {(int64_t)retained_id, queue_pts, queue_duration,
++                recorded_queue_token.old_admission, recorded_queue_token.admission,
++                recorded_queue_token.plan.target.slot, recorded_queue_token.valid},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_QUEUE, &record);
+     }
+@@ -1680,12 +1773,41 @@ static void secondary_trace_prepass(struct vo *vo,
+         cache_attempt, drawn, completed);
+ }
+ 
++// The core never reads the mutable VO physical ledger. Publish a coherent
++// observation on the VO thread, with OSD acquired before the VO lock.
++static void secondary_publish_queue_hint(struct vo *vo)
++{
++    struct vo_internal *in = vo->in;
++    if (!in->secondary_queue_lead)
++        return;
++    struct secondary_ass_queue_hint hint = {
++        .sample = osd_get_secondary_sample_snapshot(vo->osd),
++        .physical = in->secondary_physical,
++        .earliest_redraw = vo->previous_redraw_time +
++            in->secondary_physical.interval,
++    };
++    mp_mutex_lock(&in->lock);
++    hint.valid = hint.sample.valid && in->secondary_present_plan &&
++        in->secondary_present_grid && !in->paused && in->hasframe &&
++        in->current_frame && !in->current_frame->still &&
++        !in->current_frame->display_synced && !in->frame_queued &&
++        !in->rendering && !in->dropped_frame && !in->send_reset &&
++        !(in->queued_events & VO_EVENT_LIVE_RESIZING);
++    if (in->current_frame) {
++        hint.retained_id = in->current_frame->frame_id;
++        hint.duration = in->current_frame->duration;
++    }
++    in->secondary_queue_hint = hint;
++    mp_mutex_unlock(&in->lock);
++}
++
+ static bool render_frame(struct vo *vo)
+ {
+     struct vo_internal *in = vo->in;
+     struct vo_frame *frame = NULL;
+     bool more_frames = false;
+     bool fresh_drawn = false;
++    struct secondary_ass_present_plan early_plan = {0};
+     struct secondary_ass_prepass_trace prepass_trace = {0};
+ 
+     update_display_fps(vo);
+@@ -1698,9 +1820,43 @@ static bool render_frame(struct vo *vo)
+     struct secondary_ass_physical prepass_storage;
+     const struct secondary_ass_physical *prepass_state =
+         secondary_planning_state(vo, false, 0, &prepass_storage);
++    struct secondary_ass_sample_snapshot queue_sample = in->secondary_queue_lead
++        ? osd_get_secondary_sample_snapshot(vo->osd)
++        : (struct secondary_ass_sample_snapshot){0};
+ 
+     mp_mutex_lock(&in->lock);
+ 
++    if (in->frame_queued && in->secondary_queue_pending.old_admission > 0) {
++        struct secondary_ass_queue_token *token = &in->secondary_queue_pending;
++        bool current = in->current_frame && !in->paused && !in->send_reset &&
++            !in->dropped_frame && !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            !in->frame_queued->display_synced && !in->frame_queued->still &&
++            secondary_ass_budget_affordable(in->secondary_render_cost,
++                in->secondary_redraw_cost, in->frame_queued->duration,
++                MPMAX(MP_TIME_S_TO_NS(1.0 / token->sample.rate),
++                      token->plan.interval)) &&
++            in->flip_queue_offset >= 0 &&
++            in->frame_queued->pts > in->flip_queue_offset &&
++            secondary_ass_queue_lead_current(token, &queue_sample,
++                &in->secondary_physical, in->current_frame->frame_id,
++                in->frame_queued->pts - in->flip_queue_offset,
++                in->secondary_redraw_cost);
++        token->valid &= current; // A stale admission cannot revive later.
++        int64_t now = mp_time_ns();
++        if (!token->valid && !in->paused && !in->frame_queued->display_synced &&
++            now < token->old_admission)
++        {
++            // Do not wait here or run the queued-image prepass. Until the
++            // original admission boundary the outer loop still owns retained
++            // cache scheduling, with its exact current/queued identities.
++            in->secondary_queue_resume = token->old_admission;
++            goto done;
++        }
++        in->secondary_queue_resume = 0;
++        if (token->valid && now < token->old_admission)
++            early_plan = token->plan;
++    }
++
+     // A queued fresh image must not occupy the VO thread across an earlier
+     // physical ASS slot. Service that cheap cached slot first when both draws
+     // still fit before the fresh image's actual scanout opportunity.
+@@ -1805,6 +1961,8 @@ static bool render_frame(struct vo *vo)
+         talloc_free(in->current_frame);
+         in->current_frame = in->frame_queued;
+         in->frame_queued = NULL;
++        in->secondary_queue_pending = (struct secondary_ass_queue_token){0};
++        in->secondary_queue_resume = 0;
+     } else if (in->paused || !in->current_frame || !in->hasframe ||
+                (in->current_frame->display_synced && in->current_frame->num_vsyncs < 1) ||
+                !in->current_frame->display_synced)
+@@ -1889,7 +2047,8 @@ static bool render_frame(struct vo *vo)
+             (int64_t)in->vsync_interval : MP_TIME_S_TO_NS(1.0 / 60);
+         // Clock eligibility is independent of whether an animated event is
+         // visible right now. Keep authority/phase accurate through ASS gaps.
+-        double clock_rate = osd_get_secondary_clock_rate(vo->osd);
++        double clock_rate = early_plan.valid ? queue_sample.rate :
++            osd_get_secondary_clock_rate(vo->osd);
+         int64_t present_ready = MPMAX(mp_time_ns(), target);
+         int64_t presentation_time = clock_rate > 0 ?
+             secondary_ass_predict_present(&in->secondary_presentation,
+@@ -1913,8 +2072,9 @@ static bool render_frame(struct vo *vo)
+             int64_t physical_ready = MPMAX(present_ready,
+                 mp_time_ns() + in->secondary_render_cost);
+             if (planned_audio)
+-                present_plan = secondary_ass_present_plan_fresh(
+-                    &in->secondary_physical, physical_ready, native_point);
++                present_plan = early_plan.valid ? early_plan :
++                    secondary_ass_present_plan_fresh(
++                        &in->secondary_physical, physical_ready, native_point);
+             struct secondary_ass_physical_point candidate =
+                 planned_audio ? present_plan.target :
+                 (native_point.slot > in->secondary_physical.last_base_slot &&
+@@ -2539,7 +2699,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             .v = {in->secondary_trace, diagnostic, in->secondary_schedule_trace,
+                 in->secondary_fifo_present, in->secondary_present_grid,
+                 in->secondary_present_plan, in->secondary_split_budget,
+-                vo->pacing_spans},
++                vo->pacing_spans, in->secondary_queue_lead},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_CONFIG, &record);
+     }
+@@ -2553,10 +2713,15 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         stats_event(in->stats, "iterations");
+         vo->driver->control(vo, VOCTRL_CHECK_EVENTS, NULL);
+         bool working = render_frame(vo);
++        secondary_publish_queue_hint(vo);
+         int64_t now = mp_time_ns();
+         int64_t wait_until = now + MP_TIME_S_TO_NS(working ? 0 : 1000);
+ 
+         mp_mutex_lock(&in->lock);
++        int64_t queue_resume = in->secondary_queue_resume;
++        bool queue_held = in->frame_queued && queue_resume > now;
++        if (queue_held)
++            wait_until = MPMIN(wait_until, queue_resume);
+         if (in->wakeup_pts) {
+             if (in->wakeup_pts > now) {
+                 wait_until = MPMIN(wait_until, in->wakeup_pts);
+@@ -2684,13 +2849,27 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                         int64_t divisor = in->secondary_present_plan ? thread_divisor :
+                             osd_get_secondary_physical_sample_divisor(vo->osd);
+                         mp_mutex_lock(&in->lock);
+-                        if (divisor > 0 && in->current_frame && !in->frame_queued &&
++                        struct secondary_ass_present_plan held_cache_plan = queue_held
++                            ? secondary_ass_present_plan_cache(&in->secondary_physical,
++                                                              physical_sample)
++                            : (struct secondary_ass_present_plan){0};
++                        if (divisor > 0 && in->current_frame &&
++                            (!in->frame_queued || queue_held) &&
++                            (!queue_held || (in->hasframe && !in->paused &&
++                                !in->dropped_frame && !in->send_reset && !send_reset &&
++                                !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++                                !in->current_frame->still &&
++                                !in->current_frame->display_synced &&
++                                secondary_ass_present_plan_current(&in->secondary_physical,
++                                                                  &held_cache_plan))) &&
+                             divisor <= INT64_MAX / in->secondary_physical.interval &&
+                             secondary_duration >= divisor * in->secondary_physical.interval)
+                             grid_task = (struct secondary_ass_grid_task){
+                                 .point = physical_sample,
+                                 .epoch = in->secondary_physical.epoch,
+                                 .current_id = in->current_frame->frame_id,
++                                .queued_id = queue_held && in->frame_queued
++                                    ? in->frame_queued->frame_id : 0,
+                                 .divisor = divisor, .delay = thread_planning_state->delay,
+                                 .rate = secondary_rate,
+                                 .interval = in->secondary_physical.interval,
+@@ -2726,6 +2905,16 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         }
+         if (send_pause)
+             vo->driver->control(vo, vo_paused ? VOCTRL_PAUSE : VOCTRL_RESUME, NULL);
++        // A failed early-admission token is not permission for an unbound
++        // redraw. Keep manual work pending for the original admission if no
++        // identified retained-cache task can be served during this short hold.
++        if (queue_held && grid_task.point.slot <= 0) {
++            redraw = false;
++            // The unbound scheduler may already have proposed now+1. Keep
++            // the finite captured boundary instead of spinning on that task;
++            // normal wait_vo wakeups still interrupt this wait.
++            wait_until = queue_resume;
++        }
+         if (wait_until > now && redraw) {
+             // Allow manual redraws at most at display fps.
+             int64_t max_interval = in->vsync_interval > 1 ? in->vsync_interval : 0;
+@@ -2877,6 +3066,20 @@ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames,
+ {
+     struct vo_internal *in = vo->in;
+     mp_mutex_lock(&in->lock);
++    if (in->secondary_queue_lead && in->flip_queue_offset != offset_ns) {
++        in->secondary_queue_hint.valid = false;
++        in->secondary_queue_admission.valid = false;
++        struct secondary_ass_queue_token *token = &in->secondary_queue_pending;
++        token->valid = false;
++        if (token->old_admission > 0 && in->frame_queued) {
++            int64_t pts = in->frame_queued->pts;
++            if (pts > 0 && offset_ns < pts && offset_ns >= pts - INT64_MAX) {
++                int64_t due = pts - offset_ns;
++                int64_t lead = MPMIN(token->old_lead, in->timing_offset);
++                token->old_admission = due > lead ? due - lead : 0;
++            }
++        }
++    }
+     in->flip_queue_offset = offset_ns;
+     in->req_frames = MPCLAMP(num_req_frames, 1, VO_MAX_REQ_FRAMES);
+     in->frame_refs = MPCLAMP(num_frame_refs, in->req_frames, 2 * VO_MAX_REQ_FRAMES);
+-- 
+2.54.0.windows.1
+
