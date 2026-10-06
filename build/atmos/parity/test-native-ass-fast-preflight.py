@@ -289,6 +289,8 @@ def main():
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
+        report['observed_replay'] = {'main_commit':main_ref,'main_tree':main_tree,
+            'atmos_commit':atmos_ref,'atmos_tree':atmos_tree}
         require(main_tree == args.expected_main_tree and atmos_tree == args.expected_atmos_tree, 'Unknown/unexpected exact replay tree')
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
