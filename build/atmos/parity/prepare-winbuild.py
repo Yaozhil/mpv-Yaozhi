@@ -108,6 +108,23 @@ assert binutils_text.count(marker)==1
 binutils_text=binutils_text.replace(marker,marker+'    TIMEOUT 120\n    INACTIVITY_TIMEOUT 30\n',1)
 binutils.write_text(binutils_text)
 
+# The workflow's common setup already pins GCC 14.4.0; check that effective
+# input before providing same-byte mirrors, preserving its exact SHA512.
+gcc=args.winbuild.resolve()/'toolchain/gcc/gcc.cmake'
+gcc_text=gcc.read_text()
+old_url='    URL https://ftp.gnu.org/gnu/gcc/gcc-14.4.0/gcc-14.4.0.tar.xz\n'
+new_url=(
+    '    URL https://mirrors.kernel.org/gnu/gcc/gcc-14.4.0/gcc-14.4.0.tar.xz\n'
+    '        https://ftp.nluug.nl/pub/gnu/gcc/gcc-14.4.0/gcc-14.4.0.tar.xz\n'
+    '        https://ftp.gnu.org/gnu/gcc/gcc-14.4.0/gcc-14.4.0.tar.xz\n'
+)
+assert gcc_text.count(old_url)==1, 'Expected the workflow-pinned GCC 14.4.0 source'
+gcc_text=gcc_text.replace(old_url,new_url,1)
+marker='    URL_HASH SHA512=725ed8bdd43ef1726ffe8b5e8615a13e247fac9575b7626ae013a2975d000ea213212dc414b2f2631ac4785c1c8beca85555222faf9904d3b2fa6a3807a83a15\n'
+assert gcc_text.count(marker)==1
+gcc_text=gcc_text.replace(marker,marker+'    TIMEOUT 120\n    INACTIVITY_TIMEOUT 30\n',1)
+gcc.write_text(gcc_text)
+
 bluray=packages/'libbluray.cmake'
 text=bluray.read_text()
 assert 'PATCH_COMMAND' not in text, 'Review existing libbluray patches before composing'
