@@ -88,6 +88,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0033-player-version-brand.patch'
 shutil.copyfile(root/'build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch', packages/'mpv-9028-secondary-ass-continuous-clock.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0037-native-ass-pacing-evidence.patch', packages/'mpv-9029-native-ass-pacing-evidence.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0038-secondary-ass-quiet-gap-hold.patch', packages/'mpv-9030-secondary-ass-quiet-gap-hold.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0039-native-ass-wait-deadline-cpu-spans.patch', packages/'mpv-9031-native-ass-wait-deadline-cpu-spans.patch')
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.

@@ -1,0 +1,404 @@
+From a325dd57fef42ac37e43a463ff0e1acaf86688d5 Mon Sep 17 00:00:00 2001
+From: Local verification <verification@localhost>
+Date: Tue, 6 Oct 2026 20:05:19 +0800
+Subject: [PATCH] video: preserve absolute timer deadline and add optional CPU
+ spans
+
+---
+ common/ass_pacing_record.h |  4 ++
+ sub/osd.c                  | 23 +++++++++++-
+ sub/osd.h                  | 21 +++++++++++
+ video/out/vo.c             | 77 +++++++++++++++++++++++++++++++++-----
+ video/out/vo.h             |  8 ++++
+ video/out/vo_gpu_next.c    | 26 ++++++++++++-
+ 6 files changed, 147 insertions(+), 12 deletions(-)
+
+diff --git a/common/ass_pacing_record.h b/common/ass_pacing_record.h
+index 309b6a4..8efc46c 100644
+--- a/common/ass_pacing_record.h
++++ b/common/ass_pacing_record.h
+@@ -34,6 +34,10 @@ enum mp_ass_pacing_kind {
+     MP_ASS_PACING_DXGI,
+     MP_ASS_PACING_GPU_MARKER,
+     MP_ASS_PACING_ANCHOR,
++    // Optional CPU call spans. v = {stage, detail, cumulative_cpu_estimate_ns,
++    //                              precise_wait_id (stages 230..239 only)}.
++    // flags bit 0: CPU estimate available. Never GPU Ready/Display authority.
++    MP_ASS_PACING_SPAN,
+     MP_ASS_PACING_KIND_LIMIT = 64,
+ };
+ 
+diff --git a/sub/osd.c b/sub/osd.c
+index e5bf7da..69ec4b4 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -28,6 +28,7 @@
+ #include "stream/stream.h"
+ 
+ #include "osdep/timer.h"
++#include "osdep/threads.h"
+ 
+ #include "mpv_talloc.h"
+ #include "options/m_config.h"
+@@ -622,7 +623,25 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
+                                    double video_pts, int draw_flags,
+                                    const bool formats[SUBBITMAP_COUNT])
+ {
++    return osd_render_timed(osd, res, video_pts, draw_flags, formats, NULL);
++}
++
++static void sample_render_timing(struct osd_render_timing *timing,
++                                 enum osd_render_timing_point point)
++{
++    if (!timing)
++        return;
++    timing->wall_ns[point] = mp_time_ns();
++    timing->cpu_ns[point] = mp_thread_cpu_time_ns(mp_thread_current_id());
++}
++
++struct sub_bitmap_list *osd_render_timed(struct osd_state *osd,
++    struct mp_osd_res res, double video_pts, int draw_flags,
++    const bool formats[SUBBITMAP_COUNT], struct osd_render_timing *timing)
++{
++    sample_render_timing(timing, OSD_RENDER_TIMING_ENTRY);
+     mp_mutex_lock(&osd->lock);
++    sample_render_timing(timing, OSD_RENDER_TIMING_LOCKED);
+ 
+     int64_t start_time = mp_time_ns();
+ 
+@@ -677,9 +696,11 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
+     double elapsed = MP_TIME_NS_TO_MS(mp_time_ns() - start_time);
+     bool slow = elapsed > 5;
+     mp_msg(osd->log, slow ? MSGL_DEBUG : MSGL_TRACE, "Spent %.3f ms in %s%s\n",
+-           elapsed, __func__, slow ? " (slow!)" : "");
++           elapsed, "osd_render", slow ? " (slow!)" : "");
+ 
++    sample_render_timing(timing, OSD_RENDER_TIMING_DONE);
+     mp_mutex_unlock(&osd->lock);
++    sample_render_timing(timing, OSD_RENDER_TIMING_UNLOCKED);
+     return list;
+ }
+ 
+diff --git a/sub/osd.h b/sub/osd.h
+index fd2c33e..8798b0e 100644
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -262,6 +262,27 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
+                                    double video_pts, int draw_flags,
+                                    const bool formats[SUBBITMAP_COUNT]);
+ 
++// Optional diagnostic snapshots, never scheduling inputs. DONE is immediately
++// before unlocking, including the existing lock-held diagnostics. CPU samples
++// are platform estimates; negative values remain unknown, not zero duration.
++enum osd_render_timing_point {
++    OSD_RENDER_TIMING_ENTRY,
++    OSD_RENDER_TIMING_LOCKED,
++    OSD_RENDER_TIMING_DONE,
++    OSD_RENDER_TIMING_UNLOCKED,
++    OSD_RENDER_TIMING_POINTS,
++};
++
++struct osd_render_timing {
++    int64_t wall_ns[OSD_RENDER_TIMING_POINTS];
++    int64_t cpu_ns[OSD_RENDER_TIMING_POINTS];
++};
++
++// Passing NULL retains osd_render() behavior without additional clock samples.
++struct sub_bitmap_list *osd_render_timed(struct osd_state *osd,
++    struct mp_osd_res res, double video_pts, int draw_flags,
++    const bool formats[SUBBITMAP_COUNT], struct osd_render_timing *timing);
++
+ struct mp_image;
+ void osd_draw_on_image(struct osd_state *osd, struct mp_osd_res res,
+                        double video_pts, int draw_flags, struct mp_image *dest);
+diff --git a/video/out/vo.c b/video/out/vo.c
+index e6a23d8..a39b263 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -233,6 +233,29 @@ static uint32_t secondary_record_tag(const char *text)
+     return tag;
+ }
+ 
++void vo_pacing_span_at(struct vo *vo, unsigned stage, int64_t detail,
++                       int64_t event_ns, int64_t cpu_ns)
++{
++    if (!vo->pacing_spans || !mp_ass_pacing_enabled(vo->global))
++        return;
++    struct mp_ass_pacing_record record = {
++        .event_ns = event_ns, .vo_seq = vo->pacing_vo_seq,
++        .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
++        .flags = cpu_ns >= 0, .v = {stage, detail, cpu_ns,
++            stage >= 230 && stage <= 239 ? vo->pacing_wait_seq : 0},
++    };
++    mp_ass_pacing_record(vo->global, MP_ASS_PACING_SPAN, &record);
++}
++
++void vo_pacing_span_now(struct vo *vo, unsigned stage, int64_t detail)
++{
++    if (!vo->pacing_spans || !mp_ass_pacing_enabled(vo->global))
++        return;
++    int64_t wall = mp_time_ns();
++    int64_t cpu = mp_thread_cpu_time_ns(mp_thread_current_id());
++    vo_pacing_span_at(vo, stage, detail, wall, cpu);
++}
++
+ static void secondary_record_begin(struct vo *vo, const struct vo_frame *frame,
+     int64_t original_target, int64_t submit, int64_t presentation_time,
+     int64_t deadline, const struct secondary_ass_physical_point *point,
+@@ -277,8 +300,10 @@ static void secondary_record_begin(struct vo *vo, const struct vo_frame *frame,
+                 plan->fallback_submit, plan->lifecycle_safe_wait},
+         };
+     }
++    vo_pacing_span_now(vo, 300, 0);
+     osd_set_ass_pacing_scope(vo->osd, vo->pacing_vo_seq, vo->pacing_draw_seq,
+                             frame->frame_id);
++    vo_pacing_span_now(vo, 301, 0);
+ }
+ 
+ static void secondary_record_end(struct vo *vo)
+@@ -1033,11 +1058,18 @@ static int secondary_wait_precise_locked(struct vo *vo, int64_t until_time,
+                                          bool honor_pending)
+ {
+     struct vo_internal *in = vo->in;
++    if (vo->pacing_spans)
++        vo->pacing_wait_seq++;
++    vo_pacing_span_now(vo, 230, until_time);
+     int64_t remaining = until_time - mp_time_ns();
+-    if (remaining <= 0)
++    if (remaining <= 0) {
++        vo_pacing_span_now(vo, 236, ETIMEDOUT);
+         return ETIMEDOUT;
+-    if (in->secondary_wait_timer_failed)
++    }
++    if (in->secondary_wait_timer_failed) {
++        vo_pacing_span_now(vo, 236, EINVAL);
+         return EINVAL;
++    }
+     if (!in->secondary_wait_timer) {
+         in->secondary_wakeup_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+         in->secondary_wait_timer = CreateWaitableTimerExW(NULL, NULL,
+@@ -1047,30 +1079,53 @@ static int secondary_wait_precise_locked(struct vo *vo, int64_t until_time,
+                                                               TIMER_ALL_ACCESS);
+         if (!in->secondary_wakeup_event || !in->secondary_wait_timer) {
+             in->secondary_wait_timer_failed = true;
++            vo_pacing_span_now(vo, 236, EINVAL);
+             return EINVAL;
+         }
+     }
+-    if (honor_pending && in->need_wakeup)
++    if (honor_pending && in->need_wakeup) {
++        vo_pacing_span_now(vo, 236, 0);
+         return 0;
+-    if (!ResetEvent(in->secondary_wakeup_event))
++    }
++    if (!ResetEvent(in->secondary_wakeup_event)) {
++        vo_pacing_span_now(vo, 236, EINVAL);
+         return EINVAL;
++    }
+     remaining = until_time - mp_time_ns();
+-    if (remaining <= 0)
++    if (remaining <= 0) {
++        vo_pacing_span_now(vo, 236, ETIMEDOUT);
+         return ETIMEDOUT;
+-    LARGE_INTEGER due = {.QuadPart = -MPMAX(remaining / 100, 1)};
++    }
++    vo_pacing_span_now(vo, 231, remaining);
+     int64_t hrt = mp_start_hires_timers(remaining);
++    vo_pacing_span_now(vo, 232, hrt);
++    // A relative timer starts at SetWaitableTimer. Timer-resolution setup
++    // may have consumed part of the original absolute deadline already.
++    remaining = until_time - mp_time_ns();
++    if (remaining <= 0) {
++        mp_end_hires_timers(hrt);
++        vo_pacing_span_now(vo, 236, ETIMEDOUT);
++        return ETIMEDOUT;
++    }
++    LARGE_INTEGER due = {.QuadPart = -MPMAX(remaining / 100, 1)};
+     if (!SetWaitableTimer(in->secondary_wait_timer, &due, 0, NULL, NULL, FALSE)) {
+         mp_end_hires_timers(hrt);
++        vo_pacing_span_now(vo, 236, EINVAL);
+         return EINVAL;
+     }
++    vo_pacing_span_now(vo, 233, remaining);
+     HANDLE handles[] = {in->secondary_wakeup_event, in->secondary_wait_timer};
+     mp_mutex_unlock(&in->lock);
+     DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
++    vo_pacing_span_now(vo, 234, result);
+     mp_mutex_lock(&in->lock);
++    vo_pacing_span_now(vo, 235, result);
+     CancelWaitableTimer(in->secondary_wait_timer);
+     mp_end_hires_timers(hrt);
+-    return result == WAIT_OBJECT_0 ? 0 :
+-           result == WAIT_OBJECT_0 + 1 ? ETIMEDOUT : EINVAL;
++    int status = result == WAIT_OBJECT_0 ? 0 :
++                 result == WAIT_OBJECT_0 + 1 ? ETIMEDOUT : EINVAL;
++    vo_pacing_span_now(vo, 236, status);
++    return status;
+ }
+ #endif
+ 
+@@ -2458,6 +2513,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+     const char *diagnostic_env = getenv("MPV_NATIVE_ASS_DIAGNOSTIC");
+     bool diagnostic = in->secondary_trace ||
+         (diagnostic_env && strcmp(diagnostic_env, "1") == 0);
++    const char *spans = getenv("MPV_NATIVE_SPANS");
++    vo->pacing_spans = diagnostic && mp_ass_pacing_enabled(vo->global) &&
++        spans && strcmp(spans, "1") == 0;
+     const char *schedule_trace = getenv("MPV_NATIVE_SCHEDULE_TRACE");
+     mp_mutex_lock(&in->lock);
+     in->secondary_schedule_trace = in->secondary_trace && schedule_trace &&
+@@ -2480,7 +2538,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
+             .v = {in->secondary_trace, diagnostic, in->secondary_schedule_trace,
+                 in->secondary_fifo_present, in->secondary_present_grid,
+-                in->secondary_present_plan, in->secondary_split_budget},
++                in->secondary_present_plan, in->secondary_split_budget,
++                vo->pacing_spans},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_CONFIG, &record);
+     }
+diff --git a/video/out/vo.h b/video/out/vo.h
+index bb3b5e6..1cb22b4 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -488,6 +488,8 @@ struct vo {
+     // Internal diagnostic identity. vo_seq is immutable after creation;
+     // draw/frame scope is owned by the VO thread and cleared after feedback.
+     uint64_t pacing_vo_seq, pacing_draw_seq, pacing_frame_id;
++    bool pacing_spans; // default-off CPU diagnostics, immutable on the VO thread
++    uint64_t pacing_wait_seq; // precise-wait identity; diagnostic VO thread only
+     union {
+         struct vo_x11_state *x11;
+         struct vo_w32_state *w32;
+@@ -590,6 +592,12 @@ struct mp_image *vo_get_image(struct vo *vo, int imgfmt, int w, int h,
+ void vo_wakeup(struct vo *vo);
+ void vo_wait_default(struct vo *vo, int64_t until_time);
+ 
++// Explicit VO-thread CPU boundaries for optional diagnostics. An unavailable
++// CPU estimate is -1; event_ns is never a GPU/Present/Display timestamp.
++void vo_pacing_span_at(struct vo *vo, unsigned stage, int64_t detail,
++                       int64_t event_ns, int64_t cpu_ns);
++void vo_pacing_span_now(struct vo *vo, unsigned stage, int64_t detail);
++
+ struct mp_keymap {
+   int from;
+   int to;
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index a0d39db..679b503 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -383,6 +383,7 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+     entry->upload_valid = false;
+     if (!entry->tex)
+         MP_TARRAY_POP(p->sub_tex, p->num_sub_tex, &entry->tex);
++    vo_pacing_span_now(vo, 210, item->render_index);
+     bool ok = pl_tex_recreate(p->gpu, &entry->tex, &(struct pl_tex_params) {
+         .format = p->osd_fmt[item->format],
+         .w = MPMAX(item->packed_w, entry->tex ? entry->tex->params.w : 0),
+@@ -390,6 +391,7 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+         .host_writable = true,
+         .sampleable = true,
+     });
++    vo_pacing_span_now(vo, 211, ok);
+     if (!ok) {
+         MP_ERR(vo, "Failed recreating OSD texture!\n");
+         return false;
+@@ -405,7 +407,10 @@ static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+         upload_params.callback = talloc_free;
+         upload_params.priv = mp_image_new_ref(item->packed);
+     }
+-    if (!pl_tex_upload(p->gpu, &upload_params)) {
++    vo_pacing_span_now(vo, 212, item->render_index);
++    bool uploaded = pl_tex_upload(p->gpu, &upload_params);
++    vo_pacing_span_now(vo, 213, uploaded);
++    if (!uploaded) {
+         MP_ERR(vo, "Failed uploading OSD texture!\n");
+         talloc_free(upload_params.priv);
+         return false;
+@@ -581,11 +586,18 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
+ {
+     struct priv *p = vo->priv;
+     double pts = src ? src->pts : 0;
++    vo_pacing_span_now(vo, 110, flags);
+     int div[2];
+     mp_get_3d_side_by_side(stereo_mode, div);
+     res.w /= div[0];
+     res.h /= div[1];
+-    struct sub_bitmap_list *subs = osd_render(vo->osd, res, pts, flags, mp_draw_sub_formats);
++    struct osd_render_timing timing;
++    struct sub_bitmap_list *subs = osd_render_timed(vo->osd, res, pts, flags,
++        mp_draw_sub_formats, vo->pacing_spans ? &timing : NULL);
++    if (vo->pacing_spans) {
++        for (int i = 0; i < OSD_RENDER_TIMING_POINTS; i++)
++            vo_pacing_span_at(vo, 112 + i, flags, timing.wall_ns[i], timing.cpu_ns[i]);
++    }
+ 
+     state->num_overlays = 0;
+ 
+@@ -597,6 +609,7 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
+         if (!upload_overlay_tex(vo, entry, item))
+             break;
+ 
++        vo_pacing_span_now(vo, 214, item->render_index);
+         MP_TARRAY_GROW(p, entry->parts, item->num_parts * div[0] * div[1]);
+         entry->num_parts = 0;
+         struct pl_color_space color = {0};
+@@ -635,12 +648,14 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
+             dup_stereo_parts(p, entry, start, res, div);
+             add_run_overlay(p, state, entry, item, &color, start, coords);
+         }
++        vo_pacing_span_now(vo, 215, item->render_index);
+     }
+ 
+     frame->overlays = state->overlays;
+     frame->num_overlays = state->num_overlays;
+ 
+     talloc_free(subs);
++    vo_pacing_span_now(vo, 119, flags);
+ }
+ 
+ struct frame_priv {
+@@ -1655,10 +1670,12 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ 
+     struct pl_swapchain_frame swframe;
+     pacing_gpu_stage(vo, 100, 0);
++    vo_pacing_span_now(vo, 100, 0);
+     pacing_gpu_marker(vo, 1);
+     bool should_draw = sw->fns->start_frame(sw, NULL); // for wayland logic
+     if (!should_draw || !pl_swapchain_start_frame(p->sw, &swframe)) {
+         pacing_gpu_stage(vo, 101, -1);
++        vo_pacing_span_now(vo, 101, -1);
+         if (frame->current) {
+             // Advance the queue state to the current PTS to discard unused frames
+             struct pl_queue_params qparams = *pl_queue_params(
+@@ -1672,6 +1689,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         return VO_FALSE;
+     }
+     pacing_gpu_stage(vo, 101, 1);
++    vo_pacing_span_now(vo, 101, 1);
+ 
+     bool valid = false;
+     p->is_interpolated = false;
+@@ -1884,9 +1902,11 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     stats_time_start(p->stats, "render");
+     int64_t render_start = p->timing_diagnostics ? mp_time_ns() : 0;
+     pacing_gpu_stage(vo, 140, 0);
++    vo_pacing_span_now(vo, 140, 0);
+     pacing_gpu_marker(vo, 2);
+     bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
+     pacing_gpu_stage(vo, 141, render_ok);
++    vo_pacing_span_now(vo, 141, render_ok);
+     if (p->timing_diagnostics) {
+         int64_t ns = mp_time_ns() - render_start;
+         p->timing_render_ns += ns;
+@@ -1933,8 +1953,10 @@ done:
+         ra_d3d11_ctx_gpu_marker_draw_end(p->ra_ctx, p->gpu_marker_frame_id);
+ #endif
+     pacing_gpu_stage(vo, 150, 0);
++    vo_pacing_span_now(vo, 150, 0);
+     pl_gpu_flush(gpu);
+     pacing_gpu_stage(vo, 151, 1);
++    vo_pacing_span_now(vo, 151, 1);
+     p->frame_pending = true;
+     return VO_TRUE;
+ }
