@@ -19,7 +19,8 @@ from pathlib import Path
 
 STRUCTS = ("vo_extra", "vo_frame", "vo_vsync_info", "vo_driver", "vo")
 FUNCTIONS = (
-    "secondary_record_tag", "secondary_record_begin", "secondary_record_end",
+    "secondary_record_tag", "vo_pacing_span_at", "vo_pacing_span_now",
+    "secondary_record_begin", "secondary_record_end",
     "secondary_reset_physical", "reset_secondary_ass_budget",
     "secondary_plan_enabled", "secondary_cache_block_cost",
     "secondary_observe_flip_budget", "secondary_planning_state",
@@ -222,6 +223,31 @@ def compile_gate(source, cc, read):
     if not timer_decl or not scope_decl:
         raise ValueError("real timer/OSD prototype closure changed")
     chunks.append(timer_decl[0] + "\n" + scope_decl[0] + "\n")
+    # Keep the real mpv declarations and alias used by the new span helpers.
+    # GetCurrentThreadId is an explicit opaque platform-call boundary here;
+    # its Windows SDK calling convention/ABI still requires the full build.
+    prototypes = []
+    for path, text, name, returns in (
+        ("osdep/threads-win32.h", thread_header, "mp_thread_cpu_time_ns", "int64_t"),
+        ("video/out/vo.h", vo_header, "vo_pacing_span_at", "void"),
+        ("video/out/vo.h", vo_header, "vo_pacing_span_now", "void"),
+    ):
+        matches = list(re.finditer(r"\b" + returns + r"\s+" + name +
+                                  r"\s*\([^;{}]*\)\s*;", mask_c(text)))
+        if len(matches) != 1:
+            raise ValueError(f"real prototype closure changed: {path}:{name}")
+        match = matches[0]
+        proto = text[match.start():match.end()]
+        chunks.append(proto)
+        prototypes.append({"file": path, "function": name,
+                           "line": text.count("\n", 0, match.start()) + 1,
+                           "sha256": hashlib.sha256(proto.encode()).hexdigest()})
+    aliases = list(re.finditer(r"^#define\s+mp_thread_current_id\s+GetCurrentThreadId\s*$",
+                              mask_c(thread_header), re.M))
+    if len(aliases) != 1:
+        raise ValueError("real Windows mp_thread_current_id alias closure changed")
+    alias = aliases[0]
+    chunks.append("DWORD GetCurrentThreadId(void);\n" + thread_header[alias.start():alias.end()] + "\n")
     chunks.append("void integration_log(const char *, ...);\n#define MP_INFO(obj, ...) integration_log(__VA_ARGS__)\n")
     full = []
     for name in FUNCTIONS:
@@ -275,11 +301,13 @@ def compile_gate(source, cc, read):
                   "returncode": completed.returncode, "closure_errors": closure_errors,
                   "compiler": str(cc), "diagnostics": (completed.stdout + completed.stderr)[-18000:],
                   "real_complete_structs": declarations,
+                  "real_prototypes": prototypes,
                   "verbatim_full_functions": full, "actual_member_operand_count": len(operands),
                   "actual_member_operands": operands,
                   "translation_sha256": hashlib.sha256(generated.encode()).hexdigest(),
                   "scope": "REAL_COMPLETE_DECLARATIONS_SELECTED_VERBATIM_FUNCTIONS_AND_GPU_MEMBER_OPERANDS_NOT_FULL_TRANSLATION_UNITS",
                   "boundary_stubs": ["opaque Windows OS HANDLE/DWORD/condition/once/lock types; no platform ABI assertion",
+                                     "GetCurrentThreadId prototype boundary; no Windows calling convention/SDK ABI assertion",
                                      "logging function/macro boundary; all format argument expressions remain compiled",
                                      "can_present_early compiled with HAVE_D3D11=0; real D3D11 branch is not compiled"],
                   "not_covered": ["full vo.c/d3d11/context.c/vo_gpu_next.c translation units and their external SDK APIs",
