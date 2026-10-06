@@ -32,6 +32,23 @@ if args.variant=='atmos':
     shutil.copyfile(here/'mpv-9100-omniphony-parity.patch',packages/'mpv-9100-omniphony-parity.patch')
     text=text.replace(anchor,anchor+options,1)
 mpv.write_text(text)
+
+# libaribcaption recently renamed its bundled MD5 symbols to aribcc_md5_*.
+# Its md5.c intentionally omits that implementation when HAVE_OPENSSL is
+# defined, while the new md5_helper.hpp still calls the renamed bundled
+# symbols.  The old forced HAVE_OPENSSL flags therefore leave the static
+# archive with unresolved aribcc_md5_* references at the FFmpeg link step.
+# Use the bundled implementation for this static Windows build; this keeps
+# the dependency self-contained and avoids changing the player feature set.
+aribcaption=packages/'libaribcaption.cmake'
+arib_text=aribcaption.read_text()
+old_flags=(
+    '        "-DCMAKE_C_FLAGS=\'-DHAVE_OPENSSL=1\'"\n'
+    '        "-DCMAKE_CXX_FLAGS=\'-DHAVE_OPENSSL=1\'"\n'
+)
+if arib_text.count(old_flags) != 1:
+    raise SystemExit('Expected exactly one obsolete libaribcaption HAVE_OPENSSL flag pair')
+aribcaption.write_text(arib_text.replace(old_flags, '', 1))
 # Common player-side HDMV transition fix, after the shared main patch and
 # before the independent Atmos decoder patch. Both variants must carry it.
 shutil.copyfile(root/'build/bluray-menu/patches/0005-hdmv-overlay-video-ready.patch',
