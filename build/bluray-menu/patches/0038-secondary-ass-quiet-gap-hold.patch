@@ -1,0 +1,59 @@
+From 15dbc1076afe5cf335c7367488b89bca27e74a3b Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Tue, 6 Oct 2026 10:07:32 +0800
+Subject: [PATCH] video: retain ASS phase across quiet output gaps
+
+---
+ video/out/vo.c | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 9562f7f..1bd8293 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -1562,15 +1562,19 @@ static void secondary_physical_feedback(struct vo *vo,
+ 
+ static bool secondary_set_presentation(struct vo *vo,
+     struct secondary_ass_physical_point point, int64_t fallback,
+-    int64_t interval, int64_t submit)
++    int64_t interval, int64_t submit, bool quiet_output)
+ {
+     struct secondary_ass_physical *p = &vo->in->secondary_physical;
+     if (point.slot > 0 && point.wall > 0)
+         osd_set_secondary_physical_presentation_time(vo->osd, point.wall, point.slot,
+             p->phase, p->phase_slot, p->interval, p->epoch, submit);
+-    else if (p->outlier_pending) {
++    else if (p->outlier_pending ||
++             (quiet_output && p->phase > 0 && p->phase_slot > 0 &&
++              p->interval > 0 && p->epoch > 0 && !p->epoch_exhausted)) {
+         // A count-supported target is unavailable. Hold the sample instead
+-        // of resetting its lattice to a wall oscillator.
++        // of resetting its lattice to a wall oscillator. A quiet-output gap
++        // temporarily has no visible ASS rate, but the retained physical
++        // phase remains authoritative for the next moving event.
+         osd_hold_secondary_sample(vo->osd);
+         return false;
+     }
+@@ -1883,7 +1887,8 @@ static bool render_frame(struct vo *vo)
+         }
+         physical_phase = physical_point.slot > 0 && !frame->display_synced;
+         bool secondary_target_updated = secondary_set_presentation(vo,
+-            physical_point, presentation_time, display_interval, present_ready);
++            physical_point, presentation_time, display_interval, present_ready,
++            native_rate <= 0);
+         if (!secondary_target_updated && in->secondary_trace)
+             MP_INFO(vo, "native-ass-phase-hold: fresh=%d target_updated=0 "
+                 "physical_point_available=0 actual_display_known=0 "
+@@ -2282,7 +2287,8 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     }
+     bool secondary_target_updated = secondary_set_presentation(vo,
+         physical_point, presentation_time, display_interval,
+-        planned_audio && present_plan.valid ? present_plan.submit : mp_time_ns());
++        planned_audio && present_plan.valid ? present_plan.submit : mp_time_ns(),
++        secondary_rate <= 0);
+     if (!secondary_target_updated && in->secondary_trace)
+         MP_INFO(vo, "native-ass-phase-hold: fresh=0 target_updated=0 "
+             "physical_point_available=0 actual_display_known=0 "
+-- 
+2.54.0.windows.1
+

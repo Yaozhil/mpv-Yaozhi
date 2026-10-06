@@ -57,8 +57,9 @@ if not args.inspect_existing:
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0033-player-version-brand.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0034-secondary-ass-continuous-clock.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0037-native-ass-pacing-evidence.patch'))
+    git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0038-secondary-ass-quiet-gap-hold.patch'))
     git('am','--3way',str(here/'mpv-9100-omniphony-parity.patch'))
-assert git('rev-list','--count','HEAD').strip()=='48'
+assert git('rev-list','--count','HEAD').strip()=='49'
 assert 'Add current Omniphony renderer and ASIO' in git('log','-1','--format=%s')
 assert not git('status','--porcelain').strip()
 text=(source/'filters/f_swresample.c').read_text(encoding='utf-8')
