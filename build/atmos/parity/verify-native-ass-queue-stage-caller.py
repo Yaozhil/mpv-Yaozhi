@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU replay of real V23 VO declarations/functions and selected loop fragments.
+"""CPU replay of real V24 VO declarations/functions and selected loop fragments.
 
 No mpv structure is synthesized. Platform endpoints and the OSD getter are
 explicit boundaries; the getter's true prototype is compiled, but its actual
@@ -165,6 +165,8 @@ typedef void *SRWLOCK;
                              ('osd_get_secondary_physical_next_sample_slot', 'int64_t'),
                              ('osd_get_secondary_physical_next_sample_time', 'int64_t'),
                              ('osd_get_secondary_next_sample_time', 'int64_t'),
+                             ('osd_get_secondary_clock_rate', 'double'),
+                             ('osd_hold_secondary_sample', 'void'),
                              ('osd_reset_secondary_clock', 'void'),
                              ('osd_get_secondary_sample_snapshot', 'struct secondary_ass_sample_snapshot')):
         pattern = r'\b' + return_type + r'\s+' + name + r'\s*\([^;{}]*\)\s*;'
@@ -184,6 +186,8 @@ static struct secondary_ass_clock fixture_clock;
 static struct secondary_ass_sampler fixture_sampler;
 static bool fixture_live_sampler,fixture_sample_forced;
 static unsigned feedback_frames,early_prepare_positive;
+static unsigned pose_holds,pose_set_calls;
+static struct secondary_ass_grid_task actual_outer_task;
 static struct mp_ass_pacing_record recorded;
 #define CHECK(x) do { checks++; if (!(x)) { failures++; if(failures<=20) \
  fprintf(stderr,"check failed %u:%s:%d:%s\n",checks,__FILE__,__LINE__,#x); } } while(0)
@@ -201,6 +205,10 @@ static void fixture_free(void *p) { if(p)free_calls++; }
 #define talloc_free(p) fixture_free(p)
 double osd_get_secondary_refresh(struct osd_state *osd) {
  (void)osd;CHECK(lock_depth==0);return fixture_rate; }
+double osd_get_secondary_clock_rate(struct osd_state *osd) {
+ (void)osd;CHECK(lock_depth==0);return fixture_rate; }
+void osd_hold_secondary_sample(struct osd_state *osd) {
+ (void)osd;pose_holds++; }
 int64_t osd_get_secondary_physical_sample_divisor(struct osd_state *osd) {
  (void)osd;CHECK(lock_depth==0);return fixture_divisor; }
 void osd_reset_secondary_clock(struct osd_state *osd) { (void)osd; }
@@ -235,6 +243,17 @@ static bool can_early(struct vo *vo,uint64_t generation,int64_t target,
                       void (*wait)(struct vo *,int64_t)) {
  (void)vo;(void)generation;(void)target;(void)wait;return true; }
 ''')
+    # The full Atomic setter remains in the independent GCC integration gate.
+    # This endpoint is deliberately observable rather than synthesizing its
+    # behavior: fixed/no-grid must not call it; physical-grid may reach it.
+    setter = fs['secondary_set_presentation']['text']
+    setter_signature = setter[:gate.mask_c(setter).index('{')]
+    chunks.append(setter_signature + r'''{
+ (void)vo;(void)point;(void)fallback;(void)interval;(void)submit;
+ (void)quiet_output;(void)forecast;(void)plan;
+ pose_set_calls++;return false;
+}
+''')
     thread_fs = gate.functions(thread)
     for name in ('mp_mutex_lock', 'mp_mutex_unlock', 'mp_cond_broadcast'):
         f = thread_fs[name]
@@ -249,6 +268,8 @@ static bool can_early(struct vo *vo,uint64_t generation,int64_t target,
                 'secondary_plan_stale_reason', 'secondary_trace_plan',
                 'secondary_trace_plan_missed', 'secondary_cache_block_cost',
                 'secondary_forecast_enabled', 'secondary_physical_feedback',
+                'secondary_fixed_forecast_offset', 'secondary_forecast_plan',
+                'secondary_forecast_fresh_plan', 'secondary_forecast_next',
                 'secondary_cache_plan', 'secondary_capture_grid_plan',
                 'secondary_planning_state', 'secondary_next_sample',
                 'secondary_cache_next_sample')
@@ -318,6 +339,26 @@ done:
  mp_mutex_unlock(&in->lock);return false;
 }
 ''')
+    redraw = fs['do_redraw']['text']
+    pose_begin = redraw.index('    int64_t display_interval =')
+    pose_end = redraw.index('    if (!secondary_target_updated && in->secondary_trace)', pose_begin)
+    pose = redraw[pose_begin:pose_end]
+    fragments.append({'context': 'do_redraw.actual_physical_and_pose_selection',
+                      'sha256': sha(pose.encode()), 'text': pose})
+    chunks.append(r'''
+static bool actual_redraw_pose_boundary(struct vo *vo,
+    const struct secondary_ass_grid_task *grid_task,bool *physical,
+    bool *updated,struct secondary_ass_physical_point *selected) {
+ struct vo_internal *in=vo->in;
+ struct vo_frame dummy={0};
+ struct vo_frame *frame=in->current_frame?in->current_frame:&dummy;
+ int64_t video_duration=in->current_frame?in->current_frame->duration:0;
+ int64_t grid_divisor=grid_task?grid_task->divisor:0;
+''' + pose + r'''
+ *physical=physical_phase;*updated=secondary_target_updated;*selected=physical_point;
+ return true;
+}
+''')
     # The entire pre-render guard prefix is verbatim actual do_redraw source.
     # Stop before it acquires image references or enters GPU/driver work.
     redraw = fs['do_redraw']['text']
@@ -336,6 +377,20 @@ static bool actual_redraw_guard_boundary(struct vo *vo,uint64_t current_id,
 }
 ''')
     feedback_start = redraw.index('secondary_physical_feedback(vo, &vsync, physical_point,')
+    feedback_end = redraw.index(';', feedback_start) + 1
+    feedback_call = redraw[feedback_start:feedback_end]
+    fragments.append({'context': 'do_redraw.actual_physical_feedback_invocation',
+                      'sha256': sha(feedback_call.encode()), 'text': feedback_call})
+    chunks.append(r'''
+static void actual_manual_feedback_boundary(struct vo *vo,
+ const struct vo_vsync_info *input,struct secondary_ass_physical_point point) {
+ struct vo_vsync_info vsync=*input;
+ struct secondary_ass_physical_point physical_point=point;
+ bool planned_audio=false;
+ struct secondary_ass_present_plan present_plan={0};
+''' + feedback_call + r'''
+}
+''')
     resolve = block(redraw[feedback_start:], 'if (grid_task && grid_task->stage.valid)',
                     'do_redraw.actual_after_feedback_prefix_resolve')
     chunks.append(r'''
@@ -399,6 +454,7 @@ static int64_t outer_timer_boundary(struct vo *vo,bool working,bool bound,
 ''' + scheduler + r'''
 ''' + unbound + r'''
  (void)send_pause; // Driver pause work is outside this CPU boundary.
+ actual_outer_task=grid_task;
  *manual_redraw_allowed=redraw;return wait_until;
 }
 ''')
@@ -966,12 +1022,94 @@ static void timers_and_flags(void) {
  }
  CHECK(!in.lock && !lock_depth);
 }
+static void actual_fixed_outer_and_pose(void) {
+ struct vo vo;struct vo_internal in;struct vo_frame retained;
+ struct vo_driver driver;struct mp_vo_opts opts;
+ const int rates[]={60,120,144,165,240,360};
+ for(unsigned r=0;r<6;r++)for(int N=1;N<=4;N++) {
+  setup(&vo,&in,&retained,&driver,&opts);
+  const int64_t T=1000000000LL/rates[r],O=1000000000;
+  in.secondary_queue_stage=false;in.secondary_display_forecast=true;
+  in.secondary_fixed_forecast=true;in.vsync_interval=T;in.reported_display_fps=1e9/T;
+  retained.duration=20*N*T;retained.pts=O;
+  in.secondary_physical=(struct secondary_ass_physical){.phase=O,.phase_slot=100,
+   .interval=T,.epoch=7,.sync_qpc_ns=O,.sync_count=100,.sync_slot=100,
+   .sync_segment_consistent=true,.measure_qpc_ns=O,.measure_count=100,
+   .periods={T,T,T},.period_count=3,.period_next=3,.delay=1,
+   .delay_samples={1,1,1},.delay_count=3,.success_generation=3,.success_contiguous=true};
+  fixture_clock=(struct secondary_ass_clock){.valid=true,.pts=10,.speed=1,.wall=O};
+  fixture_rate=1e9/(N*(double)T);fixture_divisor=N;fixture_live_sampler=true;
+  struct secondary_ass_present_plan seed=secondary_forecast_plan(&vo,
+   secondary_ass_physical_point_at(&in.secondary_physical,110),N,fixture_rate);
+  CHECK(seed.valid && seed.captured_forecast==1 && seed.submit==seed.fallback_submit);
+  CHECK(actual_sampler_selection(&in,&seed));
+  clock_ns=seed.target.wall+10000;retained.pts=seed.base.wall;
+  struct vo_vsync_info vsync=host_vsync(&in,&seed,1,&seed,1,clock_ns);
+  secondary_physical_feedback(&vo,&vsync,seed.target,&seed);
+  CHECK(in.secondary_physical.success_last_id==1);
+  // Recovery probe retains the identified G/D grid and original budget.
+  in.secondary_render_cost=N*T/4;in.secondary_redraw_cost=N*T*4/5;
+  in.secondary_redraw_block_cost=100000;in.secondary_next_probe=0;
+  CHECK(!secondary_ass_budget_affordable(in.secondary_render_cost,
+   in.secondary_redraw_cost,retained.duration,N*T));
+  bool manual=false;
+  int64_t wake=outer_timer_boundary(&vo,false,false,&manual);
+  if(!manual) {
+   CHECK(wake>clock_ns && wake<retained.pts+retained.duration);
+   clock_ns=wake;
+   (void)outer_timer_boundary(&vo,false,false,&manual);
+  }
+  CHECK(manual && actual_outer_task.recovery_probe && actual_outer_task.plan_enabled);
+  CHECK(actual_outer_task.point.slot>110 && actual_outer_task.plan.valid);
+  CHECK(actual_outer_task.plan.target.slot-actual_outer_task.plan.base.slot==1);
+  CHECK(actual_outer_task.submit_time==actual_outer_task.plan.fallback_submit);
+  unsigned calls=pose_set_calls,holds=pose_holds;
+  bool physical=false,updated=true;struct secondary_ass_physical_point point={0};
+  CHECK(actual_redraw_guard_boundary(&vo,0,0,&actual_outer_task));
+  CHECK(actual_redraw_pose_boundary(&vo,&actual_outer_task,&physical,&updated,&point));
+  CHECK(physical && point.slot==actual_outer_task.plan.target.slot);
+  CHECK(pose_set_calls==calls+1 && pose_holds==holds && !updated);
+  // Removing the probe bit must not bypass the original affordable guard.
+  struct secondary_ass_grid_task no_probe=actual_outer_task;no_probe.recovery_probe=false;
+  calls=pose_set_calls;
+  CHECK(!actual_redraw_pose_boundary(&vo,&no_probe,&physical,&updated,&point));
+  CHECK(pose_set_calls==calls);
+  // A manual repaint keeps the old pose; it creates no new sample task.
+  struct secondary_ass_sampler saved=fixture_sampler;
+  struct secondary_ass_present_fixed_offset fixed=in.secondary_fixed_offset;
+  calls=pose_set_calls;holds=pose_holds;
+  CHECK(actual_redraw_pose_boundary(&vo,NULL,&physical,&updated,&point));
+  CHECK(!physical && !updated && !point.slot && !point.wall);
+  CHECK(pose_set_calls==calls && pose_holds==holds+1);
+  CHECK(memcmp(&saved,&fixture_sampler,sizeof(saved))==0);
+  CHECK(memcmp(&fixed,&in.secondary_fixed_offset,sizeof(fixed))==0);
+  // The actual successful Present ledger survives an unbound/manual pose.
+  vsync=host_vsync(&in,&actual_outer_task.plan,2,&seed,1,clock_ns);
+  actual_manual_feedback_boundary(&vo,&vsync,point);
+  CHECK(in.secondary_physical.success_last_id==2 && in.secondary_physical.historical_id==1);
+  CHECK(memcmp(&saved,&fixture_sampler,sizeof(saved))==0);
+  in.secondary_physical.success_generation=0;
+  struct secondary_ass_present_plan lost=secondary_forecast_plan(&vo,
+   secondary_ass_physical_point_at(&in.secondary_physical,120),N,fixture_rate);
+  CHECK(!lost.valid && memcmp(&fixed,&in.secondary_fixed_offset,sizeof(fixed))==0);
+  in.secondary_physical.success_generation=3;in.secondary_physical.success_contiguous=false;
+  lost=secondary_forecast_plan(&vo,secondary_ass_physical_point_at(&in.secondary_physical,120),N,fixture_rate);
+  CHECK(!lost.valid && memcmp(&fixed,&in.secondary_fixed_offset,sizeof(fixed))==0);
+  in.secondary_physical.success_contiguous=true;in.secondary_physical.delay=3;
+  lost=secondary_forecast_plan(&vo,secondary_ass_physical_point_at(&in.secondary_physical,120),N,fixture_rate);
+  CHECK(lost.valid && lost.captured_forecast==1 && lost.historical_delay==3);
+ }
+ fixture_live_sampler=false;
+}
 int main(void) {
  reference_selected_bodies();
  legacy_same();legacy_active_token();stage_and_binding();lifecycle();
  cache_and_pre_render_guards();pressure_change_diagnostic();budget_resume_matrix();actual_prefix_chains();timers_and_flags();
- printf("{\"checks\":%u,\"failures\":%u,\"wakeups\":%u,\"core_wakeups\":%u,\"actual_feedback_frames\":%u,\"early_prepare_positive\":%u,\"pressure_changes\":[",
-        checks,failures,wakeups,core_wakeups,feedback_frames,early_prepare_positive);
+ unsigned legacy_checks=checks;
+ CHECK(legacy_checks==102298);
+ actual_fixed_outer_and_pose();
+ printf("{\"checks\":%u,\"v24_checks\":%u,\"failures\":%u,\"wakeups\":%u,\"core_wakeups\":%u,\"actual_feedback_frames\":%u,\"early_prepare_positive\":%u,\"pressure_changes\":[",
+        legacy_checks,checks-legacy_checks,failures,wakeups,core_wakeups,feedback_frames,early_prepare_positive);
  for(unsigned n=0;n<6;n++)printf("%s{\"cost_ns\":%lld,\"captured_old_lead_ns\":%lld,"
    "\"fixed_resume_ns\":%lld,\"new_native_lead_ns\":%lld,\"new_native_admission_ns\":%lld,\"effective_resume_ns\":%lld,"
    "\"affordable\":%s,\"probe\":%s,\"owner\":%s,\"cache\":%s}",n?",":"",
@@ -1021,10 +1159,13 @@ def main():
               'OSD_getter_actual_body_compiled': False,
               'boundary_stubs': ['opaque Windows types/endpoints with real mpv lock wrappers',
                   'actual OSD getter prototypes with external scalar snapshot fixture',
+                  'actual OSD hold/setter signatures with observable external endpoints; '
+                  'the Atomic bodies remain in the separate default GCC gate',
                   'talloc free, logging and pacing recording endpoints'],
               'not_covered': ['complete VO thread, real AO/OS scheduler/GPU/display',
                   'actual OSD state _Atomic/getter body, Windows ABI',
-                  'cache GPU/Present work beyond the complete pre-render guard prefix',
+                  'cache image ownership/GPU/Present work after the extracted '
+                  'pre-render guard and physical/pose-selection fragments',
                   'actual baseline wakeup/prepare coverage and video pacing after '
                   'a post-queue pressure rise remain UNKNOWN; the CPU boundary only '
                   'checks the original resampled formula and finite min timer'],
@@ -1047,18 +1188,22 @@ def main():
             report['actual_C'][name] = item
         if args.mutants:
             report['mutants'] = execute_mutants(load_gate(), generated, args.out)
+            report['v24_mutants'] = execute_v24_mutants(load_gate(), generated, args.out)
         unchanged = [path for path, data in captured.items()
                      if (ROOT / path).read_bytes() != data]
         report['inputs_changed_during_run'] = unchanged
         passed = not unchanged and all(item['exit_code'] == 0 and
                     item.get('result', {}).get('failures') == 0 and
-                    item.get('result', {}).get('checks', 0) > 0 and
+                    item.get('result', {}).get('checks') == 102298 and
+                    item.get('result', {}).get('v24_checks') == 1047 and
                     item.get('result', {}).get('actual_feedback_frames') == 312 and
                     item.get('result', {}).get('early_prepare_positive') == 12
                     for item in report['actual_C'].values())
         if args.mutants:
             passed &= all(item['compiled_and_rejected']
                           for item in report['mutants'].values())
+            passed &= len(report['v24_mutants']) == 5 and all(
+                item['compiled_and_rejected'] for item in report['v24_mutants'].values())
         report['status'] = 'ACTUAL_VO_CPU_BOUNDARY_PASS_NOT_RUNTIME' if passed else 'ACTUAL_VO_CPU_BOUNDARY_FAIL'
     except (ValueError, KeyError, OSError, subprocess.TimeoutExpired) as error:
         report['status'] = 'ACTUAL_VO_CPU_CLOSURE_FAIL'
@@ -1076,6 +1221,8 @@ def main():
                          for name, item in report.get('actual_C', {}).items()},
                      'mutants': {name: item['compiled_and_rejected']
                          for name, item in report.get('mutants', {}).items()},
+                     'v24_mutants': {name: item['compiled_and_rejected']
+                         for name, item in report.get('v24_mutants', {}).items()},
                      'error': report.get('error')}, ensure_ascii=False))
     return 0 if passed else 1
 
@@ -1167,6 +1314,46 @@ def execute_mutants(gate, generated, out):
             'compiled_and_rejected': rejected, 'result': actual,
             'translation_sha256': sha(mutated.encode()),
             'mutation_scope': 'generated actual C closure only; source/raw unchanged'}
+    return results
+
+
+def execute_v24_mutants(gate, generated, out):
+    functions = gate.functions(generated)
+    specs = {
+        'fixed_recovery_probe_loses_grid': ('outer_timer_boundary',
+            '.recovery_probe = in->secondary_fixed_forecast && probe,',
+            '.recovery_probe = false,'),
+        'physical_probe_permission_ignored': ('actual_redraw_pose_boundary',
+            'in->secondary_fixed_forecast && grid_task && grid_task->recovery_probe',
+            'false'),
+        'unbound_manual_pose_recomputed': ('actual_redraw_pose_boundary',
+            'bool fixed_pose_reuse = in->secondary_fixed_forecast && !grid_task &&\n        !frame->display_synced;',
+            'bool fixed_pose_reuse = false;'),
+        'unbound_manual_pose_not_held': ('actual_redraw_pose_boundary',
+            'osd_hold_secondary_sample(vo->osd);', '(void)vo->osd;'),
+        'unknown_generation_forgets_fixed_offset': ('secondary_fixed_forecast_offset',
+            'struct vo_internal *in = vo->in;',
+            'struct vo_internal *in = vo->in;\n'
+            '    if (!in->secondary_physical.success_generation)\n'
+            '        in->secondary_fixed_offset.valid = false;'),
+    }
+    results = {}
+    for name, (function, before, after) in specs.items():
+        actual = functions[function]['text']
+        if actual.count(before) != 1 or generated.count(actual) != 1:
+            raise ValueError('V24 actual fault boundary absent/nonunique: ' + name)
+        text = generated.replace(actual, actual.replace(before, after, 1), 1)
+        path = out / (name + '.c')
+        path.write_text(text, encoding='utf-8', newline='\n')
+        execution = execute_c(path, ['-DNDEBUG'])
+        try:
+            measured = json.loads(execution['stdout'])
+        except ValueError:
+            measured = {}
+        results[name] = {**execution,
+            'compiled_and_rejected': execution['exit_code'] == 7 and measured.get('failures', 0) > 0,
+            'result': measured, 'translation_sha256': sha(text.encode()),
+            'mutation_scope': 'generated actual V24 C fragment only; source unchanged'}
     return results
 
 

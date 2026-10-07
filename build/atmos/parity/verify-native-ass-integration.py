@@ -196,6 +196,7 @@ FORECAST_RUNTIME_C = r'''
 static unsigned caller_checks;
 static int64_t fixture_now;
 static bool fixture_forecast_env;
+static bool fixture_fixed_env;
 #define CALLER_CHECK(x) do { caller_checks++; if (!(x)) { \
  fprintf(stderr,"actual caller check %u failed:%d:%s\n",caller_checks,__LINE__,#x);exit(2); } } while(0)
 // Explicit OS/timer/log/record endpoints only. The mpv lock wrappers,
@@ -209,7 +210,8 @@ int64_t mp_thread_cpu_time_ns(mp_thread_id thread_id) { (void)thread_id;return 0
 int64_t mp_time_ns(void) { return fixture_now; }
 void integration_log(const char *fmt, ...) { (void)fmt; }
 char *integration_getenv(const char *name) {
- return fixture_forecast_env && !strcmp(name,"MPV_NATIVE_DISPLAY_FORECAST") ? "1" : NULL;
+ if(!strcmp(name,"MPV_NATIVE_DISPLAY_FORECAST"))return fixture_forecast_env ? "1" : NULL;
+ return fixture_fixed_env && !strcmp(name,"MPV_NATIVE_FIXED_FORECAST") ? "1" : NULL;
 }
 bool mp_ass_pacing_enabled(struct mpv_global *global) { (void)global;return false; }
 void mp_ass_pacing_record(struct mpv_global *global,uint32_t kind,
@@ -348,7 +350,7 @@ static void caller_rate(int hz,int64_t N) {
  struct secondary_ass_physical_point first=secondary_next_sample(&vo,1);
  CALLER_CHECK(first.slot==111);
  struct secondary_ass_physical_point next=secondary_cache_next_sample(&vo,first,1,
-  secondary_ass_physical_point_at(p,112).wall-T);
+  secondary_ass_physical_point_at(p,112).wall-T,osd.secondary_rate);
  CALLER_CHECK(next.slot==112);
  plan=secondary_ass_present_plan_make_forecast(p,next);
  CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
@@ -359,6 +361,60 @@ static void caller_rate(int hz,int64_t N) {
  saved_base=p->last_base_slot;
  secondary_physical_feedback(&vo,&failed,plan.target,&plan);
  CALLER_CHECK(p->last_base_slot==saved_base); // Failed ID cannot consume G.
+}
+
+static void fixed_caller_rate(int hz,int64_t N) {
+ int64_t T=INT64_C(1000000000)/hz;
+ struct vo vo;struct vo_internal in;struct osd_state osd;struct vo_frame frame;
+ fixture_initialize(&vo,&in,&osd,&frame,T,N);
+ in.secondary_fixed_forecast=true;
+ struct secondary_ass_physical *p=&in.secondary_physical;
+ p->success_contiguous=true;
+ const int historical[]={1,0,2,0,3,1,0,4};
+ for(unsigned k=0;k<sizeof(historical)/sizeof(historical[0]);k++) {
+  p->delay=historical[k]; // Distinct synthetic H input, not altered production learner.
+  int64_t G=110+(int64_t)k*N;
+  struct secondary_ass_physical_point point=secondary_ass_physical_point_at(p,G);
+  struct secondary_ass_present_plan plan=secondary_forecast_plan(&vo,point,N,osd.secondary_rate);
+  CALLER_CHECK(plan.valid && plan.base.slot==G && plan.target.slot==G+1);
+  CALLER_CHECK(plan.historical_delay==historical[k] && plan.captured_forecast==1);
+  CALLER_CHECK(in.secondary_fixed_offset.valid && in.secondary_fixed_offset.offset==1);
+  CALLER_CHECK(p->delay==historical[k] && plan.submit==plan.fallback_submit);
+  struct secondary_ass_physical submit_view=secondary_ass_present_plan_view(p);
+  CALLER_CHECK(plan.submit==secondary_ass_physical_submit_time(&submit_view,plan.target.wall));
+  struct secondary_ass_present_plan fresh=secondary_forecast_fresh_plan(&vo,point.wall,point,N,osd.secondary_rate);
+  CALLER_CHECK(fresh.valid && fresh.base.slot==G && fresh.target.slot==G+1);
+  CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
+  double pts=0;CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
+  struct secondary_ass_sample_snapshot snapshot=osd_get_secondary_sample_snapshot(&osd);
+  CALLER_CHECK(snapshot.valid && snapshot.display_forecast && snapshot.sample_slot==G);
+  CALLER_CHECK(snapshot.origin_slot==110 && snapshot.next_slot==G+N);
+  CALLER_CHECK(osd.secondary_sampler.display_slot==G+1 && osd.secondary_sampler.tick==(int64_t)k);
+  actual_registration(&vo,&plan,k+1,G+1);
+  CALLER_CHECK(p->last_base_slot==G && p->submitted[(p->next+31)%32].target_slot==G+1);
+ }
+ // Exact current caller selection uses only a disposable H copy. The
+ // next task remains on the old sampler lattice when retrospective H moves.
+ struct secondary_ass_sample_snapshot snapshot=osd_get_secondary_sample_snapshot(&osd);
+ p->delay=0;struct secondary_ass_physical before=*p;
+ fixture_now=secondary_ass_physical_point_at(p,snapshot.next_slot).wall-T/2;
+ struct secondary_ass_physical_point next=secondary_forecast_next(&vo,snapshot.next_slot,N,fixture_now,osd.secondary_rate);
+ struct secondary_ass_physical view=*p;view.delay=1;
+ struct secondary_ass_physical_point expected=secondary_ass_present_plan_cache_next_forecast(&view,snapshot.next_slot,N,fixture_now);
+ CALLER_CHECK(next.slot==expected.slot && next.wall==expected.wall && !memcmp(&before,p,sizeof(before)));
+ p->delay=3;
+ struct secondary_ass_physical_point changed=secondary_forecast_next(&vo,snapshot.next_slot,N,fixture_now,osd.secondary_rate);
+ CALLER_CHECK(changed.slot==next.slot && changed.wall==next.wall && p->delay==3);
+ // Same-epoch UNKNOWN temporarily refuses plans without resetting offset.
+ p->outlier_pending=true;
+ CALLER_CHECK(!secondary_forecast_plan(&vo,next,N,osd.secondary_rate).valid);
+ CALLER_CHECK(in.secondary_fixed_offset.valid && in.secondary_fixed_offset.offset==1);
+ p->outlier_pending=false;
+ CALLER_CHECK(secondary_forecast_plan(&vo,next,N,osd.secondary_rate).valid);
+ // Existing reset wrapper owns the new state lifecycle and actual OSD getter
+ // continues to report the sampler's logical G, rather than the display D.
+ secondary_reset_physical(&vo,"fixed-caller-test");
+ CALLER_CHECK(!in.secondary_fixed_offset.valid);
 }
 
 int main(void) {
@@ -372,7 +428,32 @@ int main(void) {
  const int rates[]={30,60,120,144,165,240,360};
  for(unsigned k=0;k<sizeof(rates)/sizeof(rates[0]);k++)
   for(int64_t N=1;N<=4;N++)caller_rate(rates[k],N);
- printf("{\"actual_caller_checks\":%u,\"passed\":true,\"GPU\":false}\n",caller_checks);
+ unsigned legacy_checks=caller_checks;
+ // Original 7520 checks remain; the added real quiet clock-rate getter
+ // executes 448 lock/unlock pairs, adding exactly 896 checks.
+ CALLER_CHECK(legacy_checks==8416);
+ for(unsigned bits=0;bits<128;bits++) {
+  flags=(struct vo_internal){0};bool diagnostic=bits&1;
+  flags.secondary_present_plan=bits&2;flags.secondary_present_grid=bits&4;
+  fixture_forecast_env=bits&8;fixture_fixed_env=bits&16;
+  flags.secondary_queue_stage=bits&32;flags.secondary_queue_lead=bits&64;
+  integration_actual_fixed_flag(&flags,diagnostic);
+  CALLER_CHECK(flags.secondary_display_forecast==((bits&15)==15));
+  CALLER_CHECK(flags.secondary_fixed_forecast==((bits&31)==31 && !(bits&96)));
+  struct vo config_vo={.in=&flags};
+  flags.secondary_trace=true;flags.secondary_schedule_trace=true;
+  flags.secondary_fifo_present=true;flags.secondary_split_budget=true;config_vo.pacing_spans=true;
+  struct mp_ass_pacing_record config=integration_actual_config(&config_vo,diagnostic);
+  const int64_t expected[]={1,diagnostic,1,1,flags.secondary_present_grid,flags.secondary_present_plan,1,1,
+   flags.secondary_queue_lead,flags.secondary_queue_stage,flags.secondary_display_forecast,flags.secondary_fixed_forecast,0,0,0,0};
+  for(unsigned n=0;n<16;n++)CALLER_CHECK(config.v[n]==expected[n]);
+ }
+ fixture_fixed_env=false;
+ for(unsigned k=0;k<sizeof(rates)/sizeof(rates[0]);k++)
+  for(int64_t N=1;N<=4;N++)fixed_caller_rate(rates[k],N);
+ if(caller_checks!=15649)return 2;
+ printf("{\"original_legacy_checks\":7520,\"new_clock_getter_checks\":896,\"actual_caller_checks\":%u,\"legacy_caller_checks\":%u,\"fixed_caller_checks\":%u,\"passed\":true,\"GPU\":false}\n",
+  caller_checks,legacy_checks,caller_checks-legacy_checks);
  return 0;
 }
 #endif
@@ -381,7 +462,7 @@ int main(void) {
 
 def forecast_runtime_gate(generated, source, cc):
     quiet = re.search(r"struct secondary_ass_physical_point logical = divisor > 0\s*"
-                      r"\? secondary_ass_present_plan_cache_next_forecast\([^;]+;", generated)
+                      r"\? secondary_forecast_next\([^;]+;", generated)
     sample_slot = re.search(r"\.sample_slot = secondary_ass_sampler_next_slot\(s\)[^;{}]*?: 0,", generated)
     if not quiet or not sample_slot:
         raise ValueError("actual quiet-grid/snapshot sample-slot closure changed")
@@ -396,10 +477,45 @@ def forecast_runtime_gate(generated, source, cc):
         ("snapshot_sample_slot_becomes_D", sample_slot[0], ".sample_slot = s->display_slot,"),
         ("forecast_without_diagnostic_permission", "in->secondary_display_forecast = diagnostic && in->secondary_present_plan", "in->secondary_display_forecast = in->secondary_present_plan"),
     )
+    actual_functions = functions(generated)
+    fixed_specs = (
+        ('fixed_stage_lead_permission_ignored', 'integration_actual_fixed_flag',
+         '!in->secondary_queue_stage && !in->secondary_queue_lead &&', 'true &&'),
+        ('fixed_flag_ignored', 'integration_actual_fixed_flag',
+         'fixed_forecast && !strcmp(fixed_forecast, "1")', '((void)fixed_forecast, true)'),
+        ('CONFIG_fixed_field_lost', 'integration_actual_config',
+         'in->secondary_fixed_forecast}', 'false}'),
+        ('fixed_plan_follows_changing_H', 'secondary_forecast_plan',
+         'secondary_fixed_forecast_offset(vo, logical, divisor, rate)',
+         '((void)divisor, (void)rate, vo->in->secondary_physical.delay)'),
+        ('fixed_selection_follows_changing_H', 'secondary_forecast_next',
+         'return secondary_ass_present_plan_cache_next_fixed_forecast(p, first_slot,\n                                                               divisor, now, offset);',
+         '(void)offset;return secondary_ass_present_plan_cache_next_forecast(p, first_slot, divisor, now);'),
+        ('fixed_submission_returns_to_G', 'secondary_forecast_plan',
+         'return secondary_ass_present_plan_make_fixed_forecast(\n'
+         '            &vo->in->secondary_physical, logical,\n'
+         '            secondary_fixed_forecast_offset(vo, logical, divisor, rate));',
+         'struct secondary_ass_present_plan plan=secondary_ass_present_plan_make_fixed_forecast(\n'
+         '            &vo->in->secondary_physical, logical,\n'
+         '            secondary_fixed_forecast_offset(vo, logical, divisor, rate));\n'
+         '        plan.submit=secondary_ass_present_plan_make_forecast(&vo->in->secondary_physical,logical).submit;\n'
+         '        return plan;'),
+        ('fixed_offset_survives_actual_reset', 'secondary_reset_physical',
+         'in->secondary_fixed_offset = (struct secondary_ass_present_fixed_offset){0};',
+         '(void)in->secondary_fixed_offset;'),
+    )
+    fixed_mutations = []
+    for name, function, before, after in fixed_specs:
+        actual = actual_functions[function]['text']
+        if actual.count(before) != 1 or generated.count(actual) != 1:
+            raise ValueError('V24 actual runtime fault missing/ambiguous: ' + name)
+        fixed_mutations.append((name, actual, actual.replace(before, after, 1)))
     results = {}
+    fixed_results = {}
     with tempfile.TemporaryDirectory(prefix="mpv-v23-forecast-callers-") as directory:
         work = Path(directory)
-        for name, needle, replacement in (("positive", "", ""),) + mutations:
+        cases = (("positive", "", ""), ("positive_NDEBUG", "", "")) + mutations + tuple(fixed_mutations)
+        for name, needle, replacement in cases:
             text = generated
             if needle:
                 if text.count(needle) != 1:
@@ -411,6 +527,8 @@ def forecast_runtime_gate(generated, source, cc):
             command = [str(cc), "-std=c99", "-Werror", "-O1", "-ffunction-sections", "-fdata-sections",
                        "-DMP_V23_FORECAST_CALLER_TEST=1", "-I", str(source), str(cfile),
                        "-Wl,--gc-sections", "-lm", "-o", str(exe)]
+            if name == 'positive_NDEBUG':
+                command.insert(1, '-DNDEBUG')
             compiled = subprocess.run(command, capture_output=True, text=True, timeout=60)
             item = {"compile_returncode": compiled.returncode,
                     "compile_command": command,
@@ -420,7 +538,7 @@ def forecast_runtime_gate(generated, source, cc):
                 executed = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
                 item.update(execute_returncode=executed.returncode, stdout=executed.stdout,
                             stderr=executed.stderr[-4000:])
-                if name == "positive" and executed.returncode == 0:
+                if name in ("positive", "positive_NDEBUG") and executed.returncode == 0:
                     try:
                         item["result"] = json.loads(executed.stdout)
                     except ValueError:
@@ -429,10 +547,22 @@ def forecast_runtime_gate(generated, source, cc):
                 item.get("execute_returncode") == 0 and isinstance(item.get("result"), dict) and
                 item["result"].get("passed") is True and item["result"].get("GPU") is False and
                 type(item["result"].get("actual_caller_checks")) is int and
-                item["result"]["actual_caller_checks"] > 0 if name == "positive" else
+                item["result"]["actual_caller_checks"] == 15649 and
+                item["result"].get("legacy_caller_checks") == 8416 and
+                item["result"].get("original_legacy_checks") == 7520 and
+                item["result"].get("new_clock_getter_checks") == 896 and
+                item["result"].get("fixed_caller_checks") == 7233
+                if name in ("positive", "positive_NDEBUG") else
                 item.get("execute_returncode") not in (None, 0))
-            results[name] = item
-    return {"pass": all(v["pass"] for v in results.values()), "cases": results,
+            if name in {row[0] for row in fixed_mutations}:
+                fixed_results[name] = item
+            elif name == 'positive_NDEBUG':
+                ndebug_result = item
+            else:
+                results[name] = item
+    return {"pass": all(v["pass"] for v in results.values()) and
+                    all(v['pass'] for v in fixed_results.values()) and ndebug_result['pass'],
+            "cases": results, "v24_cases": fixed_results, "positive_NDEBUG": ndebug_result,
             "scope": "ACTUAL_COMPLETE_OSD_STATE_SETTERS_GETTER_SAMPLE_SELECTION_AND_SELECTED_VO_CALLERS_WITH_MOCK_PLATFORM_ENDPOINTS",
             "not_verified": ["real OS wait/threading, libass output discovery, actual full VO loop, GPU, Display/frame pacing"]}
 
@@ -557,12 +687,14 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
     selected = set(FUNCTIONS) | {
         "secondary_forecast_enabled", "secondary_cache_plan", "secondary_capture_grid_plan",
         "secondary_next_sample", "secondary_cache_next_sample",
+        "secondary_fixed_forecast_offset", "secondary_forecast_plan",
+        "secondary_forecast_fresh_plan", "secondary_forecast_next",
         "secondary_set_presentation", "secondary_physical_feedback",
     }
     selected.update(name for name in actual_functions if re.match(r"^secondary_.*stage", name))
     # Preserve real OSD prototypes instead of manufacturing signatures from
     # call operands. Forward selected VO functions retain their actual types.
-    osd_prototypes = ("osd_get_secondary_physical_next_sample_slot",
+    osd_prototypes = ("osd_get_secondary_clock_rate", "osd_get_secondary_physical_next_sample_slot",
         "osd_get_secondary_physical_next_sample_time", "osd_get_secondary_physical_sample_divisor",
         "osd_set_secondary_physical_forecast_time", "osd_set_secondary_physical_presentation_time",
         "osd_set_secondary_presentation_time", "osd_hold_secondary_sample", "osd_reset_secondary_clock")
@@ -675,6 +807,28 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
     fragments.append({"file": "video/out/vo.c", "function": "vo_thread",
                       "context": "actual_default_off_forecast_env_authorization",
                       "sha256": hashlib.sha256(piece.encode()).hexdigest()})
+    fixed_match = re.search(r"\bin->secondary_fixed_forecast\s*=[^;]+;", thread["masked"][flag_start:])
+    if not fixed_match:
+        raise ValueError("actual default-off fixed forecast authorization absent")
+    fixed_start = thread["text"].index('    const char *fixed_forecast = getenv(', flag_start)
+    fixed_piece = thread["text"][fixed_start:flag_start + fixed_match.end()]
+    chunks.append("\n#define getenv integration_getenv\n"
+                  "static void integration_actual_fixed_flag(struct vo_internal *in, bool diagnostic) {\n" +
+                  "integration_actual_forecast_flag(in,diagnostic);\n" + fixed_piece + "\n}\n#undef getenv\n")
+    fragments.append({"file": "video/out/vo.c", "function": "vo_thread",
+                      "context": "actual_default_off_fixed_forecast_env_authorization",
+                      "sha256": hashlib.sha256(fixed_piece.encode()).hexdigest()})
+    config_start = thread["text"].index("struct mp_ass_pacing_record record =", flag_start)
+    config_open = thread["masked"].index("{", config_start)
+    config_end = balanced(thread["masked"], config_open)
+    config_piece = thread["text"][config_start:config_end + 1]
+    if "in->secondary_fixed_forecast" not in config_piece or "MP_ASS_PACING_CONFIG" not in thread["text"][config_end:config_end + 120]:
+        raise ValueError("actual twelve-field CONFIG writer closure changed")
+    chunks.append("\nstatic struct mp_ass_pacing_record integration_actual_config(struct vo *vo, bool diagnostic) {\n"
+                  "struct vo_internal *in=vo->in;\n" + config_piece + "\nreturn record;\n}\n")
+    fragments.append({"file": "video/out/vo.c", "function": "vo_thread",
+                      "context": "actual_CONFIG_twelve_fields_plus_four_reserved_zeros",
+                      "sha256": hashlib.sha256(config_piece.encode()).hexdigest()})
     gpu_functions = functions(read("video/out/vo_gpu_next.c"))
     closure_errors = []
     stage = gpu_functions.get("pacing_gpu_stage")

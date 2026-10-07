@@ -12,11 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       expected_main_tree:
-        description: Root-frozen exact V23 main Git tree (40 lowercase hex)
+        description: Root-frozen exact V24 main Git tree (40 lowercase hex)
         required: true
         type: string
       expected_atmos_tree:
-        description: Root-frozen exact V23 Atmos Git tree (40 lowercase hex)
+        description: Root-frozen exact V24 Atmos Git tree (40 lowercase hex)
         required: true
         type: string
 

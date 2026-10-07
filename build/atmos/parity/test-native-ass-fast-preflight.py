@@ -1,4 +1,4 @@
-"""Fast CPU GCC gate for exact V23 replay; no dependencies, SDK, GPU or core build."""
+"""Fast CPU GCC gate for exact V24 replay; no dependencies, SDK, GPU or core build."""
 import argparse
 import ast
 import hashlib
@@ -19,6 +19,12 @@ ARCHIVE_SHA = '4d104937a06fbac23e79eb91019b4ee834ea516eb4b8d5574acae15c3fc8933d'
 PARITY_SHA = 'e260b59f67babd3c5a94edd98611b6ea7e37426666fcaaef9ca19a8a232cb207'
 BASELINE_GATE_SHA = '670b01d525a6ab7790c0643606f262b2ba8da0d79d797ec54a95c9592ef61348'
 V22_REFERENCE_GATE_SHA = 'dbaed04501303ea866ca1d3bacc9b69ed173724dbbf1e82fad2d385fcf4d40b9'
+V22_SOURCE_COMMIT = 'e88232a260f8a1764f1df7747e162ebcdb63adee'
+V22_LINUX_TREE = 'e43fa32e4841ce1562f508293af7fc8371553d3f'
+V22_PATCH_SHA = 'a18de8b2528d1014adce5dd95d0cc2293a011203c753eeb6b5a515df4c3b1a04'
+V24_SOURCE_COMMIT = 'b92d96326d9e797ccc763b15e7bbbf1d9195f64a'
+V24_SOURCE_TREE = '8815cb8d634d1b48b27367367c2b2df38abee23a'
+V24_PATCH_SHA = '40dfadefd8ab98c764faea2bf8e8dc54281f63ed9a87f6536773c5a5c0c16ab8'
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
 # V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
 ATMOS_ENTRIES = '''
@@ -71,6 +77,24 @@ def exact_delta(raw):
     require(raw.strip().splitlines() == ATMOS_ENTRIES, 'Existing19 Atmos mode/blob/status/path entries changed')
 
 
+def locked_v22_reference(source, main_ref, query=git):
+    """Pin the actual V22 tree; source commit and replay commit stay distinct."""
+    rows = query(source, 'log', '--format=%H %T', main_ref).splitlines()
+    require(rows and all(re.fullmatch('[0-9a-f]{40} [0-9a-f]{40}', row) for row in rows),
+            'Malformed exact replay ancestry')
+    matches = [row.split()[0] for row in rows if row.split()[1] == V22_LINUX_TREE]
+    require(len(matches) == 1, 'Locked V22 archive tree missing/repeated; no relative-ref fallback')
+    ref = matches[0]
+    require(query(source, 'rev-list', '--count', ref) == '51' and
+            query(source, 'rev-parse', ref+'^{tree}') == V22_LINUX_TREE,
+            'Locked V22 reference layer/tree mismatch')
+    ready_ref = query(source, 'rev-parse', ref+'^')
+    require(re.fullmatch('[0-9a-f]{40}', ready_ref) and
+            query(source, 'rev-list', '--count', ready_ref) == '50',
+            'Locked V22 parent is not the exact fifty-layer V21 readiness reference')
+    return ref, ready_ref
+
+
 def lock_inputs():
     lock = json.loads((HERE/'source-lock.json').read_text(encoding='utf-8'))
     require(lock['mpv_base'] == BASE_COMMIT, 'Source lock upstream base changed')
@@ -87,8 +111,14 @@ def lock_inputs():
             'Frozen V22 integration reference bytes changed')
     require(len([name for name in lock['common_patches'] if name.startswith('build/bluray-menu/patches/0040-')]) == 1,
             'Exactly one locked V22 0040 patch is required')
+    require(lock['common_patches'].get('build/bluray-menu/patches/0040-native-ass-coherent-queue-lead.patch') == V22_PATCH_SHA,
+            'Frozen V22 e882 patch provenance changed')
     require(len([name for name in lock['common_patches'] if name.startswith('build/bluray-menu/patches/0041-')]) == 1,
             'Exactly one locked V23 0041 patch is required')
+    require(len([name for name in lock['common_patches'] if name.startswith('build/bluray-menu/patches/0042-')]) == 1,
+            'Exactly one locked V24 0042 patch is required')
+    require(lock['common_patches'].get('build/bluray-menu/patches/0042-native-ass-fixed-display-phase.patch') == V24_PATCH_SHA,
+            'Frozen V24 b92 single-email patch provenance changed')
     for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py',
                  HERE/'verify-native-ass-integration-v22-baseline.py',
                  HERE/'verify-native-ass-queue-stage-caller.py', Path(__file__).resolve(),
@@ -178,6 +208,7 @@ FORECAST_PURE_CASES = (
     ('secondary_ass_queue_stage.c', 'secondary_ass_queue_stage: 292 checks passed', 292, None),
     ('secondary_ass_stage_prefix.c', 'secondary_ass_stage_prefix: 87529 checks, 5894 feedback frames passed', 87529, 5894),
     ('secondary_ass_display_forecast.c', 'display-forecast: 59483690 checks; 2148322 complete feedback frames; CPU only', 59483690, 2148322),
+    ('secondary_ass_fixed_forecast.c', '{"checks":5567,"feedback_frames":240,"historical_changes":40,"cpu_only":true,"Display_PASS":false}', 5567, 240),
 )
 
 
@@ -238,6 +269,7 @@ def execute_stage_caller(source, baseline, cc, work):
         result = item.get('result', {})
         require(item.get('compiled') is True and item.get('compile_returncode') == 0 and
                 item.get('exit_code') == 0 and result.get('checks') == 102298 and
+                result.get('v24_checks') == 1047 and
                 result.get('failures') == 0 and result.get('actual_feedback_frames') == 312 and
                 result.get('early_prepare_positive') == 12,
                 'Actual VO stage positive execution/count mismatch: '+mode)
@@ -245,9 +277,14 @@ def execute_stage_caller(source, baseline, cc, work):
     require(len(mutants) == 15 and all(item.get('compiled') is True and
             item.get('compile_returncode') == 0 and item.get('compiled_and_rejected') is True
             for item in mutants.values()), 'Actual VO stage fifteen runtime mutants did not compile and reject')
+    fixed_mutants = measured.get('v24_mutants', {})
+    require(len(fixed_mutants) == 5 and all(item.get('compiled') is True and
+            item.get('compile_returncode') == 0 and item.get('compiled_and_rejected') is True
+            for item in fixed_mutants.values()), 'Actual V24 probe/hold/fixed-offset faults did not compile and reject')
     return {'command':command, 'evidence_path':str(proof.relative_to(work)),
             'evidence_sha256':sha(proof), 'tool_sha256':sha(tool),
-            'actual_C':modes, 'mutants':mutants, 'source_sha256':measured['source_sha256'],
+            'actual_C':modes, 'mutants':mutants, 'v24_mutants':fixed_mutants,
+            'source_sha256':measured['source_sha256'],
             'scope':measured['scope'], 'OSD_getter_actual_body_compiled':False,
             'not_covered':measured['not_covered']}
 
@@ -341,6 +378,31 @@ def self_test():
         try: exact_delta('\n'.join(altered))
         except ValueError: checks+=1
         else: raise ValueError('Changed Atmos entry accepted')
+    ref,ready='c'*40,'d'*40
+    answers={('log','--format=%H %T','a'*40):ref+' '+V22_LINUX_TREE,
+             ('rev-list','--count',ref):'51',('rev-parse',ref+'^{tree}'):V22_LINUX_TREE,
+             ('rev-parse',ref+'^'):ready,('rev-list','--count',ready):'50'}
+    def query(_source,*args):
+        return answers[args]
+    require(locked_v22_reference(None,'a'*40,query) == (ref,ready), 'Exact V22 selector failed')
+    checks+=1
+    defects=[(('log','--format=%H %T','a'*40),'a'*40+' '+'b'*40),
+             (('log','--format=%H %T','a'*40),(ref+' '+V22_LINUX_TREE+'\n')*2),
+             (('log','--format=%H %T','a'*40),'UNKNOWN'),
+             (('rev-list','--count',ref),'52'),
+             (('rev-parse',ref+'^{tree}'),'e'*40),
+             (('rev-parse',ref+'^'),'UNKNOWN'),
+             (('rev-list','--count',ready),'51')]
+    for key,bad in defects:
+        original=answers[key];answers[key]=bad
+        try:
+            locked_v22_reference(None,'a'*40,query)
+        except ValueError:
+            checks+=1
+        else:
+            raise ValueError('Foreign/drifting V22 selector input accepted')
+        finally:
+            answers[key]=original
     print(json.dumps({'status':'CPU_INPUT_REFUSAL_SELF_TEST_PASS','checks':checks,'gpu_started':False}))
 
 
@@ -374,8 +436,8 @@ def main():
         require(sha(args.archive) == ARCHIVE_SHA, 'Exact upstream archive SHA mismatch')
         inputs=lock_inputs();report['config_inputs_sha256']=inputs
         require(git(source,'status','--porcelain') == '', 'Fresh replay is dirty')
-        require(git(source,'rev-list','--count','HEAD') == '53', 'Exact V23 replay must contain53 Git layers')
-        require(git(source,'rev-list','--count','HEAD^') == '52', 'Exact main replay must contain52 Git layers')
+        require(git(source,'rev-list','--count','HEAD') == '54', 'Exact V24 replay must contain54 Git layers')
+        require(git(source,'rev-list','--count','HEAD^') == '53', 'Exact main replay must contain53 Git layers')
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
@@ -385,19 +447,26 @@ def main():
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
         report['replay']={'main_commit':main_ref,'main_tree':main_tree,'atmos_commit':atmos_ref,'atmos_tree':atmos_tree,
-            'commit_count':53,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+            'commit_count':54,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+        report['candidate_source_provenance'] = {'commit':V24_SOURCE_COMMIT,
+            'windows_tree':V24_SOURCE_TREE, 'single_email_patch_sha256':V24_PATCH_SHA,
+            'replay_commit_metadata_equal_to_author_commit':False}
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
         report['compiler']={'path':str(cc),'version':version,'sha256':sha(cc)}
         spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration.py')
         gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
+        legacy_ref,legacy_ready_ref=locked_v22_reference(source,main_ref)
         legacy_root=work/'legacy-reference-v22'
-        subprocess.run(['git','-C',str(source),'worktree','add','--detach',str(legacy_root),main_ref+'^'],
+        subprocess.run(['git','-C',str(source),'worktree','add','--detach',str(legacy_root),legacy_ref],
                        check=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
         require(git(legacy_root,'rev-list','--count','HEAD') == '51' and not git(legacy_root,'status','--porcelain'),
                 'Legacy V22 reference must contain exactly51 layers and be clean')
         report['legacy_reference']={'commit':git(legacy_root,'rev-parse','HEAD'),
                                     'tree':git(legacy_root,'rev-parse','HEAD^{tree}'),
+                                    'source_provenance_commit':V22_SOURCE_COMMIT,
+                                    'locked_0040_sha256':V22_PATCH_SHA,
+                                    'V21_original_ready_reference':legacy_ready_ref,
                                     'scope':'LEGACY_REFERENCE_REGRESSION_NOT_V23_CALLER'}
         for variant,ref in [('main',main_ref),('atmos',atmos_ref)]:
             variant_root=work/variant
@@ -419,9 +488,12 @@ def main():
             actual_forecast = compile_result.get('cpu_forecast_caller_execution', {})
             require(actual_forecast.get('pass') is True and len(actual_forecast.get('cases', {})) == 8,
                     'Current complete forecast caller positive/seven runtime mutants did not execute: '+variant)
+            require(len(actual_forecast.get('v24_cases', {})) == 7 and
+                    actual_forecast.get('positive_NDEBUG', {}).get('pass') is True,
+                    'Actual V24 fixed flag/CONFIG/selection/reset runtime cases did not execute: '+variant)
             test_work = work/('queue-tests-'+variant)
             test_work.mkdir()
-            positive['executed_queue_tests'] = execute_queue_tests(gate,variant_root,legacy_root,main_ref+'^^',cc,test_work)
+            positive['executed_queue_tests'] = execute_queue_tests(gate,variant_root,legacy_root,legacy_ready_ref,cc,test_work)
             forecast_work = work/('forecast-tests-'+variant)
             forecast_work.mkdir()
             positive['executed_forecast_tests'] = execute_forecast_tests(gate, variant_root, cc, forecast_work)
@@ -434,7 +506,7 @@ def main():
             require(sha(CONFIG/name) == digest, 'Config input changed during fast preflight: '+name)
         require(not git(source,'status','--porcelain'), 'Original replay changed during preflight')
         require(not git(legacy_root,'status','--porcelain'), 'Legacy V22 reference changed during preflight')
-        report.update(status='EXACT_V23_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
+        report.update(status='EXACT_V24_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
             full_osd_getter_gcc_verified=True,negative_count_per_variant=15)
         return 0
     except BaseException as error:

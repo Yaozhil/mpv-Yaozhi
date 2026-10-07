@@ -55,7 +55,8 @@
     "build/bluray-menu/patches/0038-secondary-ass-quiet-gap-hold.patch": "12ea5359df849fb4630dd8dee55fcc8c12fd01cbe18daad873afc9c730e8b012",
     "build/bluray-menu/patches/0039-native-ass-wait-deadline-cpu-spans.patch": "2ec81365de143e1c9166a39f7ef984d8f79119dd03e5c83f54660ae10200217a",
     "build/bluray-menu/patches/0040-native-ass-coherent-queue-lead.patch": "a18de8b2528d1014adce5dd95d0cc2293a011203c753eeb6b5a515df4c3b1a04",
-    "build/bluray-menu/patches/0041-native-ass-display-forecast-staged-queue.patch": "251204787206a5dc383cb7679f8eaee6fac1d2ce0505d90f0516f02a3ce2abc3"
+    "build/bluray-menu/patches/0041-native-ass-display-forecast-staged-queue.patch": "251204787206a5dc383cb7679f8eaee6fac1d2ce0505d90f0516f02a3ce2abc3",
+    "build/bluray-menu/patches/0042-native-ass-fixed-display-phase.patch": "40dfadefd8ab98c764faea2bf8e8dc54281f63ed9a87f6536773c5a5c0c16ab8"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"

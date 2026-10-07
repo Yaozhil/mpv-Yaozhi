@@ -1,0 +1,766 @@
+From 7c1df10e4483cfb73194f140ee9659f008c3ff1d Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 7 Oct 2026 14:48:24 +0800
+Subject: [PATCH] vo: retain fixed ASS display phase and exact secondary QPC
+ observations
+
+---
+ test/meson.build                       |   5 +
+ test/secondary_ass_fixed_forecast.c    | 218 +++++++++++++++++++++++++
+ video/out/d3d11/context.c              |  11 +-
+ video/out/secondary_ass_present_plan.h |  84 ++++++++++
+ video/out/vo.c                         | 191 ++++++++++++++++++----
+ 5 files changed, 475 insertions(+), 34 deletions(-)
+ create mode 100644 test/secondary_ass_fixed_forecast.c
+
+diff --git a/test/meson.build b/test/meson.build
+index 4fd3f84..b44b2ef 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -123,6 +123,11 @@ secondary_ass_stage_prefix = executable('secondary-ass-stage-prefix',
+     dependencies: libm)
+ test('secondary-ass-stage-prefix', secondary_ass_stage_prefix)
+ 
++secondary_ass_fixed_forecast = executable('secondary-ass-fixed-forecast',
++    'secondary_ass_fixed_forecast.c', include_directories: incdir,
++    dependencies: libm)
++test('secondary-ass-fixed-forecast', secondary_ass_fixed_forecast)
++
+ format = executable('format', files('format.c'), include_directories: incdir, link_with: test_utils)
+ test('format', format)
+ 
+diff --git a/test/secondary_ass_fixed_forecast.c b/test/secondary_ass_fixed_forecast.c
+new file mode 100644
+index 0000000..8b78ff6
+--- /dev/null
++++ b/test/secondary_ass_fixed_forecast.c
+@@ -0,0 +1,218 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "sub/secondary_ass_clock.h"
++#include "video/out/secondary_ass_present_plan.h"
++
++// Actual production helper calls with synthetic count/Display input only.
++// These checks do not establish API, Ready, or physical Display performance.
++static unsigned checks, feedback_frames, historical_changes;
++#define CHECK(x) do { checks++; if (!(x)) { \
++    fprintf(stderr, "fixed forecast check %u line %d: %s\n", \
++            checks, __LINE__, #x); exit(2); } } while (0)
++static const int64_t origin = INT64_C(1000000000);
++
++static struct secondary_ass_physical state(int Hz)
++{
++    int64_t T = INT64_C(1000000000) / Hz;
++    return (struct secondary_ass_physical){
++        .phase = origin, .phase_slot = 100, .interval = T, .epoch = 7,
++        .sync_qpc_ns = origin, .sync_count = 100, .sync_slot = 100,
++        .sync_segment_consistent = true,
++        .measure_qpc_ns = origin, .measure_count = 100,
++        .periods = {T, T, T}, .period_count = 3, .period_next = 3,
++        .delay = 1, .delay_samples = {1, 1, 1}, .delay_count = 3,
++        .success_generation = 3, .success_contiguous = true,
++        .success_first_id = 1, .success_last_id = 1, .historical_id = 1,
++        .last_base_slot = 100,
++    };
++}
++
++static void feedback(struct secondary_ass_physical *p,
++    const struct secondary_ass_present_plan *plan, uint64_t id, int late)
++{
++    struct secondary_ass_physical_point actual =
++        secondary_ass_physical_point_at(p, plan->target.slot + late);
++    int old_H = p->delay;
++    CHECK(secondary_ass_physical_submit_planned_point(p, id, plan->epoch,
++                                                     plan->base, plan->target));
++    secondary_ass_physical_update_observed(p, false, id, plan->target,
++        actual.wall, actual.wall, (uint32_t)actual.slot, (uint32_t)actual.slot,
++        id, p->interval);
++    secondary_ass_physical_record_present(p, true, id, 3, 1);
++    CHECK(p->historical_id == id && p->last_submit_id == id);
++    CHECK(p->phase_slot == actual.slot && p->phase == actual.wall);
++    unsigned n = (p->next + 31) % 32;
++    CHECK(p->submitted[n].base_slot == plan->base.slot);
++    CHECK(p->submitted[n].target_slot == plan->target.slot);
++    historical_changes += p->delay != old_H;
++    feedback_frames++;
++}
++
++static void chain(int Hz, int N)
++{
++    struct secondary_ass_physical p = state(Hz);
++    struct secondary_ass_present_fixed_offset fixed = {0};
++    struct secondary_ass_sampler sampler = {0};
++    struct secondary_ass_clock clock = {
++        .valid = true, .pts = 10, .speed = 1, .wall = origin,
++    };
++    double rate = 1e9 / ((double)p.interval * N);
++    for (unsigned tick = 1; tick <= 24; tick++) {
++        int64_t G = 100 + tick * N;
++        struct secondary_ass_physical_point g = secondary_ass_physical_point_at(&p, G);
++        struct secondary_ass_physical before = p;
++        int offset = secondary_ass_present_fixed_offset_get(&fixed, &p, g, N, rate);
++        CHECK(offset == 1 && fixed.valid);
++        CHECK(!memcmp(&p, &before, sizeof(p)));
++        struct secondary_ass_present_fixed_offset captured_offset = fixed;
++        struct secondary_ass_present_plan plan =
++            secondary_ass_present_plan_make_fixed_forecast(&p, g, offset);
++        CHECK(plan.valid && plan.display_forecast && plan.captured_forecast == 1);
++        CHECK(plan.base.slot == G && plan.base.wall == g.wall);
++        CHECK(plan.target.slot == G + 1 && plan.target.wall == g.wall + p.interval);
++        CHECK(plan.historical_delay == p.delay);
++        CHECK(plan.submit == plan.target.wall - p.interval +
++            (p.interval / 4 < 1000000 ? p.interval / 4 : 1000000));
++        CHECK(plan.submit == plan.fallback_submit && plan.deadline == plan.target.wall);
++        CHECK(secondary_ass_sampler_update_physical_forecast(&sampler, &clock, rate,
++            plan.target.wall, plan.base.slot, plan.target.slot,
++            p.phase, p.phase_slot, p.interval, p.epoch));
++        CHECK(sampler.origin_slot == 100 + N && sampler.tick == tick - 1);
++        CHECK(sampler.display_slot == G + 1 && sampler.sample_wall == plan.target.wall);
++        CHECK(secondary_ass_sampler_next_slot(&sampler) == G + N);
++        struct secondary_ass_present_plan captured_plan = plan;
++        CHECK(!secondary_ass_sampler_update_physical_forecast(&sampler, &clock, rate,
++            plan.target.wall, plan.base.slot, plan.target.slot,
++            p.phase, p.phase_slot, p.interval, p.epoch));
++        CHECK(sampler.tick == tick - 1 && sampler.sample_wall == captured_plan.target.wall);
++        int late = N == 2 && ((tick - 1) / 3) % 2 == 0;
++        feedback(&p, &plan, tick + 1, late);
++        CHECK(p.epoch == 7 && !p.outlier_pending);
++        CHECK(!memcmp(&fixed, &captured_offset, sizeof(fixed)));
++        CHECK(!memcmp(&plan, &captured_plan, sizeof(plan)));
++        CHECK(sampler.origin_slot == 100 + N && sampler.tick == tick - 1);
++    }
++}
++
++static void identity_and_misses(void)
++{
++    struct secondary_ass_physical p = state(144);
++    struct secondary_ass_present_fixed_offset fixed = {0};
++    double rate = 1e9 / ((double)p.interval * 2);
++    struct secondary_ass_physical_point g = secondary_ass_physical_point_at(&p, 102);
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == 1);
++    struct secondary_ass_present_fixed_offset saved = fixed;
++    struct secondary_ass_present_plan captured =
++        secondary_ass_present_plan_make_fixed_forecast(&p, g, 1);
++    struct secondary_ass_present_plan saved_plan = captured;
++
++    p.success_generation = 0;
++    p.delay = 3;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == -1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    CHECK(!secondary_ass_present_plan_make_fixed_forecast(&p, g, 1).valid);
++    CHECK(!memcmp(&captured, &saved_plan, sizeof(captured)));
++    p.success_generation = 3;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == 1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    CHECK(secondary_ass_present_plan_make_fixed_forecast(&p, g, 1).target.slot == 103);
++
++    secondary_ass_physical_record_present(&p, false, 2, 0, 1);
++    CHECK(!p.success_contiguous);
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == -1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    CHECK(!secondary_ass_present_plan_make_fixed_forecast(&p, g, 1).valid);
++    secondary_ass_physical_record_present(&p, true, 2, 3, 1);
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == 1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 0, 0) == -1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    p.epoch = 0;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == -1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    p.epoch = saved.epoch;
++
++    p.outlier_pending = true;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == -1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    p.outlier_pending = false;
++    p.sync_segment_consistent = false;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == -1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    p.sync_segment_consistent = true;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == 1);
++    p.interval -= 17; // Local projection refinement is not a cadence change.
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p,
++        secondary_ass_physical_point_at(&p, 102), 2, rate) == 1);
++    CHECK(!memcmp(&saved, &fixed, sizeof(fixed)));
++    g = secondary_ass_physical_point_at(&p, 102);
++
++    // A true nonzero backend generation change is a new identity, unlike 0.
++    p.success_generation = 4;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == 3);
++    CHECK(fixed.generation == 4 && fixed.offset == 3);
++    p.epoch++;
++    p.delay = 0;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p, g, 2, rate) == 0);
++    CHECK(fixed.epoch == p.epoch);
++    p.delay = 2;
++    CHECK(secondary_ass_present_fixed_offset_get(&fixed, &p,
++        secondary_ass_physical_point_at(&p, 102), 1, rate * 2) == 2);
++    CHECK(fixed.divisor == 1 && fixed.rate == rate * 2);
++
++    // Dynamic H must affect neither expiry nor captured D in this lifecycle.
++    p = state(144);
++    g = secondary_ass_physical_point_at(&p, 102);
++    p.delay = 0;
++    struct secondary_ass_physical before = p;
++    int64_t now = g.wall + p.interval / 2;
++    CHECK(secondary_ass_present_plan_cache_next_forecast(&p, 102, 2, now).slot == 104);
++    CHECK(secondary_ass_present_plan_cache_next_fixed_forecast(&p, 102, 2, now, 1).slot == 102);
++    CHECK(!memcmp(&p, &before, sizeof(p)));
++    p.delay = 3;
++    CHECK(secondary_ass_present_plan_cache_next_fixed_forecast(&p, 102, 2, now, 1).slot == 102);
++    captured = secondary_ass_present_plan_make_fixed_forecast(&p, g, 1);
++    CHECK(captured.valid && captured.historical_delay == 3 && captured.target.slot == 103);
++    CHECK(captured.submit == g.wall + 1000000);
++    p.historical_id = 10;
++    p.success_first_id = 10;
++    p.success_last_id = 13;
++    p.success_contiguous = true;
++    struct secondary_ass_present_plan blocked =
++        secondary_ass_present_plan_make_fixed_forecast(&p, g, 1);
++    CHECK(!blocked.valid && blocked.target.slot == 103 && blocked.fifo_lower == 104);
++    CHECK(captured.valid && captured.target.slot == 103);
++    CHECK(secondary_ass_present_plan_cache_next_fixed_forecast(&p, 102, 2, now, 1).slot == 104);
++    CHECK(!secondary_ass_present_plan_make_fixed_forecast(&p, g, -1).valid);
++    CHECK(!secondary_ass_present_plan_make_fixed_forecast(&p, g, 5).valid);
++
++    // Real budget helper: a shifted S may consume fresh reservation even
++    // though the original G-window had enough time. Preserve the original F.
++    int64_t F = captured.submit + 2000000;
++    CHECK(secondary_ass_budget_before_deadline(captured.submit - p.interval,
++        F, 1500000, 1500000, 1000000));
++    CHECK(!secondary_ass_budget_before_deadline(captured.submit,
++        F, 1500000, 1500000, 1000000));
++    CHECK(secondary_ass_budget_probe_due(1000000, 40000000,
++        14000000, origin, origin));
++    CHECK(!secondary_ass_budget_probe_due(1000000, 40000000,
++        14000000, origin, origin + 1));
++}
++
++int main(void)
++{
++    const int rates[] = {60, 120, 144, 165, 240};
++    for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
++        chain(rates[i], 1);
++        chain(rates[i], 2);
++    }
++    identity_and_misses();
++    CHECK(historical_changes > 0);
++    printf("{\"checks\":%u,\"feedback_frames\":%u,\"historical_changes\":%u,"
++           "\"cpu_only\":true,\"Display_PASS\":false}\n",
++           checks, feedback_frames, historical_changes);
++    return 0;
++}
+diff --git a/video/out/d3d11/context.c b/video/out/d3d11/context.c
+index 3a44dca..719af3d 100644
+--- a/video/out/d3d11/context.c
++++ b/video/out/d3d11/context.c
+@@ -965,8 +965,11 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+         // Independent raw observation for the secondary clock. Primary video
+         // synchronization retains its existing one-step estimator below.
+         info->secondary_sync_qpc_ns = qpc_to_ns(sw, stats.SyncQPCTime.QuadPart);
+-        info->secondary_sync_time = mp_time_ns() +
+-            info->secondary_sync_qpc_ns - qpc_ns_now(sw);
++        // QPC uses the same raw nanosecond scale as the Windows mpv timer.
++        // Convert with its fixed initialization offset; two live clock reads
++        // can inject scheduler preemption into an already observed timestamp.
++        info->secondary_sync_time =
++            mp_time_ns_from_raw_time(info->secondary_sync_qpc_ns);
+         info->secondary_sync_refresh_count = stats.SyncRefreshCount;
+         info->secondary_present_refresh_count = stats.PresentRefreshCount;
+         info->secondary_present_id = stats.PresentCount;
+@@ -985,8 +988,8 @@ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+         int32_t refresh_offset = stats.PresentRefreshCount - stats.SyncRefreshCount;
+         int64_t actual_qpc = stats.SyncQPCTime.QuadPart +
+             (int64_t)refresh_offset * p->vsync_duration_qpc;
+-        info->secondary_display_time = mp_time_ns() +
+-            qpc_to_ns(sw, actual_qpc) - qpc_ns_now(sw);
++        info->secondary_display_time =
++            mp_time_ns_from_raw_time(qpc_to_ns(sw, actual_qpc));
+         info->secondary_present_id = stats.PresentCount;
+     }
+ 
+diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
+index 57566e1..76a7736 100644
+--- a/video/out/secondary_ass_present_plan.h
++++ b/video/out/secondary_ass_present_plan.h
+@@ -2,6 +2,8 @@
+ #ifndef MP_SECONDARY_ASS_PRESENT_PLAN_H
+ #define MP_SECONDARY_ASS_PRESENT_PLAN_H
+ 
++#include <math.h>
++
+ #include "secondary_ass_physical.h"
+ 
+ // A planned eligibility base is not the actual Present-entry cycle.  Keep
+@@ -211,4 +213,86 @@ secondary_ass_present_plan_cache_next_forecast(
+                        : none;
+ }
+ 
++// A VO-owned fixed offset is separate from the retrospective delay learner.
++// Cadence and lifecycle identity change explicitly; one timing outlier does
++// not reinitialize this state or choose another offset for a captured task.
++struct secondary_ass_present_fixed_offset {
++    bool valid;
++    int offset;
++    int64_t divisor;
++    double rate;
++    uint64_t epoch, generation;
++};
++
++static inline int secondary_ass_present_fixed_offset_get(
++    struct secondary_ass_present_fixed_offset *fixed,
++    const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point logical, int64_t divisor, double rate)
++{
++    bool known_rate = isfinite(rate) && rate > 0;
++    if (fixed->valid &&
++        ((p->epoch && fixed->epoch != p->epoch) ||
++         (p->success_generation && fixed->generation != p->success_generation) ||
++         (divisor > 0 && fixed->divisor != divisor) ||
++         (known_rate && fixed->rate != rate)))
++        *fixed = (struct secondary_ass_present_fixed_offset){0};
++    // Unknown identity cannot reset the established offset or revive a plan.
++    // A later identified observation in the same lifecycle retains that offset.
++    if (!p->epoch || !p->success_generation || divisor <= 0 || !known_rate ||
++        p->epoch_exhausted || p->outlier_pending || !p->sync_segment_consistent ||
++        !p->success_contiguous || p->phase <= 0 || p->phase_slot <= 0)
++        return -1;
++    if (!fixed->valid) {
++        struct secondary_ass_present_plan first =
++            secondary_ass_present_plan_make_forecast(p, logical);
++        if (first.valid && first.captured_forecast >= 0 &&
++            first.captured_forecast <= 4)
++            *fixed = (struct secondary_ass_present_fixed_offset){
++                .valid = true, .offset = first.captured_forecast,
++                .epoch = p->epoch, .generation = p->success_generation,
++                .divisor = divisor, .rate = rate,
++            };
++    }
++    return fixed->valid ? fixed->offset : -1;
++}
++
++static inline struct secondary_ass_present_plan
++secondary_ass_present_plan_make_fixed_forecast(
++    const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point logical, int offset)
++{
++    struct secondary_ass_present_plan none = {.display_forecast = true};
++    if (offset < 0 || offset > 4 || !p->success_generation || !p->success_contiguous ||
++        p->outlier_pending || !p->sync_segment_consistent || logical.slot <= 0 ||
++        logical.slot > INT64_MAX - offset)
++        return none;
++    struct secondary_ass_present_plan plan = secondary_ass_present_plan_make(p,
++        logical, secondary_ass_physical_point_at(p, logical.slot + offset));
++    plan.display_forecast = true;
++    plan.captured_forecast = offset;
++    // The historical base stays G, preserving A-G feedback. The new submit
++    // cycle is D's existing conservative window, not the old G window.
++    plan.submit = plan.fallback_submit;
++    // Keep an unreachable captured D as a miss, rather than moving its pose
++    // off the divided lattice to the next available FIFO position.
++    if (plan.fifo_known && plan.fifo_lower > plan.target.slot)
++        plan.valid = false;
++    return plan;
++}
++
++static inline struct secondary_ass_physical_point
++secondary_ass_present_plan_cache_next_fixed_forecast(
++    const struct secondary_ass_physical *p, int64_t first_slot,
++    int64_t divisor, int64_t now, int offset)
++{
++    if (offset < 0 || offset > 4)
++        return (struct secondary_ass_physical_point){0};
++    // Only selection uses the captured offset. This disposable copy must
++    // never enter registration or feedback, whose original H remains true.
++    struct secondary_ass_physical selection = *p;
++    selection.delay = offset;
++    return secondary_ass_present_plan_cache_next_forecast(&selection,
++                                                         first_slot, divisor, now);
++}
++
+ #endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index bb92b72..11ddd55 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -189,6 +189,8 @@ struct vo_internal {
+     bool secondary_fifo_present; // isolated opt-in FIFO submission experiment
+     bool secondary_present_plan; // isolated planned-base consumption experiment
+     bool secondary_display_forecast; // opt-in separate eligibility/display slots
++    bool secondary_fixed_forecast; // opt-in stable pose offset, default off
++    struct secondary_ass_present_fixed_offset secondary_fixed_offset; // VO only
+     bool secondary_split_budget; // opt-in measured submission envelope forecast
+     bool secondary_queue_lead; // opt-in coherent native queue admission
+     bool secondary_queue_stage; // opt-in early ownership, normal render admission
+@@ -345,6 +347,7 @@ static void secondary_reset_physical(struct vo *vo, const char *reason)
+     struct vo_internal *in = vo->in;
+     uint64_t previous_epoch = in->secondary_physical.epoch;
+     secondary_ass_physical_reset(&in->secondary_physical);
++    in->secondary_fixed_offset = (struct secondary_ass_present_fixed_offset){0};
+     secondary_ass_flip_budget_reset(&in->secondary_flip_budget);
+     if (mp_ass_pacing_enabled(vo->global)) {
+         struct mp_ass_pacing_record record = {
+@@ -386,6 +389,7 @@ struct secondary_ass_grid_task {
+     int delay;
+     double rate;
+     bool plan_enabled;
++    bool recovery_probe; // one bounded fixed-offset sample, not a general bypass
+     struct secondary_ass_present_plan plan;
+     struct secondary_ass_queue_stage stage;
+ };
+@@ -476,11 +480,70 @@ static bool secondary_forecast_enabled(struct vo *vo, bool display_synced,
+         secondary_plan_enabled(vo, display_synced, divisor);
+ }
+ 
++static int secondary_fixed_forecast_offset(struct vo *vo,
++    struct secondary_ass_physical_point logical, int64_t divisor, double rate)
++{
++    struct vo_internal *in = vo->in;
++    return secondary_ass_present_fixed_offset_get(&in->secondary_fixed_offset,
++        &in->secondary_physical, logical, divisor, rate);
++}
++
++static struct secondary_ass_present_plan secondary_forecast_plan(struct vo *vo,
++    struct secondary_ass_physical_point logical, int64_t divisor, double rate)
++{
++    if (vo->in->secondary_fixed_forecast) {
++        if (vo->in->secondary_physical.outlier_pending ||
++            !vo->in->secondary_physical.sync_segment_consistent)
++            return (struct secondary_ass_present_plan){.display_forecast = true};
++        return secondary_ass_present_plan_make_fixed_forecast(
++            &vo->in->secondary_physical, logical,
++            secondary_fixed_forecast_offset(vo, logical, divisor, rate));
++    }
++    return secondary_ass_present_plan_make_forecast(&vo->in->secondary_physical,
++                                                   logical);
++}
++
++static struct secondary_ass_present_plan secondary_forecast_fresh_plan(
++    struct vo *vo, int64_t ready, struct secondary_ass_physical_point logical,
++    int64_t divisor, double rate)
++{
++    if (!vo->in->secondary_fixed_forecast)
++        return secondary_ass_present_plan_fresh_forecast(&vo->in->secondary_physical,
++                                                         ready, logical);
++    if (!logical.slot && !logical.wall) {
++        struct secondary_ass_physical view =
++            secondary_ass_present_plan_view(&vo->in->secondary_physical);
++        logical = secondary_ass_physical_predict_point(&view, ready);
++    }
++    return secondary_forecast_plan(vo, logical, divisor, rate);
++}
++
++static struct secondary_ass_physical_point secondary_forecast_next(struct vo *vo,
++    int64_t first_slot, int64_t divisor, int64_t now, double rate)
++{
++    struct secondary_ass_physical *p = &vo->in->secondary_physical;
++    if (!vo->in->secondary_fixed_forecast)
++        return secondary_ass_present_plan_cache_next_forecast(p, first_slot,
++                                                              divisor, now);
++    struct secondary_ass_physical_point first =
++        secondary_ass_physical_point_at(p, first_slot);
++    int offset = secondary_fixed_forecast_offset(vo, first, divisor, rate);
++    if (offset < 0) {
++        // Before the first valid capture, choose one future G on the original
++        // lattice. Subsequent choices never consult a changing historical H.
++        first = secondary_ass_present_plan_cache_next_forecast(p, first_slot,
++                                                               divisor, now);
++        offset = secondary_fixed_forecast_offset(vo, first, divisor, rate);
++    }
++    return secondary_ass_present_plan_cache_next_fixed_forecast(p, first_slot,
++                                                               divisor, now, offset);
++}
++
+ static struct secondary_ass_present_plan secondary_cache_plan(struct vo *vo,
+-    struct secondary_ass_physical_point logical)
++    struct secondary_ass_physical_point logical, int64_t divisor, double rate)
+ {
+     return vo->in->secondary_display_forecast
+-        ? secondary_ass_present_plan_cache_forecast(&vo->in->secondary_physical, logical)
++        ? secondary_forecast_plan(vo, logical, divisor, rate)
+         : secondary_ass_present_plan_cache(&vo->in->secondary_physical, logical);
+ }
+ 
+@@ -1763,15 +1826,14 @@ static struct secondary_ass_physical_point secondary_next_sample(struct vo *vo,
+ 
+ static struct secondary_ass_physical_point secondary_cache_next_sample(
+     struct vo *vo, struct secondary_ass_physical_point first,
+-    int64_t divisor, int64_t effective_start)
++    int64_t divisor, int64_t effective_start, double rate)
+ {
+     struct secondary_ass_physical storage;
+     bool ds = vo->in->current_frame && vo->in->current_frame->display_synced;
+     const struct secondary_ass_physical *p = secondary_planning_state(vo, ds, divisor, &storage);
+     struct secondary_ass_physical_point next = secondary_plan_enabled(vo, ds, divisor)
+         ? (secondary_forecast_enabled(vo, ds, divisor)
+-            ? secondary_ass_present_plan_cache_next_forecast(&vo->in->secondary_physical,
+-                first.slot, divisor, effective_start)
++            ? secondary_forecast_next(vo, first.slot, divisor, effective_start, rate)
+             : secondary_ass_present_plan_cache_next(&vo->in->secondary_physical,
+                 first.slot, divisor, effective_start))
+         : secondary_ass_physical_cache_next(p, first.slot, divisor, effective_start);
+@@ -1887,14 +1949,15 @@ static bool secondary_set_presentation(struct vo *vo,
+         struct secondary_ass_present_plan quiet_plan = {0};
+         if ((!plan || !plan->valid) && quiet_output && p->epoch && !p->outlier_pending) {
+             int64_t divisor = osd_get_secondary_physical_sample_divisor(vo->osd);
++            double rate = osd_get_secondary_clock_rate(vo->osd);
+             struct secondary_ass_physical_point first = secondary_next_sample(vo, divisor);
+             // Quiet draws must also stay on the existing divided G lattice;
+             // a raw prediction could select odd slots forever on an even grid.
+             struct secondary_ass_physical_point logical = divisor > 0
+-                ? secondary_ass_present_plan_cache_next_forecast(p, first.slot,
+-                    divisor, MPMAX(submit, mp_time_ns()))
++                ? secondary_forecast_next(vo, first.slot, divisor,
++                    MPMAX(submit, mp_time_ns()), rate)
+                 : (struct secondary_ass_physical_point){0};
+-            quiet_plan = secondary_ass_present_plan_make_forecast(p, logical);
++            quiet_plan = secondary_forecast_plan(vo, logical, divisor, rate);
+             plan = &quiet_plan;
+         }
+         if (plan && plan->valid && plan->display_forecast)
+@@ -2048,8 +2111,8 @@ static bool render_frame(struct vo *vo)
+                     secondary_ass_physical_point_at(&in->secondary_physical,
+                                                     queue_sample.next_slot);
+                 struct secondary_ass_present_plan plan =
+-                    secondary_ass_present_plan_fresh_forecast(&in->secondary_physical,
+-                                                               stage->due, logical);
++                    secondary_forecast_fresh_plan(vo, stage->due, logical,
++                                                   sample_divisor, native_rate);
+                 if (secondary_ass_present_plan_current(&in->secondary_physical, &plan) &&
+                     plan.base.wall >= stage->due && now < plan.submit)
+                     early_plan = plan;
+@@ -2129,7 +2192,7 @@ static bool render_frame(struct vo *vo)
+                                                      &prepass_storage);
+             struct secondary_ass_physical_point sample = secondary_cache_next_sample(
+                 vo, native_point, sample_divisor, MPMAX(now,
+-                    vo->previous_redraw_time + in->secondary_physical.interval));
++                    vo->previous_redraw_time + in->secondary_physical.interval), native_rate);
+             prepass_candidate = sample;
+             prepare = secondary_ass_physical_cache_sample_prepare(
+                 (struct secondary_ass_physical *)prepass_state, now, sample.slot, sample_divisor,
+@@ -2151,10 +2214,25 @@ static bool render_frame(struct vo *vo)
+                         prepass_state, sample.wall),
+                     .plan_enabled = secondary_plan_enabled(vo, false, sample_divisor),
+                     .plan = secondary_plan_enabled(vo, false, sample_divisor)
+-                        ? secondary_cache_plan(vo, sample)
++                        ? secondary_cache_plan(vo, sample, sample_divisor, native_rate)
+                         : (struct secondary_ass_present_plan){0},
+                 };
+             secondary_capture_grid_plan(&grid_task);
++            if (in->secondary_fixed_forecast) {
++                int64_t fixed_prepare = grid_task.plan.valid
++                    ? grid_task.plan.submit - in->secondary_redraw_cost : 0;
++                if (prepare > 0 && fixed_prepare > prepare)
++                    prepare = fixed_prepare;
++                // The later D-window must still reserve this actual queued
++                // video's original F. A budget computed at G is insufficient.
++                if (!grid_task.plan.valid || fixed_prepare <= 0 ||
++                    !secondary_ass_budget_before_deadline(
++                        MPMAX(now, grid_task.plan.submit),
++                        in->frame_queued->pts - in->flip_queue_offset,
++                        in->secondary_render_cost, prepass_block_cost,
++                        MP_TIME_MS_TO_NS(1)))
++                    prepare = 0;
++            }
+         }
+         if (in->secondary_schedule_trace || mp_ass_pacing_enabled(vo->global))
+             prepass_trace = (struct secondary_ass_prepass_trace){
+@@ -2316,8 +2394,8 @@ static bool render_frame(struct vo *vo)
+             if (planned_audio) {
+                 present_plan = early_plan.valid ? early_plan :
+                     (secondary_forecast_enabled(vo, false, sample_divisor)
+-                        ? secondary_ass_present_plan_fresh_forecast(
+-                            &in->secondary_physical, physical_ready, native_point)
++                        ? secondary_forecast_fresh_plan(vo, physical_ready, native_point,
++                                                       sample_divisor, native_rate)
+                         : secondary_ass_present_plan_fresh(
+                             &in->secondary_physical, physical_ready, native_point));
+                 if (present_plan.display_forecast && present_plan.valid &&
+@@ -2326,6 +2404,16 @@ static bool render_frame(struct vo *vo)
+                                                 &present_plan);
+                     present_plan.valid = false;
+                 }
++                if (in->secondary_fixed_forecast && present_plan.target.slot > 0 &&
++                    ((!present_plan.valid && present_plan.fifo_known &&
++                      present_plan.fifo_lower > present_plan.target.slot) ||
++                     (present_plan.valid && mp_time_ns() >= present_plan.deadline)))
++                {
++                    secondary_trace_plan_missed(vo, present_plan.valid
++                        ? "fixed_display_deadline_expired" : "fixed_fifo_after_target",
++                        "before-draw", &present_plan);
++                    present_plan.valid = false;
++                }
+             }
+             struct secondary_ass_physical_point candidate =
+                 planned_audio ? present_plan.target :
+@@ -2722,9 +2810,13 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     bool physical_phase = clock_rate > 0 && !frame->display_synced &&
+         in->secondary_physical.phase && secondary_rate > 0 &&
+         video_duration >= in->secondary_physical.interval &&
+-        secondary_ass_budget_affordable(in->secondary_render_cost,
++        (secondary_ass_budget_affordable(in->secondary_render_cost,
+             in->secondary_redraw_cost, video_duration,
+-            MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval));
++            MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval)) ||
++         (in->secondary_fixed_forecast && grid_task && grid_task->recovery_probe &&
++          secondary_ass_budget_probe_due(in->secondary_render_cost, video_duration,
++            MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval),
++            mp_time_ns(), in->secondary_next_probe)));
+     if (grid_task && grid_task->plan_enabled && !physical_phase) {
+         if (frame != &dummy)
+             talloc_free(frame);
+@@ -2782,12 +2874,25 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+             display_interval = in->secondary_physical.interval;
+         }
+     }
+-    bool secondary_target_updated = secondary_set_presentation(vo,
+-        physical_point, presentation_time, display_interval,
+-        planned_audio && present_plan.valid ? present_plan.submit : mp_time_ns(),
+-        secondary_rate <= 0 && !frame->display_synced,
+-        secondary_forecast_enabled(vo, frame->display_synced, grid_divisor),
+-        &present_plan);
++    bool fixed_pose_reuse = in->secondary_fixed_forecast && !grid_task &&
++        !frame->display_synced;
++    bool secondary_target_updated;
++    if (fixed_pose_reuse) {
++        // A UI/manual repaint is not a new G/D task. Retain the last pose
++        // without switching the forecast sampler back to a historical-H path.
++        osd_hold_secondary_sample(vo->osd);
++        physical_point = (struct secondary_ass_physical_point){0};
++        presentation_time = 0;
++        physical_phase = false;
++        secondary_target_updated = false;
++    } else {
++        secondary_target_updated = secondary_set_presentation(vo,
++            physical_point, presentation_time, display_interval,
++            planned_audio && present_plan.valid ? present_plan.submit : mp_time_ns(),
++            secondary_rate <= 0 && !frame->display_synced,
++            secondary_forecast_enabled(vo, frame->display_synced, grid_divisor),
++            &present_plan);
++    }
+     if (!secondary_target_updated && in->secondary_trace)
+         MP_INFO(vo, "native-ass-phase-hold: fresh=0 target_updated=0 "
+             "physical_point_available=0 actual_display_known=0 "
+@@ -3010,6 +3115,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+     in->secondary_display_forecast = diagnostic && in->secondary_present_plan &&
+         in->secondary_present_grid && display_forecast &&
+         strcmp(display_forecast, "1") == 0;
++    const char *fixed_forecast = getenv("MPV_NATIVE_FIXED_FORECAST");
++    in->secondary_fixed_forecast = in->secondary_display_forecast &&
++        !in->secondary_queue_stage && !in->secondary_queue_lead &&
++        fixed_forecast && !strcmp(fixed_forecast, "1");
+     const char *split_budget = getenv("MPV_NATIVE_SPLIT_BUDGET");
+     in->secondary_split_budget = diagnostic && in->secondary_present_plan &&
+         in->secondary_present_grid && split_budget && strcmp(split_budget, "1") == 0;
+@@ -3020,7 +3129,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 in->secondary_fifo_present, in->secondary_present_grid,
+                 in->secondary_present_plan, in->secondary_split_budget,
+                 vo->pacing_spans, in->secondary_queue_lead,
+-                in->secondary_queue_stage, in->secondary_display_forecast},
++                in->secondary_queue_stage, in->secondary_display_forecast,
++                in->secondary_fixed_forecast},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_CONFIG, &record);
+     }
+@@ -3138,17 +3248,19 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 // keeping the sampler and presentation timer on one grid.
+                 int64_t sample_time = osd_get_secondary_next_sample_time(vo->osd);
+                 struct secondary_ass_physical_point physical_sample = {0};
++                struct secondary_ass_present_plan fixed_cache_plan = {0};
+                 int64_t sample_prepare = secondary_ass_sample_prepare_time(
+                     sample_time, (int64_t)in->vsync_interval);
+                 if (secondary_duration >= in->secondary_physical.interval &&
+                     in->secondary_physical.phase)
+                 {
+-                    int64_t plan_sample_divisor = !probe && thread_divisor > 0 &&
++                    int64_t plan_sample_divisor = (!probe || in->secondary_fixed_forecast) &&
++                        thread_divisor > 0 &&
+                         thread_divisor <= INT64_MAX / in->secondary_physical.interval &&
+                         secondary_duration >= thread_divisor * in->secondary_physical.interval
+                         ? thread_divisor : 0;
+                     physical_sample = secondary_next_sample(vo, plan_sample_divisor);
+-                    if (in->secondary_present_grid && !probe) {
++                    if (in->secondary_present_grid && (!probe || in->secondary_fixed_forecast)) {
+                         int64_t divisor = in->secondary_present_plan ? thread_divisor :
+                             osd_get_secondary_physical_sample_divisor(vo->osd);
+                         if (divisor > 0 && divisor <= INT64_MAX / in->secondary_physical.interval &&
+@@ -3157,12 +3269,20 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                                 secondary_ds, divisor, &thread_planning_storage);
+                             physical_sample = secondary_cache_next_sample(vo, physical_sample,
+                                 divisor, MPMAX(now, vo->previous_redraw_time +
+-                                    (int64_t)in->vsync_interval));
++                                    (int64_t)in->vsync_interval), secondary_rate);
+                         }
+                     }
+                     sample_time = physical_sample.wall;
+                     sample_prepare = secondary_ass_physical_render_slot_time(
+                         thread_planning_state, sample_time, secondary_redraw_cost);
++                    if (in->secondary_fixed_forecast && thread_divisor > 0) {
++                        fixed_cache_plan = secondary_cache_plan(vo, physical_sample,
++                                                               thread_divisor, secondary_rate);
++                        sample_prepare = fixed_cache_plan.valid
++                            ? secondary_ass_physical_render_slot_time(thread_planning_state,
++                                fixed_cache_plan.target.wall, secondary_redraw_cost)
++                            : 0;
++                    }
+                 }
+                 if (sample_prepare > 0)
+                     next = sample_prepare;
+@@ -3185,6 +3305,15 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                         MPMAX(now, next), deadline, secondary_cost, cost,
+                         MP_TIME_MS_TO_NS(1));
+                 }
++                if (in->secondary_fixed_forecast) {
++                    // Preserve the old budget, and additionally account for
++                    // the actual later submission boundary. No unknown future
++                    // F is invented to grant an extra cache opportunity.
++                    headroom &= fixed_cache_plan.valid &&
++                        secondary_ass_budget_headroom(secondary_duration,
++                            MPMAX(now, fixed_cache_plan.submit), secondary_deadline,
++                            secondary_cost, cost, MP_TIME_S_TO_NS(0.002));
++                }
+                 if (held_stage.valid) {
+                     // A staged cache draw must finish before promotion and
+                     // reserve the accepted incoming frame's real budget.
+@@ -3199,7 +3328,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                     if (held_stage.valid && !probe && physical_sample.slot > 0 && next > now) {
+                         mp_mutex_lock(&in->lock);
+                         struct secondary_ass_present_plan pending_cache =
+-                            secondary_cache_plan(vo, physical_sample);
++                            secondary_cache_plan(vo, physical_sample,
++                                                 thread_divisor, secondary_rate);
+                         if (secondary_stage_cache_current(vo, &held_stage, next,
+                                                           interval, cost, secondary_rate) &&
+                             secondary_ass_present_plan_current(&in->secondary_physical,
+@@ -3208,12 +3338,12 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                         mp_mutex_unlock(&in->lock);
+                     }
+                     if (in->secondary_present_grid && physical_sample.slot > 0 &&
+-                        now >= next && !probe) {
++                        now >= next && (!probe || in->secondary_fixed_forecast)) {
+                         int64_t divisor = in->secondary_present_plan ? thread_divisor :
+                             osd_get_secondary_physical_sample_divisor(vo->osd);
+                         mp_mutex_lock(&in->lock);
+                         struct secondary_ass_present_plan held_cache_plan = queue_held
+-                            ? secondary_cache_plan(vo, physical_sample)
++                            ? secondary_cache_plan(vo, physical_sample, divisor, secondary_rate)
+                             : (struct secondary_ass_present_plan){0};
+                         if (divisor > 0 && in->current_frame &&
+                             (!in->frame_queued || queue_held) &&
+@@ -3245,8 +3375,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                                     thread_planning_state, physical_sample.wall),
+                                 .plan_enabled = secondary_plan_enabled(vo,
+                                     secondary_ds, divisor),
++                                .recovery_probe = in->secondary_fixed_forecast && probe,
+                                 .plan = secondary_plan_enabled(vo, secondary_ds, divisor)
+-                                    ? secondary_cache_plan(vo, physical_sample)
++                                    ? secondary_cache_plan(vo, physical_sample, divisor, secondary_rate)
+                                     : (struct secondary_ass_present_plan){0},
+                             };
+                         secondary_capture_grid_plan(&grid_task);
+-- 
+2.54.0.windows.1
+
