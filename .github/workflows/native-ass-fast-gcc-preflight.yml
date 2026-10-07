@@ -12,11 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       expected_main_tree:
-        description: Root-frozen exact V26 main Git tree (40 lowercase hex)
+        description: Root-frozen exact V27 main Git tree (40 lowercase hex)
         required: true
         type: string
       expected_atmos_tree:
-        description: Root-frozen exact V26 Atmos Git tree (40 lowercase hex)
+        description: Root-frozen exact V27 Atmos Git tree (40 lowercase hex)
         required: true
         type: string
 
@@ -93,5 +93,7 @@ jobs:
             ${{ runner.temp }}/native-ass-fast/checks/ui-probe-atmos/**
             ${{ runner.temp }}/native-ass-fast/checks/sample-lifecycle-main/**
             ${{ runner.temp }}/native-ass-fast/checks/sample-lifecycle-atmos/**
+            ${{ runner.temp }}/native-ass-fast/checks/fixed-budget-recovery-main/**
+            ${{ runner.temp }}/native-ass-fast/checks/fixed-budget-recovery-atmos/**
           if-no-files-found: warn
           retention-days: 14

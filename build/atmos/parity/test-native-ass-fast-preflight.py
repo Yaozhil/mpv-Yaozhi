@@ -1,4 +1,4 @@
-"""Fast CPU GCC gate for exact V26 replay; no dependencies, SDK, GPU or core build."""
+"""Fast CPU GCC gate for exact V27 replay; no dependencies, SDK, GPU or core build."""
 import argparse
 import ast
 import hashlib
@@ -31,6 +31,9 @@ V25_PATCH_SHA = '4c091a956ca30dad116d126927a9c84a17b34ee8875a90ba7dbc3681bd66089
 V26_SOURCE_COMMIT = '024a4986affb4a4ef082b8e7b5be73528bdfaa27'
 V26_SOURCE_TREE = '78d817c2c3639484b49189bbf3bbea4dcaf8161b'
 V26_PATCH_SHA = '78629c1c34c0e5c2dca4e4e1aac5edd477b45021eb91589757d3e72b6e6bdd69'
+V27_SOURCE_COMMIT = '824d5b2d50a72c3def254d579eadf6a265dcee4b'
+V27_SOURCE_TREE = 'e3749090d3c87d3e78b831149782dd5fc5aeccc3'
+V27_PATCH_SHA = 'ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f'
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
 # V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
 ATMOS_ENTRIES = '''
@@ -129,13 +132,16 @@ def lock_inputs():
             'V25 UI recovery patch provenance changed')
     require(lock['common_patches'].get('build/bluray-menu/patches/0044-native-ass-ui-lifecycle.patch') == V26_PATCH_SHA,
             'V26 lifecycle patch provenance changed')
+    require(lock['common_patches'].get('build/bluray-menu/patches/0045-native-ass-fixed-budget-recovery.patch') == V27_PATCH_SHA,
+            'V27 fixed budget recovery patch provenance changed')
     for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py', HERE/'verify-native-ass-integration-v26.py',
                  HERE/'verify-native-ass-integration-v22-baseline.py',
                  HERE/'verify-native-ass-queue-stage-caller.py',
                  HERE/'verify-native-ass-ui-probe.py',
                  HERE/'verify-native-ass-queue-stage-caller-v26.py',
                  HERE/'verify-native-ass-ui-probe-v26.py',
-                 HERE/'verify-native-ass-sample-lifecycle.py', Path(__file__).resolve(),
+                 HERE/'verify-native-ass-sample-lifecycle.py',
+                 HERE/'verify-native-ass-fixed-budget-recovery.py', Path(__file__).resolve(),
                  CONFIG/'.github/workflows/native-ass-fast-gcc-preflight.yml',
                  CONFIG/'.github/workflows/build-mpv-v100-parity.yml'):
         inputs[str(path.relative_to(CONFIG))] = sha(path)
@@ -450,8 +456,8 @@ def main():
         require(sha(args.archive) == ARCHIVE_SHA, 'Exact upstream archive SHA mismatch')
         inputs=lock_inputs();report['config_inputs_sha256']=inputs
         require(git(source,'status','--porcelain') == '', 'Fresh replay is dirty')
-        require(git(source,'rev-list','--count','HEAD') == '56', 'Exact V26 replay must contain56 Git layers')
-        require(git(source,'rev-list','--count','HEAD^') == '55', 'Exact main replay must contain55 Git layers')
+        require(git(source,'rev-list','--count','HEAD') == '57', 'Exact V27 replay must contain57 Git layers')
+        require(git(source,'rev-list','--count','HEAD^') == '56', 'Exact main replay must contain56 Git layers')
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
@@ -461,10 +467,10 @@ def main():
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
         report['replay']={'main_commit':main_ref,'main_tree':main_tree,'atmos_commit':atmos_ref,'atmos_tree':atmos_tree,
-            'commit_count':56,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
-        report['candidate_source_provenance'] = {'commit':V26_SOURCE_COMMIT,
-            'windows_tree':V26_SOURCE_TREE, 'incremental_patch_sha256':V26_PATCH_SHA,
-            'frozen_v25_parent_commit':V25_SOURCE_COMMIT, 'frozen_v25_parent_tree':V25_SOURCE_TREE,
+            'commit_count':57,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+        report['candidate_source_provenance'] = {'commit':V27_SOURCE_COMMIT,
+            'windows_tree':V27_SOURCE_TREE, 'incremental_patch_sha256':V27_PATCH_SHA,
+            'frozen_v26_parent_commit':V26_SOURCE_COMMIT, 'frozen_v26_parent_tree':V26_SOURCE_TREE,
             'replay_commit_metadata_equal_to_author_commit':False}
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
@@ -544,6 +550,31 @@ def main():
                         else 'checks=3612 failures=1032\n'), 'Epoch lifecycle exact counter mismatch')
             positive['executed_sample_lifecycle'] = {'report':lifecycle,
                 'report_sha256':sha(lifecycle_out/'report.json')}
+            recovery_out = work/('fixed-budget-recovery-'+variant)
+            recovery_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-fixed-budget-recovery.py'),
+                '--source',str(variant_root),'--baseline',str(legacy_root),'--cc',str(cc),
+                '--output',str(recovery_out)],capture_output=True,text=True,timeout=180)
+            recovery = json.loads((recovery_out/'fixed-budget-recovery.json').read_bytes())
+            require(recovery_run.returncode == 0 and
+                    recovery['status'] == 'ACTUAL_FIXED_BUDGET_RECOVERY_CPU_PASS_NOT_RUNTIME',
+                    'Actual fixed budget recovery failed: '+variant+' '+recovery_run.stderr[-1000:])
+            expected_cases = {name+'_'+mode for name in ('positive','outer_eligibility_omitted',
+                'redraw_eligibility_omitted','fixed_recovery_bit_omitted','fixed_scope_lost',
+                'margin_lost','cooldown_lost','overload_lost') for mode in ('normal','NDEBUG')}
+            require(set(recovery['cases']) == expected_cases and
+                all(item['compiled_and_expected'] for item in recovery['cases'].values()),
+                'Recovery positive/fault modes missing or did not compile and execute')
+            for mode in ('normal','NDEBUG'):
+                item = recovery['cases']['positive_'+mode]
+                require(item['compiled'] and item['compile_returncode'] == 0 and item['exit_code'] == 0 and
+                    item['result']['checks'] == 103149 and item['result']['v24_checks'] == 1097 and
+                    item['new_result'] == {'checks':3801,'grids':57,'failures':0},
+                    'Actual recovery counts/compiler boundary changed')
+            require(not recovery['inputs_changed_during_run'] and not recovery['baseline_changed_during_run'],
+                    'Recovery input changed during execution')
+            positive['executed_fixed_budget_recovery'] = {'returncode':recovery_run.returncode,
+                'stdout':recovery_run.stdout,'stderr':recovery_run.stderr,'report':recovery,
+                'report_sha256':sha(recovery_out/'fixed-budget-recovery.json')}
             write(work/('positive-'+variant+'.json'),positive)
             mutation_root=work/('mutations-'+variant);mutation_root.mkdir()
             report['negative_variants'][variant]=negative_matrix(gate,variant_root,cc,mutation_root)
@@ -552,7 +583,7 @@ def main():
             require(sha(CONFIG/name) == digest, 'Config input changed during fast preflight: '+name)
         require(not git(source,'status','--porcelain'), 'Original replay changed during preflight')
         require(not git(legacy_root,'status','--porcelain'), 'Legacy V22 reference changed during preflight')
-        report.update(status='EXACT_V26_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
+        report.update(status='EXACT_V27_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
             full_osd_getter_gcc_verified=True,negative_count_per_variant=15)
         return 0
     except BaseException as error:

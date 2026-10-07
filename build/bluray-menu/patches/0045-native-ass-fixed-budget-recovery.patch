@@ -1,0 +1,65 @@
+From 824d5b2d50a72c3def254d579eadf6a265dcee4b Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 8 Oct 2026 00:38:24 +0800
+Subject: [PATCH] Recover fixed Native ASS redraw after stale budget pressure
+
+---
+ video/out/secondary_ass_budget.h | 14 ++++++++++++++
+ video/out/vo.c                   |  9 ++++++---
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/video/out/secondary_ass_budget.h b/video/out/secondary_ass_budget.h
+index e81c686..f208664 100644
+--- a/video/out/secondary_ass_budget.h
++++ b/video/out/secondary_ass_budget.h
+@@ -53,6 +53,20 @@ static inline bool secondary_ass_budget_probe_due(int64_t fresh, int64_t duratio
+            fresh < duration * 0.75 && now >= next_probe;
+ }
+ 
++// A fixed physical sampler can retain an expensive cached-draw estimate after
++// a resize even when fresh video frames still have headroom. Qualification is
++// not admission: callers retain the real video and submission deadline checks.
++// Keep the legacy low-fps policy unchanged for the other scheduling paths.
++static inline bool secondary_ass_budget_fixed_probe_due(int64_t fresh,
++                                                         int64_t duration,
++                                                         int64_t interval,
++                                                         int64_t now,
++                                                         int64_t next_probe)
++{
++    return interval > 0 && duration > 0 && fresh >= 0 &&
++           fresh < duration * 0.75 && now >= next_probe;
++}
++
+ static inline bool secondary_ass_budget_affordable(int64_t fresh, int64_t redraw,
+                                                     int64_t duration,
+                                                     int64_t interval)
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 6b4f825..5bd5718 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -2821,7 +2821,7 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+             in->secondary_redraw_cost, video_duration,
+             MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval)) ||
+          (in->secondary_fixed_forecast && grid_task && grid_task->recovery_probe &&
+-          secondary_ass_budget_probe_due(in->secondary_render_cost, video_duration,
++          secondary_ass_budget_fixed_probe_due(in->secondary_render_cost, video_duration,
+             MPMAX(MP_TIME_S_TO_NS(1.0 / secondary_rate), in->secondary_physical.interval),
+             mp_time_ns(), in->secondary_next_probe)));
+     if (grid_task && grid_task->plan_enabled && !physical_phase) {
+@@ -3250,8 +3250,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 secondary_redraw_cost, secondary_duration, interval);
+             // Once per second, allow a bounded recovery sample. A CPU wakeup
+             // stall must not leave an affordable cached redraw disabled forever.
+-            bool probe = !affordable && secondary_ass_budget_probe_due(secondary_cost,
+-                secondary_duration, interval, now, secondary_probe);
++            bool probe = !affordable && (in->secondary_fixed_forecast
++                ? secondary_ass_budget_fixed_probe_due(secondary_cost,
++                    secondary_duration, interval, now, secondary_probe)
++                : secondary_ass_budget_probe_due(secondary_cost,
++                    secondary_duration, interval, now, secondary_probe));
+             if (affordable || probe) {
+                 int64_t next = secondary_ass_next_draw(
+                     &in->secondary_presentation, in->secondary_last_draw, interval);
+-- 
+2.54.0.windows.1
+
