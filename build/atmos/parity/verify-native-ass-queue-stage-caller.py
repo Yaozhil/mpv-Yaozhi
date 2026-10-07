@@ -1115,9 +1115,9 @@ def execute_mutants(gate, generated, out):
         'incoming_pressure_ignored': ('secondary_stage_cache_current',
             affordable_call, 'true'),
         'expired_hold_never_released': ('promotion_boundary',
-            'now < resume', 'true'),
+            'now < resume', '((void)resume, true)'),
         'timer_min_erased': ('outer_timer_boundary', timer_assignment,
-            'wait_until = queue_resume;'),
+            '(void)real_wait_until;\n    wait_until = queue_resume;'),
         'timing_cap_change_keeps_authority': ('read_opts',
             'secondary_ass_queue_stage_clear(&in->secondary_stage_pending);',
             '(void)in->secondary_stage_pending;'),
@@ -1126,11 +1126,12 @@ def execute_mutants(gate, generated, out):
         'cache_ignores_current_budget_boundary': ('secondary_stage_cache_current',
             'secondary_stage_budget_resume(vo, stage, rate, now)', 'stage->resume'),
         'backend_fallback_end_not_checked': ('actual_feedback_resolve_boundary',
-            'stage_flip_end >= trace_deadline', 'false'),
+            'stage_flip_end >= trace_deadline', '((void)stage_flip_end, false)'),
         'future_cache_wake_lost': ('outer_timer_boundary',
             'staged_cache_wake = next;', 'staged_cache_wake = 0;'),
         'outer_current_budget_timer_omitted': ('outer_timer_boundary',
-            'secondary_stage_budget_resume(vo, &held_stage, staged_rate, now)', 'queue_resume'),
+            'secondary_stage_budget_resume(vo, &held_stage, staged_rate, now)',
+            '((void)staged_rate, queue_resume)'),
     }
     guard = functions['promotion_boundary']['text']
     start = guard.index('secondary_ass_stage_prefix_can_promote(')
