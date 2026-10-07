@@ -1,0 +1,211 @@
+From 994319eabb7dd1b18fc615b2b104787e52d8e0cd Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 8 Oct 2026 04:58:11 +0800
+Subject: [PATCH] Keep Native ASS time advancing on mandatory video draws under
+ cache pressure
+
+---
+ video/out/secondary_ass_present_plan.h | 32 +++++++++++++
+ video/out/vo.c                         | 63 +++++++++++++++++++++-----
+ 2 files changed, 84 insertions(+), 11 deletions(-)
+
+diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
+index 76a7736..e8c2f3a 100644
+--- a/video/out/secondary_ass_present_plan.h
++++ b/video/out/secondary_ass_present_plan.h
+@@ -12,6 +12,7 @@
+ // forecasts capture it only when identifying a new task's display pose.
+ struct secondary_ass_present_plan {
+     bool valid, fifo_known, display_forecast;
++    bool fresh_clock_only; // mandatory video draw, no additional cache admission
+     struct secondary_ass_physical_point base, target;
+     int64_t submit, deadline, fallback_submit, lifecycle_safe_wait;
+     int64_t interval, fifo_lower;
+@@ -295,4 +296,35 @@ secondary_ass_present_plan_cache_next_fixed_forecast(
+                                                          first_slot, divisor, now);
+ }
+ 
++// A new mandatory video draw still needs an advancing ASS pose when optional
++// cache work is unaffordable. Select a new D on the established divided lattice;
++// do not rename an already captured fresh/cache task or reset its clock origin.
++// F remains the video's actual submission/wait boundary, including lifecycle
++// fallback. The recorded G/D and real feedback still reveal any early/late D.
++static inline struct secondary_ass_present_plan
++secondary_ass_present_plan_fresh_clock(const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point first, int64_t divisor, int offset,
++    int64_t ready, int64_t video_submit)
++{
++    struct secondary_ass_present_plan none = {
++        .display_forecast = true, .fresh_clock_only = true,
++    };
++    if (ready <= 0 || video_submit <= 0 || first.slot <= 0 || first.wall <= 0 ||
++        secondary_ass_physical_point_at(p, first.slot).wall != first.wall)
++        return none;
++    int64_t after = ready > video_submit ? ready : video_submit;
++    struct secondary_ass_physical_point logical =
++        secondary_ass_present_plan_cache_next_fixed_forecast(p, first.slot,
++                                                             divisor, after, offset);
++    struct secondary_ass_present_plan plan =
++        secondary_ass_present_plan_make_fixed_forecast(p, logical, offset);
++    plan.fresh_clock_only = true;
++    if (!plan.valid || plan.target.wall <= after)
++        return none;
++    plan.submit = video_submit;
++    plan.fallback_submit = video_submit;
++    plan.lifecycle_safe_wait = video_submit;
++    return plan;
++}
++
+ #endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 5bd5718..905305e 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -308,7 +308,8 @@ static void secondary_record_begin(struct vo *vo, const struct vo_frame *frame,
+             .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
+             .frame_id = frame->frame_id, .epoch = plan->epoch,
+             .generation = plan->generation,
+-            .flags = (uint64_t)fresh | ((uint64_t)plan->valid << 1),
++            .flags = (uint64_t)fresh | ((uint64_t)plan->valid << 1) |
++                ((uint64_t)plan->fresh_clock_only << 2),
+             .v = {plan->base.slot, plan->base.wall, plan->target.slot,
+                 plan->target.wall, plan->submit, plan->deadline,
+                 plan->fifo_lower, plan->fifo_known, plan->historical_delay,
+@@ -539,6 +540,23 @@ static struct secondary_ass_physical_point secondary_forecast_next(struct vo *vo
+                                                                divisor, now, offset);
+ }
+ 
++static struct secondary_ass_present_plan secondary_forecast_fresh_clock_plan(
++    struct vo *vo, int64_t ready, int64_t video_submit,
++    struct secondary_ass_physical_point logical, int64_t divisor, double rate)
++{
++    if (!logical.slot && !logical.wall) {
++        struct secondary_ass_physical view =
++            secondary_ass_present_plan_view(&vo->in->secondary_physical);
++        logical = secondary_ass_physical_predict_point(&view, ready);
++    }
++    // Bootstrap only this new task's fixed offset through the existing rules.
++    // The original physical phase, sampler origin and delay learner are kept.
++    logical = secondary_forecast_next(vo, logical.slot, divisor, ready, rate);
++    return secondary_ass_present_plan_fresh_clock(&vo->in->secondary_physical,
++        logical, divisor, secondary_fixed_forecast_offset(vo, logical, divisor, rate),
++        ready, video_submit);
++}
++
+ static struct secondary_ass_present_plan secondary_cache_plan(struct vo *vo,
+     struct secondary_ass_physical_point logical, int64_t divisor, double rate)
+ {
+@@ -645,6 +663,7 @@ static void secondary_trace_plan(struct vo *vo, bool fresh,
+ static void secondary_trace_plan_missed(struct vo *vo, const char *reason,
+     const char *stage, const struct secondary_ass_present_plan *plan)
+ {
++    bool actual_draw = strcmp(stage, "after-flip") == 0;
+     // A missed captured task cannot close the successful stage prefix.
+     if (vo->in->secondary_queue_stage)
+         secondary_ass_stage_prefix_invalidate(&vo->in->secondary_stage_prefix);
+@@ -653,6 +672,7 @@ static void secondary_trace_plan_missed(struct vo *vo, const char *reason,
+             .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
+             .draw_seq = vo->pacing_draw_seq, .frame_id = vo->pacing_frame_id,
+             .epoch = plan->epoch, .generation = plan->generation,
++            .flags = (uint64_t)actual_draw,
+             .v = {plan->target.slot, plan->target.wall, plan->base.slot,
+                 plan->base.wall, plan->deadline, secondary_record_tag(reason),
+                 secondary_record_tag(stage)},
+@@ -660,11 +680,11 @@ static void secondary_trace_plan_missed(struct vo *vo, const char *reason,
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_MISS, &record);
+     }
+     if (vo->in->secondary_trace)
+-    MP_INFO(vo, "native-ass-plan-missed: reason=%s stage=%s actual_draw=0 "
++    MP_INFO(vo, "native-ass-plan-missed: reason=%s stage=%s actual_draw=%d "
+         "original_target_slot=%"PRId64" original_target_ns=%"PRId64
+         " base_slot=%"PRId64" base_ns=%"PRId64" epoch=%"PRIu64
+         " generation=%"PRIu64" now_ns=%"PRId64" deadline_ns=%"PRId64"\n",
+-        reason, stage, plan->target.slot, plan->target.wall,
++        reason, stage, actual_draw, plan->target.slot, plan->target.wall,
+         plan->base.slot, plan->base.wall, plan->epoch, plan->generation,
+         mp_time_ns(), plan->deadline);
+ }
+@@ -2384,28 +2404,44 @@ static bool render_frame(struct vo *vo)
+         struct secondary_ass_present_plan present_plan = {0};
+         bool planned_audio = secondary_plan_enabled(vo, frame->display_synced,
+                                                   sample_divisor);
++        bool secondary_affordable = native_rate > 0 && secondary_ass_budget_affordable(
++            in->secondary_render_cost, in->secondary_redraw_cost, duration,
++            MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
++        // Cache protection controls extra work, not time on a video draw which
++        // is already mandatory. Keep the normal/early captured plans unchanged.
++        bool fresh_clock_only = in->secondary_fixed_forecast && !frame->repeat &&
++            secondary_forecast_enabled(vo, frame->display_synced, sample_divisor) &&
++            !early_plan.valid && !secondary_affordable;
+         bool physical_phase = clock_rate > 0 && !frame->display_synced &&
+             in->secondary_physical.phase && native_rate > 0 &&
+             duration >= in->secondary_physical.interval &&
+-            secondary_ass_budget_affordable(in->secondary_render_cost,
+-                in->secondary_redraw_cost, duration,
+-                MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
++            (secondary_affordable || fresh_clock_only);
+         if (in->secondary_sync_mode_valid &&
+             in->secondary_sync_mode != frame->display_synced)
+             secondary_reset_physical(vo, "sync_mode");
+         in->secondary_sync_mode = frame->display_synced;
+         in->secondary_sync_mode_valid = true;
+-        if (physical_phase && in->secondary_physical.phase) {
++        int64_t physical_now = mp_time_ns();
++        if (physical_phase && in->secondary_physical.phase &&
++            in->secondary_render_cost >= 0 &&
++            physical_now <= INT64_MAX - in->secondary_render_cost) {
+             int64_t physical_ready = MPMAX(present_ready,
+-                mp_time_ns() + in->secondary_render_cost);
++                physical_now + in->secondary_render_cost);
+             if (planned_audio) {
+-                present_plan = early_plan.valid ? early_plan :
++                if (fresh_clock_only) {
++                    present_plan = secondary_forecast_fresh_clock_plan(vo,
++                        physical_ready, original_video_target, native_point,
++                        sample_divisor, native_rate);
++                } else {
++                    present_plan = early_plan.valid ? early_plan :
+                     (secondary_forecast_enabled(vo, false, sample_divisor)
+                         ? secondary_forecast_fresh_plan(vo, physical_ready, native_point,
+                                                        sample_divisor, native_rate)
+                         : secondary_ass_present_plan_fresh(
+                             &in->secondary_physical, physical_ready, native_point));
++                }
+                 if (present_plan.display_forecast && present_plan.valid &&
++                    !present_plan.fresh_clock_only &&
+                     present_plan.base.wall < original_video_target) {
+                     secondary_trace_plan_missed(vo, "before_video_due", "before-draw",
+                                                 &present_plan);
+@@ -2438,7 +2474,7 @@ static bool render_frame(struct vo *vo)
+                 presentation_time = physical_point.wall;
+                 // Keep the existing submit policy for valid identified slots.
+                 // Otherwise preserve the primary video's original target.
+-                target = submit;
++                target = present_plan.fresh_clock_only ? original_video_target : submit;
+                 present_ready = target;
+             }
+         } else if (clock_rate > 0 && frame->display_synced) {
+@@ -2616,7 +2652,8 @@ static bool render_frame(struct vo *vo)
+ 
+         stats_time_start(in->stats, "video-flip");
+ 
+-        int64_t flip_budget_begin = in->secondary_split_budget ? mp_time_ns() : 0;
++        int64_t flip_call = mp_time_ns();
++        int64_t flip_budget_begin = in->secondary_split_budget ? flip_call : 0;
+         vo->driver->flip_page(vo);
+ 
+         struct vo_vsync_info vsync = {
+@@ -2644,6 +2681,10 @@ static bool render_frame(struct vo *vo)
+             planned_audio ? &present_plan : NULL, flip_budget_begin,
+             0, flip_budget_begin,
+             plan_guard_armed, !frame->repeat);
++        if (present_plan.valid && present_plan.fresh_clock_only &&
++            flip_call >= present_plan.deadline)
++            secondary_trace_plan_missed(vo, "fresh_clock_vo_flip_after_target",
++                                        "after-flip", &present_plan);
+         secondary_record_end(vo);
+ 
+         // Make up some crap if presentation feedback is missing.
+-- 
+2.54.0.windows.1
+

@@ -1,4 +1,4 @@
-"""Fast CPU GCC gate for exact V27 replay; no dependencies, SDK, GPU or core build."""
+"""Fast CPU GCC gate for exact V28 replay; no dependencies, SDK, GPU or core build."""
 import argparse
 import ast
 import hashlib
@@ -34,6 +34,9 @@ V26_PATCH_SHA = '78629c1c34c0e5c2dca4e4e1aac5edd477b45021eb91589757d3e72b6e6bdd6
 V27_SOURCE_COMMIT = '824d5b2d50a72c3def254d579eadf6a265dcee4b'
 V27_SOURCE_TREE = 'e3749090d3c87d3e78b831149782dd5fc5aeccc3'
 V27_PATCH_SHA = 'ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f'
+V28_SOURCE_COMMIT = '994319eabb7dd1b18fc615b2b104787e52d8e0cd'
+V28_SOURCE_TREE = '7d6d3892910cda4fa8eda2c6bde79aff41dd6a6a'
+V28_PATCH_SHA = 'ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28'
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
 # V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
 ATMOS_ENTRIES = '''
@@ -134,6 +137,8 @@ def lock_inputs():
             'V26 lifecycle patch provenance changed')
     require(lock['common_patches'].get('build/bluray-menu/patches/0045-native-ass-fixed-budget-recovery.patch') == V27_PATCH_SHA,
             'V27 fixed budget recovery patch provenance changed')
+    require(lock['common_patches'].get('build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch') == V28_PATCH_SHA,
+            'V28 mandatory fresh-clock patch provenance changed')
     for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py', HERE/'verify-native-ass-integration-v26.py',
                  HERE/'verify-native-ass-integration-v22-baseline.py',
                  HERE/'verify-native-ass-queue-stage-caller.py',
@@ -141,7 +146,8 @@ def lock_inputs():
                  HERE/'verify-native-ass-queue-stage-caller-v26.py',
                  HERE/'verify-native-ass-ui-probe-v26.py',
                  HERE/'verify-native-ass-sample-lifecycle.py',
-                 HERE/'verify-native-ass-fixed-budget-recovery.py', Path(__file__).resolve(),
+                 HERE/'verify-native-ass-fixed-budget-recovery.py',
+                 HERE/'verify-native-ass-fresh-clock-caller.py', Path(__file__).resolve(),
                  CONFIG/'.github/workflows/native-ass-fast-gcc-preflight.yml',
                  CONFIG/'.github/workflows/build-mpv-v100-parity.yml'):
         inputs[str(path.relative_to(CONFIG))] = sha(path)
@@ -456,8 +462,8 @@ def main():
         require(sha(args.archive) == ARCHIVE_SHA, 'Exact upstream archive SHA mismatch')
         inputs=lock_inputs();report['config_inputs_sha256']=inputs
         require(git(source,'status','--porcelain') == '', 'Fresh replay is dirty')
-        require(git(source,'rev-list','--count','HEAD') == '57', 'Exact V27 replay must contain57 Git layers')
-        require(git(source,'rev-list','--count','HEAD^') == '56', 'Exact main replay must contain56 Git layers')
+        require(git(source,'rev-list','--count','HEAD') == '58', 'Exact V28 replay must contain58 Git layers')
+        require(git(source,'rev-list','--count','HEAD^') == '57', 'Exact main replay must contain57 Git layers')
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
@@ -467,10 +473,10 @@ def main():
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
         report['replay']={'main_commit':main_ref,'main_tree':main_tree,'atmos_commit':atmos_ref,'atmos_tree':atmos_tree,
-            'commit_count':57,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
-        report['candidate_source_provenance'] = {'commit':V27_SOURCE_COMMIT,
-            'windows_tree':V27_SOURCE_TREE, 'incremental_patch_sha256':V27_PATCH_SHA,
-            'frozen_v26_parent_commit':V26_SOURCE_COMMIT, 'frozen_v26_parent_tree':V26_SOURCE_TREE,
+            'commit_count':58,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+        report['candidate_source_provenance'] = {'commit':V28_SOURCE_COMMIT,
+            'windows_tree':V28_SOURCE_TREE, 'incremental_patch_sha256':V28_PATCH_SHA,
+            'frozen_v27_parent_commit':V27_SOURCE_COMMIT, 'frozen_v27_parent_tree':V27_SOURCE_TREE,
             'replay_commit_metadata_equal_to_author_commit':False}
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
@@ -575,6 +581,51 @@ def main():
             positive['executed_fixed_budget_recovery'] = {'returncode':recovery_run.returncode,
                 'stdout':recovery_run.stdout,'stderr':recovery_run.stderr,'report':recovery,
                 'report_sha256':sha(recovery_out/'fixed-budget-recovery.json')}
+            fresh_out = work/('fresh-clock-'+variant)
+            fresh_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-fresh-clock-caller.py'),
+                '--source',str(variant_root),'--baseline',str(legacy_root),'--cc',str(cc),
+                '--output',str(fresh_out)],capture_output=True,text=True,timeout=180)
+            fresh = json.loads((fresh_out/'fresh-clock-caller.json').read_bytes())
+            require(fresh_run.returncode == 0 and
+                fresh['status'] == 'ACTUAL_FRESH_CLOCK_CALLER_CPU_PASS_NOT_RUNTIME' and
+                fresh['tool_sha256'] == '2b0162b53641d12874be407efa433e3b4f295bb15074821ab85093b64341e750',
+                'Actual fresh-clock caller failed: '+variant+' '+fresh_run.stderr[-1000:])
+            faults = {'fresh_eligibility_omitted':35, 'feature_scope_lost':32,
+                'repeat_scope_lost':4, 'captured_early_scope_lost':4,
+                'ready_overflow_guard_lost':1, 'video_target_retimed_to_D':7,
+                'late_equality_omitted':11, 'after_flip_actual_draw_bit_lost':4,
+                'late_captured_D_renamed':3, 'plan_submit_retained_D':2,
+                'fallback_retained_D':2, 'lifecycle_wait_retained_D':4,
+                'divided_lattice_lost':2, 'physical_phase_mutated':4,
+                'historical_H_mutated':2}
+            expected_cases = {name+'_'+mode for name in ('positive',*faults)
+                              for mode in ('normal','NDEBUG')}
+            require(set(fresh['cases']) == expected_cases and
+                fresh['Display_acceptance'] is False and fresh['pacing_acceptance'] is False and
+                not fresh['inputs_changed_during_extraction'],
+                'Fresh-clock modes missing, changed source or false Display claim')
+            for name, item in fresh['cases'].items():
+                require(item['compiled_and_expected'] is True and item['compiled'] is True and
+                        item['compile_returncode'] == 0,
+                        'Fresh-clock case did not actually compile and execute: '+name)
+                legacy = item['result']
+                require(legacy['checks'] == 103149 and legacy['v24_checks'] == 1097 and
+                        legacy['failures'] == 0 and legacy['actual_feedback_frames'] == 312 and
+                        legacy['early_prepare_positive'] == 12,
+                        'Fresh-clock case changed frozen legacy assertions: '+name)
+                if name.startswith('positive_'):
+                    require(item['negative'] is False and item['exit_code'] == 0 and
+                        item['v28_result'] == {'checks':5109078, 'plans':2, 'matrix':30,
+                                              'draws':340200, 'failures':0},
+                        'Fresh-clock long-model positive changed: '+name)
+                else:
+                    fault = name.rsplit('_',1)[0]
+                    require(item['negative'] is True and item['exit_code'] == 7 and
+                            item['v28_result']['failures'] == faults[fault],
+                            'Fresh-clock fault was not rejected by actual assertions: '+name)
+            positive['executed_fresh_clock_caller'] = {'returncode':fresh_run.returncode,
+                'stdout':fresh_run.stdout, 'stderr':fresh_run.stderr, 'report':fresh,
+                'report_sha256':sha(fresh_out/'fresh-clock-caller.json')}
             write(work/('positive-'+variant+'.json'),positive)
             mutation_root=work/('mutations-'+variant);mutation_root.mkdir()
             report['negative_variants'][variant]=negative_matrix(gate,variant_root,cc,mutation_root)
@@ -583,7 +634,7 @@ def main():
             require(sha(CONFIG/name) == digest, 'Config input changed during fast preflight: '+name)
         require(not git(source,'status','--porcelain'), 'Original replay changed during preflight')
         require(not git(legacy_root,'status','--porcelain'), 'Legacy V22 reference changed during preflight')
-        report.update(status='EXACT_V27_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
+        report.update(status='EXACT_V28_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
             full_osd_getter_gcc_verified=True,negative_count_per_variant=15)
         return 0
     except BaseException as error:
