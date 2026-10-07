@@ -205,7 +205,7 @@ void ReleaseSRWLockExclusive(SRWLOCK *p) { CALLER_CHECK(*p==(void*)1);*p=NULL; }
 void WakeAllConditionVariable(CONDITION_VARIABLE *p) { (void)p; }
 int SetEvent(HANDLE p) { (void)p;return 1; }
 DWORD GetCurrentThreadId(void) { return 1; }
-int64_t mp_thread_cpu_time_ns(void) { return 0; }
+int64_t mp_thread_cpu_time_ns(mp_thread_id thread_id) { (void)thread_id;return 0; }
 int64_t mp_time_ns(void) { return fixture_now; }
 void integration_log(const char *fmt, ...) { (void)fmt; }
 char *integration_getenv(const char *name) {
