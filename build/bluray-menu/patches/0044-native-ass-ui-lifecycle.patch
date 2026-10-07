@@ -1,0 +1,115 @@
+From 024a4986affb4a4ef082b8e7b5be73528bdfaa27 Mon Sep 17 00:00:00 2001
+From: Local verification <verification@localhost>
+Date: Wed, 7 Oct 2026 22:07:28 +0800
+Subject: [PATCH] vo, osd: reject stale sample epochs and reuse static ASS
+ images
+
+---
+ sub/osd_libass.c | 22 +++++++++++++++++-----
+ sub/osd_state.h  |  4 ++++
+ video/out/vo.c   |  7 +++++++
+ 3 files changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/sub/osd_libass.c b/sub/osd_libass.c
+index 7b08509..118aada 100644
+--- a/sub/osd_libass.c
++++ b/sub/osd_libass.c
+@@ -63,6 +63,8 @@ static void create_ass_renderer(struct osd_state *osd, struct ass_state *ass)
+ 
+ static void destroy_ass_renderer(struct ass_state *ass)
+ {
++    ass->render_cached = false;
++    ass->cached_images = NULL;
+     if (ass->track)
+         ass_free_track(ass->track);
+     ass->track = NULL;
+@@ -95,6 +97,8 @@ void osd_destroy_backend(struct osd_state *osd)
+ 
+ static void update_playres(struct ass_state *ass, struct mp_osd_res *vo_res)
+ {
++    if (!osd_res_equals(ass->vo_res, *vo_res))
++        ass->render_cached = false;
+     ASS_Track *track = ass->track;
+     int old_res_x = track->PlayResX;
+     int old_res_y = track->PlayResY;
+@@ -110,13 +114,16 @@ static void update_playres(struct ass_state *ass, struct mp_osd_res *vo_res)
+ 
+     // Force libass to clear its internal cache - it doesn't check for
+     // PlayRes changes itself.
+-    if (old_res_x != track->PlayResX || old_res_y != track->PlayResY)
++    if (old_res_x != track->PlayResX || old_res_y != track->PlayResY) {
++        ass->render_cached = false;
+         ass_set_frame_size(ass->render, 1, 1);
++    }
+ }
+ 
+ static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
+                              struct ass_state *ass)
+ {
++    ass->render_cached = false;
+     create_ass_renderer(osd, ass);
+ 
+     ASS_Track *track = ass->track;
+@@ -189,6 +196,7 @@ static ASS_Event *add_osd_ass_event(ASS_Track *track, const char *style,
+ 
+ static void clear_ass(struct ass_state *ass)
+ {
++    ass->render_cached = false;
+     if (ass->track)
+         ass_flush_events(ass->track);
+ }
+@@ -673,10 +681,14 @@ static void append_ass(struct ass_state *ass, struct mp_osd_res *res,
+     ass_set_frame_size(ass->render, res->w, res->h);
+     ass_set_pixel_aspect(ass->render, res->display_par);
+ 
+-    int ass_changed;
+-    *img_list = ass_render_frame(ass->render, ass->track, 0, &ass_changed);
+-
+-    ass->changed |= ass_changed;
++    if (!ass->render_cached) {
++        int ass_changed;
++        ass->cached_images = ass_render_frame(ass->render, ass->track, 0, &ass_changed);
++        ass->changed |= ass_changed;
++        // Preserve libass's empty-output change reporting, including clear.
++        ass->render_cached = ass->cached_images != NULL;
++    }
++    *img_list = ass->cached_images;
+ 
+     if (changed) {
+         *changed |= ass->changed;
+diff --git a/sub/osd_state.h b/sub/osd_state.h
+index 1eb7f7e..9674020 100644
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -29,6 +29,10 @@ struct ass_state {
+     int res_x, res_y;
+     bool changed;
+     struct mp_osd_res vo_res; // last known value
++    // External OSD events are sampled at time zero until explicitly updated.
++    // The renderer owns these images; invalidate before mutating its track.
++    bool render_cached;
++    struct ass_image *cached_images;
+ };
+ 
+ struct osd_object {
+diff --git a/video/out/vo.c b/video/out/vo.c
+index bab26cf..6b4f825 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -1803,6 +1803,13 @@ static struct secondary_ass_physical_point secondary_next_sample(struct vo *vo,
+     struct secondary_ass_physical storage;
+     bool ds = vo->in->current_frame && vo->in->current_frame->display_synced;
+     const struct secondary_ass_physical *p = secondary_planning_state(vo, ds, divisor, &storage);
++    struct secondary_ass_sample_snapshot sample =
++        osd_get_secondary_sample_snapshot(vo->osd);
++    // Refresh counts start a new namespace after a real lifecycle change.
++    // An old sampler slot projected onto that namespace can be seconds ahead.
++    // Let the next identified fresh presentation initialize the new sampler.
++    if (sample.epoch && sample.epoch != p->epoch)
++        return (struct secondary_ass_physical_point){0};
+     int64_t slot = osd_get_secondary_physical_next_sample_slot(vo->osd);
+     if (slot > 0)
+         return secondary_ass_physical_point_at(p, slot);
+-- 
+2.54.0.windows.1
+
