@@ -25,6 +25,9 @@ V22_PATCH_SHA = 'a18de8b2528d1014adce5dd95d0cc2293a011203c753eeb6b5a515df4c3b1a0
 V24_SOURCE_COMMIT = 'b92d96326d9e797ccc763b15e7bbbf1d9195f64a'
 V24_SOURCE_TREE = '8815cb8d634d1b48b27367367c2b2df38abee23a'
 V24_PATCH_SHA = '40dfadefd8ab98c764faea2bf8e8dc54281f63ed9a87f6536773c5a5c0c16ab8'
+V25_SOURCE_COMMIT = 'ed8e556282c9c4e37a71dfbbeb85d24e6fdf1a49'
+V25_SOURCE_TREE = '23399d1e81d71e78792370ce0699f6b5aaf1fadb'
+V25_PATCH_SHA = '4c091a956ca30dad116d126927a9c84a17b34ee8875a90ba7dbc3681bd66089a'
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
 # V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
 ATMOS_ENTRIES = '''
@@ -119,9 +122,12 @@ def lock_inputs():
             'Exactly one locked V24 0042 patch is required')
     require(lock['common_patches'].get('build/bluray-menu/patches/0042-native-ass-fixed-display-phase.patch') == V24_PATCH_SHA,
             'Frozen V24 b92 single-email patch provenance changed')
+    require(lock['common_patches'].get('build/bluray-menu/patches/0043-native-ass-ui-probe-recovery.patch') == V25_PATCH_SHA,
+            'V25 UI recovery patch provenance changed')
     for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py',
                  HERE/'verify-native-ass-integration-v22-baseline.py',
-                 HERE/'verify-native-ass-queue-stage-caller.py', Path(__file__).resolve(),
+                 HERE/'verify-native-ass-queue-stage-caller.py',
+                 HERE/'verify-native-ass-ui-probe.py', Path(__file__).resolve(),
                  CONFIG/'.github/workflows/native-ass-fast-gcc-preflight.yml',
                  CONFIG/'.github/workflows/build-mpv-v100-parity.yml'):
         inputs[str(path.relative_to(CONFIG))] = sha(path)
@@ -436,8 +442,8 @@ def main():
         require(sha(args.archive) == ARCHIVE_SHA, 'Exact upstream archive SHA mismatch')
         inputs=lock_inputs();report['config_inputs_sha256']=inputs
         require(git(source,'status','--porcelain') == '', 'Fresh replay is dirty')
-        require(git(source,'rev-list','--count','HEAD') == '54', 'Exact V24 replay must contain54 Git layers')
-        require(git(source,'rev-list','--count','HEAD^') == '53', 'Exact main replay must contain53 Git layers')
+        require(git(source,'rev-list','--count','HEAD') == '55', 'Exact V25 replay must contain55 Git layers')
+        require(git(source,'rev-list','--count','HEAD^') == '54', 'Exact main replay must contain54 Git layers')
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
@@ -447,9 +453,10 @@ def main():
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
         report['replay']={'main_commit':main_ref,'main_tree':main_tree,'atmos_commit':atmos_ref,'atmos_tree':atmos_tree,
-            'commit_count':54,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
-        report['candidate_source_provenance'] = {'commit':V24_SOURCE_COMMIT,
-            'windows_tree':V24_SOURCE_TREE, 'single_email_patch_sha256':V24_PATCH_SHA,
+            'commit_count':55,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+        report['candidate_source_provenance'] = {'commit':V25_SOURCE_COMMIT,
+            'windows_tree':V25_SOURCE_TREE, 'incremental_patch_sha256':V25_PATCH_SHA,
+            'frozen_v24_parent_commit':V24_SOURCE_COMMIT, 'frozen_v24_parent_tree':V24_SOURCE_TREE,
             'replay_commit_metadata_equal_to_author_commit':False}
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
@@ -504,6 +511,15 @@ def main():
             forecast_work.mkdir()
             positive['executed_forecast_tests'] = execute_forecast_tests(gate, variant_root, cc, forecast_work)
             positive['executed_stage_caller'] = execute_stage_caller(variant_root, legacy_root, cc, forecast_work)
+            ui_output = work/('ui-probe-'+variant)
+            ui_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-ui-probe.py'),
+                '--source',str(variant_root),'--baseline',str(legacy_root),'--cc',str(cc),
+                '--output',str(ui_output)],capture_output=True,text=True,timeout=120)
+            ui_result = json.loads((ui_output/'ui-probe.json').read_text(encoding='utf-8'))
+            positive['executed_ui_probe'] = {'returncode':ui_run.returncode,
+                'stdout':ui_run.stdout,'stderr':ui_run.stderr,'report':ui_result}
+            require(ui_run.returncode == 0 and ui_result['status'] == 'PASS_CPU_NOT_GPU',
+                    'Actual V25 UI probe tail/outer scheduler failed: '+variant)
             write(work/('positive-'+variant+'.json'),positive)
             mutation_root=work/('mutations-'+variant);mutation_root.mkdir()
             report['negative_variants'][variant]=negative_matrix(gate,variant_root,cc,mutation_root)
@@ -512,7 +528,7 @@ def main():
             require(sha(CONFIG/name) == digest, 'Config input changed during fast preflight: '+name)
         require(not git(source,'status','--porcelain'), 'Original replay changed during preflight')
         require(not git(legacy_root,'status','--porcelain'), 'Legacy V22 reference changed during preflight')
-        report.update(status='EXACT_V24_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
+        report.update(status='EXACT_V25_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
             full_osd_getter_gcc_verified=True,negative_count_per_variant=15)
         return 0
     except BaseException as error:

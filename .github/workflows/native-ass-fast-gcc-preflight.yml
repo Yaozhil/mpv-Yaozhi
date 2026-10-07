@@ -89,5 +89,7 @@ jobs:
             ${{ runner.temp }}/native-ass-fast/checks/*-real-osd-vo.c
             ${{ runner.temp }}/native-ass-fast/checks/forecast-tests-main/stage-actual/**
             ${{ runner.temp }}/native-ass-fast/checks/forecast-tests-atmos/stage-actual/**
+            ${{ runner.temp }}/native-ass-fast/checks/ui-probe-main/**
+            ${{ runner.temp }}/native-ass-fast/checks/ui-probe-atmos/**
           if-no-files-found: warn
           retention-days: 14

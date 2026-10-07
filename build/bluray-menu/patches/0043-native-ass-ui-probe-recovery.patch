@@ -1,0 +1,30 @@
+From ed8e556282c9c4e37a71dfbbeb85d24e6fdf1a49 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Wed, 7 Oct 2026 19:04:47 +0800
+Subject: [PATCH] vo: preserve ASS recovery probe deadline during manual pose
+ reuse
+
+---
+ video/out/vo.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 11ddd55..bab26cf 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -3037,7 +3037,11 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+         in->secondary_redraw_cost = MPMAX(in->secondary_redraw_cpu_cost,
+                                          in->secondary_redraw_gpu_cost);
+         in->secondary_redraw_block_cost = MPMAX(block_cost, in->secondary_redraw_cost);
+-        in->secondary_next_probe = mp_time_ns() + MP_TIME_S_TO_NS(1);
++        // A manual repaint reuses the accepted ASS pose, so it is not a
++        // recovery sample. Keep its measured cost, but do not postpone the
++        // pending probe while UI redraws continue under budget pressure.
++        if (!fixed_pose_reuse)
++            in->secondary_next_probe = mp_time_ns() + MP_TIME_S_TO_NS(1);
+         mp_mutex_unlock(&in->lock);
+     }
+ 
+-- 
+2.54.0.windows.1
+
