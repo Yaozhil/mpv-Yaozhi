@@ -1,0 +1,2600 @@
+From 22f1adf82007a263c5fa13ed361e2a51745872e9 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 7 Oct 2026 11:22:52 +0800
+Subject: [PATCH] Keep Native ASS logical cadence separate from display
+ forecast and stage queued video
+
+---
+ sub/osd.c                              |  77 ++++-
+ sub/osd.h                              |   4 +
+ sub/osd_state.h                        |   3 +
+ sub/secondary_ass_clock.h              |  79 +++++
+ test/meson.build                       |  14 +
+ test/secondary_ass_display_forecast.c  | 416 ++++++++++++++++++++++++
+ test/secondary_ass_queue_stage.c       | 169 ++++++++++
+ test/secondary_ass_stage_prefix.c      | 421 +++++++++++++++++++++++++
+ video/out/secondary_ass_present_plan.h |  94 +++++-
+ video/out/secondary_ass_queue_stage.h  | 100 ++++++
+ video/out/secondary_ass_stage_prefix.h | 269 ++++++++++++++++
+ video/out/vo.c                         | 421 +++++++++++++++++++++++--
+ 12 files changed, 2040 insertions(+), 27 deletions(-)
+ create mode 100644 test/secondary_ass_display_forecast.c
+ create mode 100644 test/secondary_ass_queue_stage.c
+ create mode 100644 test/secondary_ass_stage_prefix.c
+ create mode 100644 video/out/secondary_ass_queue_stage.h
+ create mode 100644 video/out/secondary_ass_stage_prefix.h
+
+diff --git a/sub/osd.c b/sub/osd.c
+index 4f42482..0854b24 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -416,6 +416,12 @@ struct secondary_ass_sample_snapshot osd_get_secondary_sample_snapshot(struct os
+         .next_wall = secondary_ass_sampler_next_wall(s),
+         .phase_wall = s->phase_wall, .phase_slot = s->phase_slot,
+         .interval = s->physical_interval,
++        .origin_slot = s->origin_slot,
++        .sample_slot = secondary_ass_sampler_next_slot(s) > s->divisor && s->divisor > 0
++            ? secondary_ass_sampler_next_slot(s) - s->divisor : 0,
++        .display_forecast = s->display_forecast,
++        .sample_forced = osd->secondary_display_forecast &&
++            osd->secondary_forecast_forced_sample,
+     };
+     snapshot.valid = snapshot.rate > 0 && !snapshot.held && !snapshot.force &&
+         osd->secondary_physical_phase && osd->secondary_clock.valid &&
+@@ -452,6 +458,7 @@ void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
+     if (physical_phase != osd->secondary_physical_phase)
+         secondary_ass_sampler_reset(&osd->secondary_sampler);
+     osd->secondary_physical_phase = physical_phase;
++    osd->secondary_display_forecast = false;
+     osd->secondary_physical_epoch = 0;
+     osd->secondary_present_wall = wall > 0 ? wall : 0;
+     osd->secondary_submit_wall = submit_wall > 0 ? submit_wall : 0;
+@@ -465,9 +472,12 @@ void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
+ {
+     mp_mutex_lock(&osd->lock);
+     osd->secondary_sample_held = false;
+-    if (!osd->secondary_physical_phase || osd->secondary_physical_epoch != epoch)
++    if (!osd->secondary_physical_phase || osd->secondary_physical_epoch != epoch ||
++        osd->secondary_display_forecast)
+         secondary_ass_sampler_reset(&osd->secondary_sampler);
+     osd->secondary_physical_phase = true;
++    osd->secondary_display_forecast = false;
++    osd->secondary_forecast_forced_sample = false;
+     osd->secondary_physical_epoch = epoch;
+     osd->secondary_target_slot = target_slot;
+     osd->secondary_phase_wall = phase_wall;
+@@ -478,6 +488,57 @@ void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++bool osd_set_secondary_physical_forecast_time(struct osd_state *osd,
++    int64_t display_wall, int64_t logical_slot, int64_t display_slot,
++    int64_t phase_wall, int64_t phase_slot, int64_t interval,
++    uint64_t epoch, int64_t submit_wall)
++{
++    mp_mutex_lock(&osd->lock);
++    struct secondary_ass_sampler projection = {
++        .phase_wall = phase_wall, .phase_slot = phase_slot,
++        .physical_interval = interval,
++    };
++    struct secondary_ass_sampler *s = &osd->secondary_sampler;
++    bool valid = epoch && logical_slot > 0 && display_slot >= logical_slot &&
++        phase_wall > 0 && phase_slot > 0 && interval > 0 && display_wall > 0 &&
++        secondary_ass_sampler_slot_wall(&projection, display_slot) == display_wall;
++    if (valid && s->valid && s->physical_slots && s->display_forecast &&
++        s->epoch == epoch && s->rate == osd->secondary_rate)
++    {
++        valid = logical_slot >= s->origin_slot && s->divisor > 0 &&
++            (logical_slot - s->origin_slot) % s->divisor == 0;
++        if (valid) {
++            uint64_t tick = (uint64_t)((logical_slot - s->origin_slot) / s->divisor);
++            if (tick > s->tick)
++                valid = display_slot > s->display_slot && display_wall > s->sample_wall;
++        }
++    }
++    if (!valid) {
++        // A colliding/stale captured D is a miss, never a new clock origin.
++        osd->secondary_sample_held = true;
++        mp_mutex_unlock(&osd->lock);
++        return false;
++    }
++    if (!osd->secondary_physical_phase || osd->secondary_physical_epoch != epoch ||
++        !osd->secondary_display_forecast)
++        secondary_ass_sampler_reset(s);
++    if (!osd->secondary_display_forecast || osd->secondary_logical_slot != logical_slot)
++        osd->secondary_forecast_forced_sample = false;
++    osd->secondary_sample_held = false;
++    osd->secondary_physical_phase = true;
++    osd->secondary_display_forecast = true;
++    osd->secondary_physical_epoch = epoch;
++    osd->secondary_logical_slot = logical_slot;
++    osd->secondary_target_slot = display_slot;
++    osd->secondary_phase_wall = phase_wall;
++    osd->secondary_phase_slot = phase_slot;
++    osd->secondary_present_wall = display_wall;
++    osd->secondary_submit_wall = submit_wall;
++    osd->secondary_vsync_interval = interval;
++    mp_mutex_unlock(&osd->lock);
++    return true;
++}
++
+ void osd_hold_secondary_sample(struct osd_state *osd)
+ {
+     mp_mutex_lock(&osd->lock);
+@@ -509,6 +570,7 @@ void osd_reset_secondary_clock(struct osd_state *osd)
+     osd->secondary_present_wall = 0;
+     osd->secondary_submit_wall = 0;
+     osd->secondary_physical_phase = false;
++    osd->secondary_display_forecast = false;
+     osd->secondary_physical_epoch = 0;
+     mp_mutex_unlock(&osd->lock);
+ }
+@@ -545,9 +607,17 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+                         sampler->valid ? sampler->tick : 0, sampler->force,
+                         sampler->physical_slots, sampler->epoch);
+         } else if (osd->secondary_rate > 0 && osd->secondary_clock.valid) {
++            if (osd->secondary_display_forecast)
++                osd->secondary_forecast_forced_sample |= osd->secondary_sampler.force;
+             int64_t sample_wall = osd->secondary_present_wall > 0
+                 ? osd->secondary_present_wall : mp_time_ns();
+-            bool changed = osd->secondary_physical_phase
++            bool changed = osd->secondary_physical_phase && osd->secondary_display_forecast
++                ? secondary_ass_sampler_update_physical_forecast(&osd->secondary_sampler,
++                    &osd->secondary_clock, osd->secondary_rate, sample_wall,
++                    osd->secondary_logical_slot, osd->secondary_target_slot,
++                    osd->secondary_phase_wall, osd->secondary_phase_slot,
++                    osd->secondary_vsync_interval, osd->secondary_physical_epoch)
++                : osd->secondary_physical_phase
+                 ? secondary_ass_sampler_update_physical(&osd->secondary_sampler,
+                     &osd->secondary_clock, osd->secondary_rate, sample_wall,
+                     osd->secondary_target_slot, osd->secondary_phase_wall,
+@@ -594,7 +664,8 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+                     ((uint64_t)sampler->force << 3) |
+                     ((uint64_t)sampler->physical_slots << 4) |
+                     ((uint64_t)clock->display_synced << 5) |
+-                    ((uint64_t)draw_scope << 6),
++                    ((uint64_t)draw_scope << 6) |
++                    ((uint64_t)osd->secondary_display_forecast << 7),
+                 .v = {sampler->sample_wall, (int64_t)sampler->tick,
+                     mp_ass_pacing_double_bits(video_pts), clock->wall,
+                     mp_ass_pacing_double_bits(clock->pts),
+diff --git a/sub/osd.h b/sub/osd.h
+index 178e5a5..12f1c03 100644
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -227,6 +227,10 @@ struct secondary_ass_sample_snapshot osd_get_secondary_sample_snapshot(struct os
+ void osd_set_secondary_physical_presentation_time(struct osd_state *osd,
+     int64_t target_wall, int64_t target_slot, int64_t phase_wall,
+     int64_t phase_slot, int64_t interval, uint64_t epoch, int64_t submit_wall);
++bool osd_set_secondary_physical_forecast_time(struct osd_state *osd,
++    int64_t display_wall, int64_t logical_slot, int64_t display_slot,
++    int64_t phase_wall, int64_t phase_slot, int64_t interval,
++    uint64_t epoch, int64_t submit_wall);
+ void osd_anchor_secondary_clock(struct osd_state *osd, double pts, int64_t wall,
+                                 bool display_synced);
+ void osd_set_secondary_presentation_time(struct osd_state *osd, int64_t wall,
+diff --git a/sub/osd_state.h b/sub/osd_state.h
+index 7481d3b..1eb7f7e 100644
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -84,6 +84,9 @@ struct osd_state {
+     int64_t secondary_submit_wall;
+     int64_t secondary_vsync_interval;
+     bool secondary_physical_phase;
++    bool secondary_display_forecast;
++    bool secondary_forecast_forced_sample;
++    int64_t secondary_logical_slot;
+     int64_t secondary_target_slot, secondary_phase_slot, secondary_phase_wall;
+     uint64_t secondary_physical_epoch;
+     bool secondary_clock_trace;
+diff --git a/sub/secondary_ass_clock.h b/sub/secondary_ass_clock.h
+index 3ef2344..815fb32 100644
+--- a/sub/secondary_ass_clock.h
++++ b/sub/secondary_ass_clock.h
+@@ -28,8 +28,10 @@ struct secondary_ass_sampler {
+     int64_t sample_wall;
+     uint64_t tick;
+     bool physical_slots;
++    bool display_forecast;
+     uint64_t epoch;
+     int64_t origin_slot, divisor;
++    int64_t display_slot;
+     int64_t phase_wall, phase_slot, physical_interval;
+ };
+ 
+@@ -41,6 +43,8 @@ struct secondary_ass_sample_snapshot {
+     uint64_t epoch;
+     int64_t next_slot, next_wall, divisor;
+     int64_t phase_wall, phase_slot, interval;
++    int64_t origin_slot, sample_slot;
++    bool display_forecast, sample_forced;
+ };
+ 
+ static inline void secondary_ass_sampler_reset(struct secondary_ass_sampler *sampler)
+@@ -227,6 +231,81 @@ static inline bool secondary_ass_sampler_update_physical(
+     return true;
+ }
+ 
++// Opt-in display forecasting retains G as the logical tick identity, while
++// sampling the pose at its independently captured physical display slot D.
++// Changing the forecast never restarts the origin or consumes a second tick.
++static inline bool secondary_ass_sampler_update_physical_forecast(
++    struct secondary_ass_sampler *s, const struct secondary_ass_clock *clock,
++    double rate, int64_t display_wall, int64_t logical_slot, int64_t display_slot,
++    int64_t phase_wall, int64_t phase_slot, int64_t interval, uint64_t epoch)
++{
++    if (!clock->valid || !isfinite(rate) || rate <= 0 || logical_slot <= 0 ||
++        display_slot < logical_slot || display_wall <= 0 || phase_wall <= 0 ||
++        phase_slot <= 0 || interval <= 0 || !epoch) {
++        secondary_ass_sampler_reset(s);
++        return false;
++    }
++    struct secondary_ass_sampler projection = {
++        .phase_wall = phase_wall, .phase_slot = phase_slot,
++        .physical_interval = interval,
++    };
++    int64_t logical_wall = secondary_ass_sampler_slot_wall(&projection, logical_slot);
++    if (logical_wall <= 0 ||
++        secondary_ass_sampler_slot_wall(&projection, display_slot) != display_wall)
++        return false;
++    bool initialize = !s->valid || !s->physical_slots || !s->display_forecast ||
++                      s->rate != rate || s->epoch != epoch;
++    if (initialize) {
++        double ratio = 1e9 / rate / interval;
++        if (!isfinite(ratio) || ratio < 0.5 || ratio >= (double)INT64_MAX)
++            return false;
++        int64_t divisor = (int64_t)(ratio + 0.5);
++        // Forecasts require an identified integer-divided physical cadence.
++        // Noneligible manual rates remain a separate legacy caller choice.
++        if (divisor < 1 || fabs(rate * interval * 1e-9 * divisor - 1) > 0.005)
++            return false;
++        *s = (struct secondary_ass_sampler){
++            .valid = true, .physical_slots = true, .display_forecast = true,
++            .rate = rate, .epoch = epoch, .divisor = divisor,
++            .origin_slot = logical_slot, .display_slot = display_slot,
++            .origin_wall = logical_wall, .sample_wall = display_wall,
++            .pts = secondary_ass_clock_sample(clock, display_wall),
++            .phase_wall = phase_wall, .phase_slot = phase_slot,
++            .physical_interval = interval,
++        };
++        return true;
++    }
++    // A normal feedback reanchor only updates the local projection for the
++    // next G. It cannot rewrite the D pose already sampled for this task.
++    s->phase_wall = phase_wall;
++    s->phase_slot = phase_slot;
++    s->physical_interval = interval;
++    if (logical_slot < s->origin_slot ||
++        (logical_slot - s->origin_slot) % s->divisor)
++        return false;
++    uint64_t tick = (uint64_t)((logical_slot - s->origin_slot) / s->divisor);
++    if (tick <= s->tick) {
++        if (!s->force)
++            return false;
++        // An explicit repaint of the current tick retains its captured pose.
++        // A new forecast is eligible only when the logical task advances.
++        s->pts = secondary_ass_clock_sample(clock, s->sample_wall);
++        s->force = false;
++        return true;
++    }
++    // N=1 and a falling forecast can collide with the previous physical D.
++    // Reject that new pose as a miss; the caller may advance to a later G on
++    // the same lattice, but must not rename or replay this captured task.
++    if (display_slot <= s->display_slot || display_wall <= s->sample_wall)
++        return false;
++    s->tick = tick;
++    s->display_slot = display_slot;
++    s->sample_wall = display_wall;
++    s->pts = secondary_ass_clock_sample(clock, display_wall);
++    s->force = false;
++    return true;
++}
++
+ static inline bool secondary_ass_sampler_update(struct secondary_ass_sampler *sampler,
+                                                 const struct secondary_ass_clock *clock,
+                                                 double rate, int64_t present_wall,
+diff --git a/test/meson.build b/test/meson.build
+index 682042d..4fd3f84 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -109,6 +109,20 @@ secondary_ass_queue_lead = executable('secondary-ass-queue-lead',
+     dependencies: libm)
+ test('secondary-ass-queue-lead', secondary_ass_queue_lead)
+ 
++secondary_ass_queue_stage = executable('secondary-ass-queue-stage',
++    'secondary_ass_queue_stage.c', include_directories: incdir)
++test('secondary-ass-queue-stage', secondary_ass_queue_stage)
++
++secondary_ass_display_forecast = executable('secondary-ass-display-forecast',
++    'secondary_ass_display_forecast.c', include_directories: incdir,
++    dependencies: libm)
++test('secondary-ass-display-forecast', secondary_ass_display_forecast)
++
++secondary_ass_stage_prefix = executable('secondary-ass-stage-prefix',
++    'secondary_ass_stage_prefix.c', include_directories: incdir,
++    dependencies: libm)
++test('secondary-ass-stage-prefix', secondary_ass_stage_prefix)
++
+ format = executable('format', files('format.c'), include_directories: incdir, link_with: test_utils)
+ test('format', format)
+ 
+diff --git a/test/secondary_ass_display_forecast.c b/test/secondary_ass_display_forecast.c
+new file mode 100644
+index 0000000..e8fa207
+--- /dev/null
++++ b/test/secondary_ass_display_forecast.c
+@@ -0,0 +1,416 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "sub/secondary_ass_clock.h"
++#include "video/out/secondary_ass_present_plan.h"
++
++// These are actual header calls, including the production feedback order.
++// Synthetic display/count inputs exercise logic; they are not GPU evidence.
++// Keep checks active in NDEBUG builds as well as ordinary test builds.
++static unsigned long long checks, chain_frames;
++#define CHECK(x) do { checks++; if (!(x)) { \
++    fprintf(stderr, "forecast check %llu failed at %d: %s\n", \
++            checks, __LINE__, #x); exit(2); } } while (0)
++
++static const int64_t origin = INT64_C(1000000000);
++
++static struct secondary_ass_physical state(int64_t T, int H)
++{
++    return (struct secondary_ass_physical){
++        .phase = origin, .phase_slot = 100, .interval = T, .epoch = 7,
++        .sync_qpc_ns = origin, .sync_count = 100, .sync_slot = 100,
++        .sync_segment_consistent = true,
++        .measure_qpc_ns = origin, .measure_count = 100,
++        .periods = {T, T, T}, .period_count = 3, .period_next = 3,
++        .delay = H, .delay_samples = {H, H, H}, .delay_count = 3,
++        .success_generation = 3,
++    };
++}
++
++static struct secondary_ass_clock clock_state(void)
++{
++    return (struct secondary_ass_clock){
++        .valid = true, .pts = 10, .speed = 1, .wall = origin,
++    };
++}
++
++static bool sample(struct secondary_ass_sampler *s,
++    const struct secondary_ass_clock *c,
++    const struct secondary_ass_physical *p,
++    const struct secondary_ass_present_plan *plan, int64_t divisor)
++{
++    double rate = s->valid && s->display_forecast
++        ? s->rate : 1e9 / (p->interval * divisor);
++    return secondary_ass_sampler_update_physical_forecast(s, c,
++        rate, plan->target.wall, plan->base.slot,
++        plan->target.slot, p->phase, p->phase_slot, p->interval, p->epoch);
++}
++
++static void feedback(struct secondary_ass_physical *p,
++    const struct secondary_ass_present_plan *plan, uint64_t id,
++    struct secondary_ass_physical_point actual)
++{
++    // This is the real secondary_physical_feedback ordering: immutable
++    // registration, observed raw Sync/Present feedback, successful Present.
++    CHECK(secondary_ass_physical_submit_planned_point(p, id, plan->epoch,
++                                                     plan->base, plan->target));
++    secondary_ass_physical_update_observed(p, false, id, plan->target,
++        actual.wall, actual.wall, (uint32_t)actual.slot, (uint32_t)actual.slot,
++        id, p->interval);
++    secondary_ass_physical_record_present(p, true, id, 3, 1);
++    unsigned saved = (p->next + 31) % 32;
++    CHECK(p->submitted[saved].id == id);
++    CHECK(p->submitted[saved].base_slot == plan->base.slot);
++    CHECK(p->submitted[saved].base == plan->base.wall);
++    CHECK(p->submitted[saved].target_slot == plan->target.slot);
++    CHECK(p->last_submit_id == id && p->historical_id == id);
++    CHECK(p->phase_slot == actual.slot && p->phase == actual.wall);
++    chain_frames++;
++}
++
++static void steady_chain(int Hz, int64_t N, int H)
++{
++    int64_t T = INT64_C(1000000000) / Hz;
++    struct secondary_ass_physical p = state(T, H);
++    struct secondary_ass_clock c = clock_state();
++    struct secondary_ass_sampler s = {0};
++    const int64_t first = 110;
++    // Cover three minutes of logical display time per rate/divisor/regime.
++    // This is accelerated CPU time, not three minutes of real scanout.
++    int ticks = Hz * 180 / (int)N;
++    for (int k = 0; k < ticks; k++) {
++        int64_t G = first + k * N;
++        struct secondary_ass_physical_point g = secondary_ass_physical_point_at(&p, G);
++        struct secondary_ass_physical before = p;
++        struct secondary_ass_present_plan plan = k % 3 == 0
++            ? secondary_ass_present_plan_fresh_forecast(&p, g.wall + 2 * T, g)
++            : secondary_ass_present_plan_cache_forecast(&p, g);
++        CHECK(!memcmp(&p, &before, sizeof(p)));
++        CHECK(plan.valid && plan.display_forecast);
++        CHECK(plan.base.slot == G && plan.target.slot == G + H);
++        CHECK(plan.base.wall == g.wall && plan.target.wall == g.wall + H * T);
++        CHECK(plan.historical_delay == H && plan.captured_forecast == H);
++        CHECK(plan.submit == g.wall - T + (T / 4 < 1000000 ? T / 4 : 1000000));
++        CHECK(plan.deadline == plan.target.wall);
++        CHECK(secondary_ass_present_plan_current(&p, &plan));
++        CHECK(sample(&s, &c, &p, &plan, N));
++        CHECK(s.display_forecast && s.origin_slot == first);
++        CHECK(s.origin_wall == origin + (first - 100) * T);
++        CHECK(s.tick == (uint64_t)k && s.display_slot == G + H);
++        CHECK(s.sample_wall == plan.target.wall);
++        CHECK(fabs(s.pts - secondary_ass_clock_sample(&c, plan.target.wall)) < 1e-12);
++        CHECK(secondary_ass_sampler_next_slot(&s) == G + N);
++        CHECK(secondary_ass_sampler_next_wall(&s) == g.wall + N * T);
++        struct secondary_ass_sampler saved = s;
++        CHECK(!sample(&s, &c, &p, &plan, N));
++        CHECK(s.tick == saved.tick && s.display_slot == saved.display_slot &&
++              s.sample_wall == saved.sample_wall && s.pts == saved.pts);
++        feedback(&p, &plan, (uint64_t)k + 1, plan.target);
++        CHECK(p.delay == H && p.epoch == 7 && !p.outlier_pending);
++        CHECK(s.origin_slot == first && s.tick == (uint64_t)k);
++        struct secondary_ass_physical_point next =
++            secondary_ass_present_plan_cache_next_forecast(&p, G + N, N,
++                                                           g.wall + (N - 1) * T);
++        CHECK(next.slot == G + N);
++    }
++}
++
++static void forecasts_and_fifo(int64_t T)
++{
++    struct secondary_ass_physical p = state(T, 2);
++    struct secondary_ass_physical_point g = secondary_ass_physical_point_at(&p, 110);
++    struct secondary_ass_present_plan plan = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(plan.valid && plan.base.slot == 110 && plan.target.slot == 112);
++    CHECK(plan.captured_forecast == 2 && plan.historical_delay == 2);
++    p.delay = 0; // Later feedback cannot reinterpret captured G, D or S.
++    CHECK(plan.base.slot == 110 && plan.target.slot == 112);
++    CHECK(plan.submit == g.wall - T + (T / 4 < 1000000 ? T / 4 : 1000000));
++    feedback(&p, &plan, 1, plan.target);
++    CHECK(p.submitted[0].base_slot == 110 && p.submitted[0].target_slot == 112);
++
++    p = state(T, 1);
++    p.last_base_slot = 99;
++    p.historical_id = 10;
++    p.success_first_id = 11;
++    p.success_last_id = 13;
++    p.success_contiguous = true;
++    g = secondary_ass_physical_point_at(&p, 100);
++    plan = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(plan.valid && plan.fifo_known && plan.fifo_lower == 104);
++    CHECK(plan.base.slot == 100 && plan.target.slot == 104);
++    CHECK(plan.historical_delay == 1 && plan.captured_forecast == 4);
++    CHECK(plan.submit == g.wall - T + (T / 4 < 1000000 ? T / 4 : 1000000));
++    struct secondary_ass_physical_point next =
++        secondary_ass_present_plan_cache_next_forecast(&p, 100, 2, g.wall - T);
++    CHECK(next.slot == 104); // lower-H=103, preserve the original even lattice.
++    plan = secondary_ass_present_plan_cache_forecast(&p, next);
++    CHECK(plan.valid && plan.target.slot == 105 && plan.captured_forecast == 1);
++
++    p = state(T, 2);
++    g = secondary_ass_physical_point_at(&p, 110);
++    next = secondary_ass_present_plan_cache_next_forecast(&p, 110, 2, g.wall + T / 2);
++    CHECK(next.slot == 110); // G has passed, but D112 has not expired.
++    next = secondary_ass_present_plan_cache_next_forecast(&p, 110, 2, g.wall + 2 * T - 1);
++    CHECK(next.slot == 110);
++    next = secondary_ass_present_plan_cache_next_forecast(&p, 110, 2, g.wall + 2 * T);
++    CHECK(next.slot == 112); // Exact D boundary is a real miss, not a relabel.
++    p.last_base_slot = 112;
++    next = secondary_ass_present_plan_cache_next_forecast(&p, 110, 2, g.wall - T);
++    CHECK(next.slot == 114);
++    plan = secondary_ass_present_plan_fresh_forecast(&p, g.wall + 20 * T, g);
++    CHECK(!plan.valid && plan.base.slot == g.slot); // No completion-time rescue.
++    plan = secondary_ass_present_plan_fresh_forecast(&p, g.wall + T, (struct secondary_ass_physical_point){0});
++    CHECK(plan.valid && plan.base.slot > p.last_base_slot);
++    g.wall++;
++    CHECK(!secondary_ass_present_plan_fresh_forecast(&p, g.wall, g).valid);
++}
++
++static void sampler_changes(int64_t T)
++{
++    struct secondary_ass_physical p = state(T, 1);
++    struct secondary_ass_clock c = clock_state();
++    struct secondary_ass_sampler s = {0};
++    struct secondary_ass_physical_point g = secondary_ass_physical_point_at(&p, 110);
++    struct secondary_ass_present_plan a = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(sample(&s, &c, &p, &a, 1));
++    struct secondary_ass_physical reverse = p;
++    reverse.phase -= 3 * T;
++    struct secondary_ass_present_plan backwards = secondary_ass_present_plan_make_forecast(&reverse,
++        secondary_ass_physical_point_at(&reverse, 112));
++    CHECK(backwards.valid && backwards.target.slot > s.display_slot);
++    CHECK(backwards.target.wall < s.sample_wall);
++    CHECK(!sample(&s, &c, &reverse, &backwards, 1));
++    CHECK(s.tick == 0 && s.display_slot == 111 && s.sample_wall == a.target.wall);
++    p.delay = 3;
++    struct secondary_ass_present_plan b = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(!sample(&s, &c, &p, &b, 1));
++    CHECK(s.tick == 0 && s.display_slot == 111 && s.sample_wall == a.target.wall);
++    s.force = true;
++    CHECK(sample(&s, &c, &p, &b, 1));
++    CHECK(s.tick == 0 && s.display_slot == 111 && s.sample_wall == a.target.wall && !s.force);
++    p.delay = 0;
++    g = secondary_ass_physical_point_at(&p, 111);
++    b = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(!sample(&s, &c, &p, &b, 1)); // D111 collides, task remains a MISS.
++    CHECK(s.tick == 0 && s.display_slot == 111 && s.origin_slot == 110);
++    g = secondary_ass_physical_point_at(&p, 112);
++    b = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(sample(&s, &c, &p, &b, 1));
++    CHECK(s.tick == 2 && s.display_slot == 112 && s.origin_slot == 110);
++    p.delay = 2;
++    g = secondary_ass_physical_point_at(&p, 113);
++    b = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(sample(&s, &c, &p, &b, 1));
++    CHECK(s.tick == 3 && s.display_slot == 115 && s.origin_slot == 110);
++    // A normal coordinate reanchor/refinement changes future projections,
++    // not the already sampled task or the continuous logical origin.
++    p.phase += T + 1000;
++    p.phase_slot++;
++    p.interval++;
++    CHECK(!sample(&s, &c, &p, &b, 1)); // Old D wall is not the new projection.
++    b = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(!b.valid); // Stale G wall is not silently repaired either.
++    g = secondary_ass_physical_point_at(&p, 113);
++    b = secondary_ass_present_plan_make_forecast(&p, g);
++    CHECK(!sample(&s, &c, &p, &b, 1));
++    CHECK(s.origin_slot == 110 && s.tick == 3 && s.display_slot == 115);
++    CHECK(secondary_ass_sampler_next_slot(&s) == 114);
++    CHECK(secondary_ass_sampler_next_wall(&s) == secondary_ass_physical_point_at(&p, 114).wall);
++    p.epoch++;
++    CHECK(sample(&s, &c, &p, &b, 1)); // Explicit epoch lifecycle initializes.
++    CHECK(s.origin_slot == 113 && s.tick == 0 && s.epoch == p.epoch);
++    s.force = true;
++    struct secondary_ass_clock invalid = {0};
++    CHECK(!sample(&s, &invalid, &p, &b, 1) && !s.valid && !s.force);
++}
++
++static void jitter_and_history(int64_t T)
++{
++    struct secondary_ass_physical p = state(T, 1);
++    struct secondary_ass_clock c = clock_state();
++    struct secondary_ass_sampler s = {0};
++    for (int k = 0; k < 256; k++) {
++        int64_t G = 110 + 2 * k;
++        struct secondary_ass_present_plan plan = secondary_ass_present_plan_make_forecast(&p,
++            secondary_ass_physical_point_at(&p, G));
++        CHECK(plan.valid && sample(&s, &c, &p, &plan, 2));
++        struct secondary_ass_physical_point actual = plan.target;
++        if (k == 32)
++            actual.wall += T / 100; // One QPC jitter is not a count jump/reset.
++        feedback(&p, &plan, (uint64_t)k + 1, actual);
++        CHECK(p.epoch == 7 && p.delay == 1 && !p.outlier_pending);
++        CHECK(s.origin_slot == 110 && s.tick == (uint64_t)k);
++        // Duplicate historical ID is not a second delay observation.
++        int count = p.delay_count, cursor = p.delay_next;
++        secondary_ass_physical_update_observed(&p, false, 0,
++            (struct secondary_ass_physical_point){0}, actual.wall, actual.wall,
++            (uint32_t)actual.slot, (uint32_t)actual.slot, (uint64_t)k + 1, T);
++        CHECK(p.delay_count == count && p.delay_next == cursor);
++    }
++    uint64_t epoch = p.epoch;
++    int H = p.delay, count = p.delay_count, cursor = p.delay_next;
++    int64_t phase = p.phase, phase_slot = p.phase_slot;
++    CHECK(secondary_ass_physical_observe(&p, p.sync_qpc_ns + T,
++                                        p.sync_count, T));
++    CHECK(!p.sync_segment_consistent && !p.outlier_pending && p.epoch == epoch);
++    CHECK(p.phase == phase && p.phase_slot == phase_slot);
++    CHECK(p.delay == H && p.delay_count == count && p.delay_next == cursor);
++    CHECK(!secondary_ass_physical_observe(&p, p.sync_qpc_ns + T * 3 / 5,
++                                         p.sync_count, T));
++    CHECK(p.outlier_pending && p.epoch == epoch);
++    CHECK(p.phase == phase && p.phase_slot == phase_slot);
++    CHECK(p.delay == H && p.delay_count == count && p.delay_next == cursor);
++    secondary_ass_physical_reset(&p);
++    CHECK(p.epoch == epoch + 1 && !p.phase && !p.delay_count);
++}
++
++static void lagged_history_and_mode(int64_t T, int64_t N, unsigned lag)
++{
++    struct secondary_ass_physical p = state(T, 0);
++    struct secondary_ass_clock c = clock_state();
++    struct secondary_ass_sampler s = {0};
++    struct secondary_ass_physical_point actual[768] = {0};
++    int64_t last_display = 0;
++    for (unsigned k = 0; k < 768; k++) {
++        int64_t G = 110 + (int64_t)k * N;
++        struct secondary_ass_present_plan plan = secondary_ass_present_plan_make_forecast(&p,
++            secondary_ass_physical_point_at(&p, G));
++        CHECK(plan.valid && plan.historical_delay == p.delay);
++        CHECK(plan.target.slot - plan.base.slot == plan.captured_forecast);
++        CHECK(sample(&s, &c, &p, &plan, N));
++        CHECK(s.tick == k && s.origin_slot == 110);
++        CHECK(plan.submit == plan.base.wall - p.interval +
++              (p.interval / 4 < 1000000 ? p.interval / 4 : 1000000));
++        // Two stable transport regimes with exact count/QPC feedback. These
++        // are model inputs, not an inference about a real composition mode.
++        int offset = k >= 128 && k < 512 ? 1 : 0;
++        int64_t actual_slot = G + offset;
++        CHECK(actual_slot > last_display); // No synthetic same-refresh Sync1.
++        last_display = actual_slot;
++        actual[k] = (struct secondary_ass_physical_point){
++            .slot = actual_slot, .wall = origin + (actual_slot - 100) * T,
++        };
++        uint64_t id = (uint64_t)k + 1;
++        CHECK(secondary_ass_physical_submit_planned_point(&p, id, plan.epoch,
++                                                         plan.base, plan.target));
++        bool known = k >= lag;
++        uint64_t hist_id = known ? (uint64_t)k - lag + 1 : 0;
++        uint32_t hist_count = known ? (uint32_t)actual[k - lag].slot : 0;
++        secondary_ass_physical_update_observed(&p, false, id, plan.target,
++            actual[k].wall, actual[k].wall, (uint32_t)actual[k].slot,
++            hist_count, hist_id, T);
++        secondary_ass_physical_record_present(&p, true, id, 3, 1);
++        chain_frames++;
++        unsigned saved = (p.next + 31) % 32;
++        CHECK(p.submitted[saved].base_slot == G);
++        CHECK(p.submitted[saved].target_slot == plan.target.slot);
++        CHECK(p.epoch == 7 && !p.outlier_pending && p.sync_segment_consistent);
++        CHECK(s.origin_slot == 110 && s.tick == k);
++        if (known) {
++            CHECK(p.historical_id == hist_id);
++            CHECK(p.phase_slot == actual[k - lag].slot);
++            CHECK(p.phase == actual[k - lag].wall);
++        }
++        if (k >= 140 + lag && k < 512)
++            CHECK(p.delay == 1); // Forecasting must not erase learned H.
++        if (k >= 524 + lag)
++            CHECK(p.delay == 0); // Stable recovery must not oscillate H0/H1.
++    }
++}
++
++static void held_pose_committed_G(int64_t T)
++{
++    struct secondary_ass_physical p = state(T, 1);
++    struct secondary_ass_clock c = clock_state();
++    struct secondary_ass_sampler s = {0};
++    struct secondary_ass_present_plan a = secondary_ass_present_plan_make_forecast(&p,
++        secondary_ass_physical_point_at(&p, 110));
++    CHECK(sample(&s, &c, &p, &a, 1));
++    feedback(&p, &a, 1, a.target);
++    // Deliberately probe a decreasing captured forecast at N1. Its rejected
++    // pose is an explicit ASS MISS, even if the primary video Present succeeds.
++    p.delay = 0;
++    struct secondary_ass_present_plan missed = secondary_ass_present_plan_make_forecast(&p,
++        secondary_ass_physical_point_at(&p, 111));
++    CHECK(missed.valid && missed.target.slot == s.display_slot);
++    CHECK(!sample(&s, &c, &p, &missed, 1));
++    CHECK(s.tick == 0 && s.display_slot == 111);
++    struct secondary_ass_physical_point actual = secondary_ass_physical_point_at(&p, 112);
++    feedback(&p, &missed, 2, actual);
++    CHECK(p.last_base_slot == 111);
++    CHECK(missed.target.slot == 111); // Saved MISS is not renamed actual112.
++    CHECK(secondary_ass_sampler_next_slot(&s) == 111); // Pose did not consume G.
++    struct secondary_ass_physical_point next = secondary_ass_present_plan_cache_next_forecast(&p,
++        secondary_ass_sampler_next_slot(&s), 1, actual.wall - T);
++    CHECK(next.slot == 112); // The successful Present ledger skips attempted G.
++    struct secondary_ass_present_plan resumed = secondary_ass_present_plan_cache_forecast(&p, next);
++    CHECK(resumed.valid && sample(&s, &c, &p, &resumed, 1));
++    CHECK(s.origin_slot == 110 && s.tick == 2 && s.display_slot == resumed.target.slot);
++}
++
++static void invalid_and_legacy(int64_t T)
++{
++    struct secondary_ass_physical p = state(T, 1);
++    struct secondary_ass_physical_point g = secondary_ass_physical_point_at(&p, 110);
++    struct secondary_ass_present_plan old = secondary_ass_present_plan_cache(&p, g);
++    CHECK(old.valid && !old.display_forecast && !old.captured_forecast);
++    CHECK(old.base.slot == 110 && old.target.slot == 110 && old.deadline == g.wall);
++    struct secondary_ass_physical_point next = secondary_ass_present_plan_cache_next(&p, 110, 2, g.wall);
++    CHECK(next.slot == 112);
++    struct secondary_ass_clock c = clock_state();
++    struct secondary_ass_sampler s = {0};
++    CHECK(secondary_ass_sampler_update_physical(&s, &c, 1e9 / (2 * T), g.wall,
++        g.slot, p.phase, p.phase_slot, T, p.epoch));
++    CHECK(!s.display_forecast && !s.display_slot && s.origin_slot == 110);
++    CHECK(secondary_ass_sampler_next_slot(&s) == 112);
++    CHECK(!secondary_ass_present_plan_make_forecast(&p,
++        (struct secondary_ass_physical_point){INT64_MAX, INT64_MAX}).valid);
++    CHECK(!secondary_ass_present_plan_cache_next_forecast(&p, INT64_MAX, 2, origin).slot);
++    CHECK(!secondary_ass_present_plan_cache_next_forecast(&p, 110, INT64_MAX, origin).slot);
++    CHECK(!secondary_ass_present_plan_cache_next_forecast(&p, 110, 2, 0).slot);
++    p.delay = -1;
++    CHECK(!secondary_ass_present_plan_make_forecast(&p, g).valid);
++    CHECK(!secondary_ass_present_plan_cache_next_forecast(&p, 110, 2, origin).slot);
++    p.delay = 5;
++    CHECK(!secondary_ass_present_plan_make_forecast(&p, g).valid);
++    p.delay = 1;
++    p.epoch_exhausted = true;
++    CHECK(!secondary_ass_present_plan_make_forecast(&p, g).valid);
++    s = (struct secondary_ass_sampler){0};
++    CHECK(!secondary_ass_sampler_update_physical_forecast(&s, &c, 0,
++        g.wall, 110, 110, p.phase, p.phase_slot, T, 7));
++    CHECK(!s.valid);
++    CHECK(!secondary_ass_sampler_update_physical_forecast(&s, &c, 1e9 / T,
++        g.wall + 1, 110, 110, p.phase, p.phase_slot, T, 7));
++    CHECK(!s.valid);
++    CHECK(!secondary_ass_sampler_update_physical_forecast(&s, &c, 1e9 / (1.3 * T),
++        g.wall, 110, 110, p.phase, p.phase_slot, T, 7));
++    CHECK(!s.valid);
++}
++
++int main(void)
++{
++    const int rates[] = {30, 60, 120, 144, 165, 240, 360};
++    for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
++        int64_t T = INT64_C(1000000000) / rates[i];
++        for (int64_t N = 1; N <= 4; N++) {
++            for (int H = 0; H <= 4; H++)
++                steady_chain(rates[i], N, H);
++        }
++        forecasts_and_fifo(T);
++        sampler_changes(T);
++        jitter_and_history(T);
++        held_pose_committed_G(T);
++        for (int64_t N = 2; N <= 4; N++) {
++            lagged_history_and_mode(T, N, 0);
++            lagged_history_and_mode(T, N, 1);
++            lagged_history_and_mode(T, N, 3);
++        }
++        invalid_and_legacy(T);
++    }
++    printf("display-forecast: %llu checks; %llu complete feedback frames; CPU only\n",
++           checks, chain_frames);
++    return 0;
++}
+diff --git a/test/secondary_ass_queue_stage.c b/test/secondary_ass_queue_stage.c
+new file mode 100644
+index 0000000..c931515
+--- /dev/null
++++ b/test/secondary_ass_queue_stage.c
+@@ -0,0 +1,169 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include <inttypes.h>
++#include <limits.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "video/out/secondary_ass_queue_stage.h"
++
++// Explicit checks remain enabled under NDEBUG. This pure scalar test proves
++// admission and lifecycle boundaries, not frame pacing, AO timing or a VO
++// loop's implementation. The runtime flag stays the caller's responsibility.
++static unsigned checks;
++#define CHECK(x) do { checks++; if (!(x)) { \
++    fprintf(stderr, "queue-stage check %u failed: %s:%d: %s\n", \
++            checks, __FILE__, __LINE__, #x); exit(2); } } while (0)
++
++static struct secondary_ass_queue_stage make(void)
++{
++    return secondary_ass_queue_stage_make(20, 1000000000, 0, 9000000, 50000000);
++}
++
++static struct secondary_ass_queue_stage bound(void)
++{
++    struct secondary_ass_queue_stage admission = make();
++    return secondary_ass_queue_stage_bind(&admission, 20, 21, 1000000000, 0);
++}
++
++static void arithmetic_boundaries(void)
++{
++    struct secondary_ass_queue_stage s = make();
++    CHECK(s.valid && !s.bound && !s.queued_id);
++    CHECK(s.due == 1000000000 && s.admission == 950000000 && s.resume == 991000000);
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++    CHECK(!secondary_ass_queue_stage_make(0, 1000000000, 0, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 0, 0, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, -1, 0, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, INT64_MIN, 0, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, -1, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, INT64_MIN, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 1000000000, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, INT64_MAX, 1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, 0, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, -1, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, INT64_MIN, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, 50000000, 50000000).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, 60000000, INT64_MAX).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, INT64_MAX, INT64_MAX).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, 1, 0).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 1000000000, 0, 1, -1).valid);
++    CHECK(!secondary_ass_queue_stage_make(1, 50000000, 0, 1, 50000000).valid);
++    s = secondary_ass_queue_stage_make(1, 50000001, 0, 1, 50000000);
++    CHECK(s.valid && s.admission == 1 && s.resume == 50000000);
++    s = secondary_ass_queue_stage_make(1, INT64_MAX, 0, 1, INT64_MAX);
++    CHECK(s.valid && s.max_lead == 50000000);
++    CHECK(s.admission == INT64_MAX - 50000000 && s.resume == INT64_MAX - 1);
++    CHECK(!secondary_ass_queue_stage_make(1, INT64_MAX, INT64_MAX-1, 1, 50000000).valid);
++    s = secondary_ass_queue_stage_make(1, 1000000000, 0, 1, 2);
++    CHECK(s.valid && s.admission == 999999998 && s.resume == 999999999);
++    s = secondary_ass_queue_stage_make(1, 1000000000, 0, 49999999, 50000000);
++    CHECK(s.valid && s.resume - s.admission == 1);
++    s = secondary_ass_queue_stage_make(1, 1000000000, 2000000, 9000000, 50000000);
++    CHECK(s.valid && s.due == 998000000 && s.resume == 989000000);
++    s = secondary_ass_queue_stage_make(UINT64_MAX, 1000000000, 0, 1, 50000000);
++    CHECK(s.valid);
++    CHECK(!secondary_ass_queue_stage_bind(&s, UINT64_MAX, 0, s.pts, s.offset).valid);
++}
++
++static void actual_queue_binding(void)
++{
++    struct secondary_ass_queue_stage a = make(), s = bound();
++    CHECK(s.valid && s.bound && s.queued_id == 21);
++    CHECK(secondary_ass_queue_stage_current(&s, 20, 21, 1000000000, 0));
++    CHECK(!secondary_ass_queue_stage_bind(NULL, 20, 21, 1000000000, 0).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&s, 20, 21, s.pts, s.offset).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 19, 21, a.pts, a.offset).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 20, a.pts, a.offset).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 0, a.pts, a.offset).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 19, a.pts, a.offset).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 21, 0, 0).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 21, INT64_MIN, 0).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 21, 1000000000, -1).valid);
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 21, 50000000, 0).valid);
++    s = secondary_ass_queue_stage_bind(&a, 20, 21, 995000000, 2000000);
++    CHECK(s.valid && s.pts == 995000000 && s.offset == 2000000);
++    CHECK(s.due == 993000000 && s.admission == 943000000 && s.resume == 984000000);
++    CHECK(s.resume != a.resume); // actual committed F is used, not proposal F
++    s = secondary_ass_queue_stage_bind(&a, 20, 21, 1005000000, 0);
++    CHECK(s.valid && s.resume == 996000000 && s.admission == 955000000);
++    // Scalar validity does not authorize queue before actual admission.
++    int64_t now = 952000000;
++    CHECK(now < s.admission);
++    // The root VO integration must reject this early actual-F bind as a grant.
++    CHECK(!secondary_ass_queue_stage_current(NULL, 20, 21, a.pts, a.offset));
++    s = bound();
++    CHECK(!secondary_ass_queue_stage_current(&s, 19, 21, s.pts, s.offset));
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 22, s.pts, s.offset));
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 0, s.pts, s.offset));
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts - 1, s.offset));
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset + 1));
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, -1));
++    s.resume++;
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++    s = bound(); s.admission++;
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++    s = bound(); s.due++;
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++    a = make(); a.resume++;
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 21, a.pts, a.offset).valid);
++    a = make(); a.queued_id = 21;
++    CHECK(!secondary_ass_queue_stage_bind(&a, 20, 21, a.pts, a.offset).valid);
++    s = bound(); s.max_lead = 50000001;
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++}
++
++static void lifecycle_and_finite_holds(void)
++{
++    // Each scenario represents a caller clearing authority at that boundary:
++    // seek, reset, pause, resize, sync-mode switch, shutdown, queued promotion,
++    // queued cancellation. It does not stand in for actual VO source coverage.
++    for (unsigned scenario = 0; scenario < 8; scenario++) {
++        struct secondary_ass_queue_stage s = bound();
++        CHECK(secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++        secondary_ass_queue_stage_clear(&s);
++        CHECK(!s.valid && !s.bound && !s.resume && !s.admission && !s.queued_id);
++        CHECK(!secondary_ass_queue_stage_current(&s, 20, 21, 1000000000, 0));
++        // A new frame is not granted permission by old scalar values.
++        CHECK(!secondary_ass_queue_stage_current(&s, 20, 22, 1010000000, 0));
++    }
++    secondary_ass_queue_stage_clear(NULL);
++    CHECK(true);
++    struct secondary_ass_queue_stage s = bound();
++    int64_t original_resume = s.resume;
++    // Continuous cached draws/physical feedback must not slide this boundary.
++    for (int n = 0; n < 64; n++) {
++        int64_t now = s.admission + n * (s.resume - s.admission) / 64;
++        CHECK(now < s.resume);
++        CHECK(secondary_ass_queue_stage_current(&s, 20, 21, s.pts, s.offset));
++        CHECK(s.resume == original_resume);
++    }
++    CHECK(s.resume - s.admission == 41000000);
++    CHECK(!(original_resume < s.resume)); // equality releases the held frame
++    CHECK(!(original_resume + 1 < s.resume));
++    // An earlier current-frame end or core wakeup must survive the VO's
++    // timer min. This models a boundary the actual caller must preserve.
++    int64_t frame_end = s.admission + 1000000;
++    int64_t wakeup = s.admission + 500000;
++    int64_t wait_until = s.resume;
++    if (frame_end < wait_until) wait_until = frame_end;
++    if (wakeup < wait_until) wait_until = wakeup;
++    CHECK(wait_until == wakeup && wait_until < frame_end && frame_end < s.resume);
++    // The old hold-branch assignment would erase those earlier deadlines.
++    int64_t overwritten_wait = s.resume;
++    CHECK(overwritten_wait > frame_end && overwritten_wait > wakeup);
++    secondary_ass_queue_stage_clear(&s); // stop must never wait for a timer
++    CHECK(!s.resume && !s.valid);
++    s = bound();
++    CHECK(!secondary_ass_queue_stage_current(&s, 20, 22, s.pts, s.offset));
++    secondary_ass_queue_stage_clear(&s);
++    CHECK(!s.resume); // do not transplant the old hold to a different frame
++}
++
++int main(void)
++{
++    arithmetic_boundaries();
++    actual_queue_binding();
++    lifecycle_and_finite_holds();
++    printf("secondary_ass_queue_stage: %u checks passed\n", checks);
++    return 0;
++}
+diff --git a/test/secondary_ass_stage_prefix.c b/test/secondary_ass_stage_prefix.c
+new file mode 100644
+index 0000000..12e77e5
+--- /dev/null
++++ b/test/secondary_ass_stage_prefix.c
+@@ -0,0 +1,421 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "video/out/secondary_ass_stage_prefix.h"
++
++// Calls the actual production headers and unchanged physical feedback chain.
++// Synthetic QPC/count input is CPU evidence, not scanout or VO-thread proof.
++static unsigned long long checks, feedback_frames;
++#define CHECK(x) do { checks++; if (!(x)) { \
++    fprintf(stderr, "stage-prefix check %llu failed at %d: %s\n", \
++            checks, __LINE__, #x); exit(2); } } while (0)
++
++static const int64_t origin = INT64_C(1000000000);
++
++struct fixture {
++    struct secondary_ass_physical p;
++    struct secondary_ass_clock clock;
++    struct secondary_ass_sampler sampler;
++    struct secondary_ass_queue_stage stage;
++    struct secondary_ass_stage_prefix prefix;
++    int64_t divisor;
++};
++
++static struct secondary_ass_sample_snapshot snapshot(const struct fixture *f)
++{
++    const struct secondary_ass_sampler *s = &f->sampler;
++    return (struct secondary_ass_sample_snapshot){
++        .valid = s->valid && s->physical_slots, .held = false, .force = s->force,
++        .rate = s->rate, .speed = 1, .requested_speed = 1, .epoch = s->epoch,
++        .origin_slot = s->origin_slot,
++        .sample_slot = s->origin_slot + (int64_t)s->tick * s->divisor,
++        .display_forecast = s->display_forecast, .sample_forced = false,
++        .next_slot = secondary_ass_sampler_next_slot(s),
++        .next_wall = secondary_ass_sampler_next_wall(s), .divisor = s->divisor,
++        .phase_wall = s->phase_wall, .phase_slot = s->phase_slot,
++        .interval = s->physical_interval,
++    };
++}
++
++static bool sample(struct fixture *f, const struct secondary_ass_present_plan *plan)
++{
++    double rate = f->sampler.valid ? f->sampler.rate :
++        1e9 / ((double)f->p.interval * f->divisor);
++    return secondary_ass_sampler_update_physical_forecast(&f->sampler,
++        &f->clock, rate, plan->target.wall, plan->base.slot,
++        plan->target.slot, f->p.phase, f->p.phase_slot,
++        f->p.interval, f->p.epoch);
++}
++
++static void feedback(struct fixture *f,
++    const struct secondary_ass_present_plan *plan, uint64_t id,
++    uint64_t history_id, struct secondary_ass_physical_point history,
++    struct secondary_ass_physical_point sync)
++{
++    // Real VO ordering: immutable base/target registration, observed raw
++    // history exactly once without legacy re-registration, successful Sync1.
++    CHECK(secondary_ass_present_plan_current(&f->p, plan));
++    CHECK(secondary_ass_physical_submit_planned_point(&f->p, id, plan->epoch,
++                                                     plan->base, plan->target));
++    f->p.last_submit_id = id;
++    secondary_ass_physical_update_observed(&f->p, false, 0, plan->target,
++        sync.wall, sync.wall, (uint32_t)sync.slot, (uint32_t)history.slot,
++        history_id, f->p.interval);
++    secondary_ass_physical_record_present(&f->p, true, id, 3, 1);
++    CHECK(f->p.success_last_id == id && f->p.success_contiguous);
++    CHECK(f->p.historical_id == history_id && f->p.phase_slot == history.slot);
++    feedback_frames++;
++}
++
++static struct fixture fixture(int hz, int64_t divisor, int H)
++{
++    int64_t T = INT64_C(1000000000) / hz;
++    struct fixture f = {
++        .p = {
++            .phase = origin, .phase_slot = 100, .interval = T, .epoch = 7,
++            .sync_qpc_ns = origin, .sync_count = 100, .sync_slot = 100,
++            .sync_segment_consistent = true, .measure_qpc_ns = origin,
++            .measure_count = 100, .periods = {T, T, T},
++            .period_count = 3, .period_next = 3,
++            .delay = H, .delay_samples = {H, H, H}, .delay_count = 3,
++            .success_generation = 3,
++        },
++        .clock = {.valid = true, .pts = 10, .speed = 1, .wall = origin},
++        .divisor = divisor,
++    };
++    struct secondary_ass_physical_point G =
++        secondary_ass_physical_point_at(&f.p, 110);
++    struct secondary_ass_present_plan first =
++        secondary_ass_present_plan_cache_forecast(&f.p, G);
++    CHECK(first.valid && sample(&f, &first));
++    feedback(&f, &first, 1, 1, first.target, first.target);
++    struct secondary_ass_sample_snapshot s = snapshot(&f);
++    struct secondary_ass_physical_point F = secondary_ass_physical_point_at(
++        &f.p, s.next_slot + 4 * divisor);
++    struct secondary_ass_queue_stage a = secondary_ass_queue_stage_make(
++        20, F.wall, 0, 9000000, 50000000);
++    f.stage = secondary_ass_queue_stage_bind(&a, 20, 21, F.wall, 0);
++    CHECK(f.stage.valid && f.stage.bound);
++    CHECK(secondary_ass_stage_prefix_begin(&f.prefix, &f.stage, &s, &f.p));
++    CHECK(f.prefix.valid && f.prefix.initialized && f.prefix.next_slot == s.next_slot);
++    return f;
++}
++
++static struct secondary_ass_present_plan advance(struct fixture *f,
++    struct secondary_ass_sample_snapshot *before,
++    struct secondary_ass_sample_snapshot *after, uint64_t id)
++{
++    *before = snapshot(f);
++    struct secondary_ass_physical_point G =
++        secondary_ass_physical_point_at(&f->p, before->next_slot);
++    struct secondary_ass_present_plan plan =
++        secondary_ass_present_plan_cache_forecast(&f->p, G);
++    CHECK(plan.valid && sample(f, &plan));
++    feedback(f, &plan, id, id, plan.target, plan.target);
++    *after = snapshot(f);
++    return plan;
++}
++
++static void real_chains(void)
++{
++    const int rates[] = {60, 120, 144, 165, 240, 360};
++    const int lags[] = {0, 1, 3};
++    for (unsigned r = 0; r < sizeof(rates)/sizeof(rates[0]); r++) {
++        for (int64_t N = 1; N <= 2; N++) {
++            for (int H = 0; H <= 1; H++) {
++                for (unsigned lag_index = 0; lag_index < sizeof(lags)/sizeof(lags[0]); lag_index++) {
++                    struct fixture f = fixture(rates[r], N, H);
++                    struct secondary_ass_present_plan saved[81] = {0};
++                    saved[0].target = secondary_ass_physical_point_at(&f.p, 110 + H);
++                    for (int k = 1; k <= 80; k++) {
++                        struct secondary_ass_sample_snapshot before = snapshot(&f);
++                        int64_t Gslot = 110 + k*N;
++                        CHECK(before.next_slot == Gslot);
++                        struct secondary_ass_present_plan plan = secondary_ass_present_plan_cache_forecast(
++                            &f.p, secondary_ass_physical_point_at(&f.p, Gslot));
++                        CHECK(plan.valid && plan.base.slot == Gslot && sample(&f, &plan));
++                        saved[k] = plan;
++                        // Before Present, a moved sampler alone cannot grant.
++                        struct secondary_ass_stage_prefix shadow = f.prefix;
++                        struct secondary_ass_sample_snapshot selected = snapshot(&f);
++                        CHECK(!secondary_ass_stage_prefix_can_promote(&shadow, &f.stage, &selected, &f.p));
++                        CHECK(!shadow.valid && f.prefix.valid);
++                        int hist_index = k - lags[lag_index];
++                        if (hist_index < 0) hist_index = 0;
++                        feedback(&f, &plan, (uint64_t)k+1, (uint64_t)hist_index+1,
++                                 saved[hist_index].target, plan.target);
++                        struct secondary_ass_sample_snapshot after = snapshot(&f);
++                        struct secondary_ass_physical p_before = f.p;
++                        struct secondary_ass_queue_stage stage_before = f.stage;
++                        struct secondary_ass_sampler sampler_before = f.sampler;
++                        CHECK(secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++                            true, false, (uint64_t)k+1, &before, &after, &f.p));
++                        CHECK(f.prefix.next_slot == Gslot+N && f.prefix.last_id == (uint64_t)k+1);
++                        bool allowed = secondary_ass_stage_prefix_can_promote(
++                            &f.prefix, &f.stage, &after, &f.p);
++                        struct secondary_ass_physical_point next =
++                            secondary_ass_physical_point_at(&f.p, Gslot+N);
++                        CHECK(allowed == (next.wall >= f.stage.due));
++                        CHECK(f.prefix.valid && f.p.delay == H);
++                        CHECK(!memcmp(&f.p, &p_before, sizeof(f.p)));
++                        CHECK(!memcmp(&f.stage, &stage_before, sizeof(f.stage)));
++                        CHECK(!memcmp(&f.sampler, &sampler_before, sizeof(f.sampler)));
++                    }
++                }
++            }
++        }
++    }
++}
++
++static void failures_and_cursor(void)
++{
++    struct fixture f = fixture(144, 2, 1);
++    struct secondary_ass_sample_snapshot before = snapshot(&f);
++    struct secondary_ass_present_plan plan = secondary_ass_present_plan_cache_forecast(
++        &f.p, secondary_ass_physical_point_at(&f.p, before.next_slot));
++    CHECK(sample(&f, &plan));
++    struct secondary_ass_sample_snapshot after = snapshot(&f);
++    // Same as a failed Present: selected cursor moves; old register stays.
++    secondary_ass_physical_record_present(&f.p, false, 0, 3, 1);
++    CHECK(after.next_slot > before.next_slot && f.p.last_base_slot == 110);
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        false, false, 0, &before, &after, &f.p));
++    CHECK(!f.prefix.valid && f.prefix.initialized);
++    CHECK(!secondary_ass_stage_prefix_begin(&f.prefix, &f.stage, &before, &f.p));
++
++    f = fixture(144, 2, 1);
++    plan = advance(&f, &before, &after, 2);
++    // A genuine original MISS must revoke even if the later Present succeeded.
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, true, 2, &before, &after, &f.p));
++    CHECK(!f.prefix.valid);
++
++    f = fixture(144, 2, 1);
++    before = snapshot(&f);
++    plan = secondary_ass_present_plan_cache_forecast(&f.p,
++        secondary_ass_physical_point_at(&f.p, before.next_slot+2));
++    CHECK(sample(&f, &plan));
++    feedback(&f, &plan, 2, 2, plan.target, plan.target);
++    after = snapshot(&f);
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p)); // skipped logical G
++
++    f = fixture(144, 2, 1);
++    plan = advance(&f, &before, &after, 2);
++    unsigned index = (f.p.next+31)%32;
++    f.p.submitted[index].base_slot = 0;
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p)); // no exact registration
++
++    f = fixture(144, 2, 1);
++    plan = advance(&f, &before, &after, 2);
++    CHECK(secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p));
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p)); // duplicate resolved tick
++
++    f = fixture(144, 2, 1);
++    before = snapshot(&f);
++    plan = secondary_ass_present_plan_cache_forecast(&f.p,
++        secondary_ass_physical_point_at(&f.p, before.next_slot));
++    CHECK(sample(&f, &plan));
++    struct secondary_ass_physical_point late = secondary_ass_physical_point_at(
++        &f.p, plan.target.slot+1);
++    feedback(&f, &plan, 2, 2, late, late);
++    after = snapshot(&f);
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p)); // actual known late history
++    CHECK(late.slot-plan.target.slot == 1); // MISS is not renamed to success
++
++    // A forecast sample must not resolve against a legacy captured target,
++    // even while exact old history has not observed the new target mismatch.
++    f = fixture(144, 2, 1);
++    before = snapshot(&f);
++    struct secondary_ass_physical_point G = secondary_ass_physical_point_at(
++        &f.p, before.next_slot);
++    struct secondary_ass_present_plan forecast =
++        secondary_ass_present_plan_cache_forecast(&f.p, G);
++    plan = secondary_ass_present_plan_cache(&f.p, G);
++    CHECK(plan.valid && !plan.display_forecast && forecast.display_forecast);
++    CHECK(plan.target.slot == G.slot && forecast.target.slot == G.slot + 1);
++    CHECK(sample(&f, &forecast));
++    struct secondary_ass_physical_point old = secondary_ass_physical_point_at(
++        &f.p, 111);
++    feedback(&f, &plan, 2, 1, old, forecast.target);
++    after = snapshot(&f);
++    CHECK(after.display_forecast && after.sample_slot == G.slot);
++    CHECK(f.p.historical_id == 1 && f.p.success_last_id == 2);
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p));
++    CHECK(!f.prefix.valid && f.prefix.initialized);
++}
++
++static void forced_origin_and_identity(void)
++{
++    struct fixture f;
++    struct secondary_ass_sample_snapshot before, after;
++    struct secondary_ass_present_plan plan;
++    for (unsigned mode = 0; mode < 13; mode++) {
++        f = fixture(144, 2, 1);
++        plan = advance(&f, &before, &after, 2);
++        switch (mode) {
++        case 0: before.force = true; break;
++        case 1: after.force = true; break;
++        case 2: before.sample_forced = true; break;
++        case 3: after.sample_forced = true; break;
++        case 4: after.origin_slot += 2; break;
++        case 5: after.display_forecast = false; break;
++        case 6: after.speed = 2; break;
++        case 7: after.requested_speed = 2; break;
++        case 8: after.rate += 1; break;
++        case 9: after.epoch++; break;
++        case 10: after.next_wall++; break;
++        case 11: after.sample_slot++; break;
++        case 12: after.held = true; break;
++        }
++        CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++            true, false, 2, &before, &after, &f.p));
++        CHECK(!f.prefix.valid && f.prefix.initialized);
++    }
++    // Actual same-tick forced forecast repaint preserves pose and logical G.
++    f = fixture(144, 2, 1);
++    before = snapshot(&f);
++    plan = secondary_ass_present_plan_cache_forecast(&f.p,
++        secondary_ass_physical_point_at(&f.p, before.sample_slot));
++    plan.valid = true; // attempted repaint, not a newly eligible plan
++    f.sampler.force = true;
++    CHECK(sample(&f, &plan));
++    after = snapshot(&f);
++    CHECK(after.next_slot == before.next_slot);
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p));
++
++    // Concurrent force before sampling a genuinely new tick is cleared by
++    // the sampler. The actual OSD latch, not after.force, carries this fact.
++    f = fixture(144, 2, 1);
++    before = snapshot(&f);
++    plan = secondary_ass_present_plan_cache_forecast(&f.p,
++        secondary_ass_physical_point_at(&f.p, before.next_slot));
++    f.sampler.force = true;
++    bool actual_forced = f.sampler.force;
++    CHECK(sample(&f, &plan) && !f.sampler.force);
++    feedback(&f, &plan, 2, 2, plan.target, plan.target);
++    after = snapshot(&f);
++    after.sample_forced = actual_forced;
++    CHECK(!after.force && after.sample_forced);
++    CHECK(!secondary_ass_stage_prefix_resolve(&f.prefix, &plan,
++        true, false, 2, &before, &after, &f.p));
++}
++
++static void promotion_and_malformed(void)
++{
++    struct fixture f = fixture(144, 2, 1);
++    struct secondary_ass_sample_snapshot s = snapshot(&f);
++    CHECK(!secondary_ass_stage_prefix_can_promote(&f.prefix, &f.stage, &s, &f.p));
++    CHECK(f.prefix.valid); // G<F parks without losing later permission
++    struct secondary_ass_physical_point G =
++        secondary_ass_physical_point_at(&f.p, s.next_slot);
++    struct secondary_ass_queue_stage a = secondary_ass_queue_stage_make(
++        20, G.wall+1, 0, 9000000, 50000000);
++    f.stage = secondary_ass_queue_stage_bind(&a, 20, 21, G.wall+1, 0);
++    secondary_ass_stage_prefix_clear(&f.prefix);
++    CHECK(secondary_ass_stage_prefix_begin(&f.prefix, &f.stage, &s, &f.p));
++    CHECK(!secondary_ass_stage_prefix_can_promote(&f.prefix, &f.stage, &s, &f.p));
++    f.p.phase += 2; // accepted same-integer-lattice anchor jitter, no reset
++    CHECK(secondary_ass_stage_prefix_can_promote(&f.prefix, &f.stage, &s, &f.p));
++    CHECK(f.prefix.valid);
++    f.p.phase -= 3;
++    CHECK(!secondary_ass_stage_prefix_can_promote(&f.prefix, &f.stage, &s, &f.p));
++    CHECK(f.prefix.valid && f.p.epoch == 7 && f.p.delay == 1);
++
++    for (unsigned mode = 0; mode < 16; mode++) {
++        f = fixture(144, 2, 1); s = snapshot(&f);
++        switch (mode) {
++        case 0: s.force = true; break;
++        case 1: s.sample_forced = true; break;
++        case 2: s.origin_slot += 2; break;
++        case 3: s.rate = NAN; break;
++        case 4: s.speed = INFINITY; break;
++        case 5: s.requested_speed = 0; break;
++        case 6: f.p.epoch++; break;
++        case 7: f.p.success_generation++; break;
++        case 8: f.p.outlier_pending = true; break;
++        case 9: f.p.sync_segment_consistent = false; break;
++        case 10: f.p.success_contiguous = false; break;
++        case 11: f.stage.queued_id++; break;
++        case 12: f.stage.retained_id--; break;
++        case 13: f.stage.resume++; break;
++        case 14: f.p.last_base_slot += 2; break;
++        case 15: f.p.next = 32; break;
++        }
++        CHECK(!secondary_ass_stage_prefix_can_promote(&f.prefix, &f.stage, &s, &f.p));
++        CHECK(!f.prefix.valid && f.prefix.initialized);
++    }
++    f = fixture(144, 2, 1); s = snapshot(&f);
++    unsigned last = (f.p.next+31)%32;
++    f.p.submitted[(last+1)%32] = f.p.submitted[last];
++    struct secondary_ass_stage_prefix fresh = {0};
++    CHECK(!secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++    CHECK(fresh.initialized && !fresh.valid);
++    f.p.submitted[(last+1)%32].id = 0;
++    CHECK(!secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++    secondary_ass_stage_prefix_clear(&fresh);
++    CHECK(secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++    secondary_ass_stage_prefix_invalidate(&fresh);
++    CHECK(!fresh.valid && fresh.initialized);
++    CHECK(!secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++    // Even a malformed nonzero, uninitialized storage cannot retain an old
++    // valid bit when its first attempted begin lacks a current bound stage.
++    fresh = f.prefix;
++    fresh.initialized = false;
++    CHECK(!secondary_ass_stage_prefix_begin(&fresh, NULL, &s, &f.p));
++    CHECK(fresh.initialized && !fresh.valid);
++    for (unsigned mode = 0; mode < 2; mode++) {
++        f = fixture(144, 2, 1);
++        s = snapshot(&f);
++        struct secondary_ass_physical unknown = f.p;
++        fresh = (struct secondary_ass_stage_prefix){0};
++        if (mode == 0)
++            s.valid = false;
++        else
++            unknown.sync_segment_consistent = false;
++        CHECK(!secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &unknown));
++        CHECK(fresh.initialized && !fresh.valid);
++        CHECK(secondary_ass_stage_prefix_stage_equal(&fresh.stage, &f.stage));
++        // Exact root render boundary: UNKNOWN did not end this bound stage,
++        // so a later usable snapshot must not turn its failed begin into new
++        // permission. The real sampler/ledger remain available but untouched.
++        if (fresh.initialized &&
++            !secondary_ass_stage_prefix_stage_equal(&fresh.stage, &f.stage))
++            secondary_ass_stage_prefix_clear(&fresh);
++        CHECK(fresh.initialized && !fresh.valid);
++        s = snapshot(&f);
++        CHECK(!secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++        CHECK(fresh.initialized && !fresh.valid);
++        secondary_ass_stage_prefix_clear(&fresh); // an actual stage end
++        CHECK(secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++    }
++    CHECK(!secondary_ass_stage_prefix_begin(NULL, &f.stage, &s, &f.p));
++    CHECK(!secondary_ass_stage_prefix_resolve(NULL, NULL, false, true, 0, NULL, NULL, NULL));
++    CHECK(!secondary_ass_stage_prefix_can_promote(NULL, NULL, NULL, NULL));
++    secondary_ass_stage_prefix_clear(NULL);
++    secondary_ass_stage_prefix_invalidate(NULL);
++    fresh = (struct secondary_ass_stage_prefix){0};
++    s.next_slot = INT64_MAX; s.sample_slot = INT64_MAX;
++    CHECK(!secondary_ass_stage_prefix_begin(&fresh, &f.stage, &s, &f.p));
++    CHECK(fresh.initialized && !fresh.valid);
++}
++
++int main(void)
++{
++    real_chains();
++    failures_and_cursor();
++    forced_origin_and_identity();
++    promotion_and_malformed();
++    printf("secondary_ass_stage_prefix: %llu checks, %llu feedback frames passed\n",
++           checks, feedback_frames);
++    return 0;
++}
+diff --git a/video/out/secondary_ass_present_plan.h b/video/out/secondary_ass_present_plan.h
+index 7002ceb..57566e1 100644
+--- a/video/out/secondary_ass_present_plan.h
++++ b/video/out/secondary_ass_present_plan.h
+@@ -6,14 +6,15 @@
+ 
+ // A planned eligibility base is not the actual Present-entry cycle.  Keep
+ // the original plan immutable even when an early call or lifecycle fallback
+-// changes its execution time.  Historical delay is diagnostic only here.
++// changes its execution time. Legacy plans keep delay diagnostic; opt-in
++// forecasts capture it only when identifying a new task's display pose.
+ struct secondary_ass_present_plan {
+-    bool valid, fifo_known;
++    bool valid, fifo_known, display_forecast;
+     struct secondary_ass_physical_point base, target;
+     int64_t submit, deadline, fallback_submit, lifecycle_safe_wait;
+     int64_t interval, fifo_lower;
+     uint64_t epoch, generation;
+-    int historical_delay;
++    int historical_delay, captured_forecast;
+ };
+ 
+ static inline struct secondary_ass_physical secondary_ass_present_plan_view(
+@@ -123,4 +124,91 @@ secondary_ass_present_plan_cache_next(const struct secondary_ass_physical *p,
+     return secondary_ass_physical_cache_next(&view, first_slot, divisor, now);
+ }
+ 
++// Forecasting separates the eligibility slot G from the display pose D.
++// The median is captured once for this new task. It does not advance submit
++// time, change the original logical lattice, or reinterpret an existing plan.
++static inline struct secondary_ass_present_plan
++secondary_ass_present_plan_make_forecast(const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point logical)
++{
++    struct secondary_ass_present_plan none = {.display_forecast = true};
++    if (p->delay < 0 || p->delay > 4 || logical.slot <= 0 ||
++        logical.slot > INT64_MAX - p->delay)
++        return none;
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t target_slot = logical.slot + p->delay;
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    if (lower > target_slot)
++        target_slot = lower;
++    // The count-proven FIFO horizon is finite, but guard conversion for an
++    // arbitrary malformed logical point instead of truncating its identity.
++    if (target_slot - logical.slot > INT32_MAX)
++        return none;
++    struct secondary_ass_present_plan plan = secondary_ass_present_plan_make(p,
++        logical, secondary_ass_physical_point_at(&view, target_slot));
++    plan.display_forecast = true;
++    plan.captured_forecast = (int)(target_slot - logical.slot);
++    return plan;
++}
++
++static inline struct secondary_ass_present_plan
++secondary_ass_present_plan_fresh_forecast(const struct secondary_ass_physical *p,
++    int64_t ready, struct secondary_ass_physical_point sampled)
++{
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    // A supplied G is authoritative, including an invalid/stale one. Never
++    // replace it using render completion and turn its miss into another task.
++    // The caller separately checks this G against the queued video's raw F.
++    if (!sampled.slot && !sampled.wall)
++        sampled = secondary_ass_physical_predict_point(&view, ready);
++    return secondary_ass_present_plan_make_forecast(p, sampled);
++}
++
++static inline struct secondary_ass_present_plan
++secondary_ass_present_plan_cache_forecast(const struct secondary_ass_physical *p,
++    struct secondary_ass_physical_point sampled)
++{
++    return secondary_ass_present_plan_make_forecast(p, sampled);
++}
++
++static inline struct secondary_ass_physical_point
++secondary_ass_present_plan_cache_next_forecast(
++    const struct secondary_ass_physical *p, int64_t first_slot,
++    int64_t divisor, int64_t now)
++{
++    struct secondary_ass_physical_point none = {0};
++    if (p->delay < 0 || p->delay > 4 || first_slot <= 0 || divisor <= 0 ||
++        now <= 0 || !secondary_ass_physical_interval_valid(p->interval) ||
++        divisor > INT64_MAX / p->interval ||
++        first_slot > INT64_MAX - p->delay)
++        return none;
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    struct secondary_ass_physical_point target =
++        secondary_ass_physical_point_at(&view, first_slot + p->delay);
++    if (!target.slot || target.wall <= 0)
++        return none;
++    int64_t skip = 0;
++    // A logical G may be past while its original future D is still reachable.
++    // Judge expiry at D, with no learned-delay subtraction from its deadline.
++    if (target.wall <= now)
++        skip = (now - target.wall) / (divisor * p->interval) + 1;
++    int64_t floor = p->last_base_slot;
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    if (lower > p->delay && lower - p->delay - 1 > floor)
++        floor = lower - p->delay - 1;
++    if (first_slot <= floor) {
++        int64_t occupied = (floor - first_slot) / divisor + 1;
++        if (occupied > skip)
++            skip = occupied;
++    }
++    if (skip > (INT64_MAX - first_slot - p->delay) / divisor)
++        return none;
++    int64_t logical_slot = first_slot + skip * divisor;
++    // Validate both projections before returning a new logical task. The
++    // sampler still owns the decision to accept its separate display pose.
++    target = secondary_ass_physical_point_at(&view, logical_slot + p->delay);
++    return target.slot ? secondary_ass_physical_point_at(&view, logical_slot)
++                       : none;
++}
++
+ #endif
+diff --git a/video/out/secondary_ass_queue_stage.h b/video/out/secondary_ass_queue_stage.h
+new file mode 100644
+index 0000000..a45df6b
+--- /dev/null
++++ b/video/out/secondary_ass_queue_stage.h
+@@ -0,0 +1,100 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_QUEUE_STAGE_H
++#define MP_SECONDARY_ASS_QUEUE_STAGE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++// Early ownership of one real video frame is separate from its normal render
++// admission. This scalar contract contains no physical clock, sample rate,
++// learned delay, waiting primitive or permission to invent a future frame.
++struct secondary_ass_queue_stage {
++    bool valid, bound;
++    uint64_t retained_id, queued_id;
++    int64_t pts, offset, due, old_lead, max_lead, admission, resume;
++};
++
++static inline struct secondary_ass_queue_stage secondary_ass_queue_stage_make(
++    uint64_t retained_id, int64_t pts, int64_t offset, int64_t old_lead,
++    int64_t max_lead)
++{
++    // Restore at most the standard 50 ms queue lead. An option with a smaller
++    // cap stays smaller; a larger value cannot enlarge this staging window.
++    const int64_t cap = 50000000;
++    if (max_lead > cap)
++        max_lead = cap;
++    if (!retained_id || pts <= 0 || offset < 0 || old_lead <= 0 ||
++        max_lead <= old_lead || pts <= offset)
++        return (struct secondary_ass_queue_stage){0};
++
++    // Both operands are nonnegative and pts > offset. Every subtraction is
++    // consequently in [1, INT64_MAX]; no timestamp addition is necessary.
++    int64_t due = pts - offset;
++    if (due <= max_lead)
++        return (struct secondary_ass_queue_stage){0};
++    return (struct secondary_ass_queue_stage){
++        .valid = true, .retained_id = retained_id,
++        .pts = pts, .offset = offset, .due = due,
++        .old_lead = old_lead, .max_lead = max_lead,
++        .admission = due - max_lead, .resume = due - old_lead,
++    };
++}
++
++// Validate the recorded scalar arithmetic rather than trusting a caller's
++// valid bit or reusing a malformed deadline from another admission.
++static inline bool secondary_ass_queue_stage_sane(
++    const struct secondary_ass_queue_stage *stage)
++{
++    if (!stage || !stage->valid)
++        return false;
++    struct secondary_ass_queue_stage expected = secondary_ass_queue_stage_make(
++        stage->retained_id, stage->pts, stage->offset,
++        stage->old_lead, stage->max_lead);
++    return expected.valid && stage->max_lead == expected.max_lead &&
++        stage->due == expected.due && stage->admission == expected.admission &&
++        stage->resume == expected.resume;
++}
++
++// Bind only after vo_queue_frame accepted the actual frame. Recompute from
++// that frame's real pts/offset; a provisional core deadline is never carried
++// forward as an immutable promise. The VO caller must separately verify
++// now >= admission and its paused/reset/reconfiguration eligibility.
++static inline struct secondary_ass_queue_stage secondary_ass_queue_stage_bind(
++    const struct secondary_ass_queue_stage *admission, uint64_t retained_id,
++    uint64_t queued_id, int64_t pts, int64_t offset)
++{
++    if (!secondary_ass_queue_stage_sane(admission) || admission->bound ||
++        admission->queued_id || admission->retained_id != retained_id ||
++        queued_id <= retained_id)
++        return (struct secondary_ass_queue_stage){0};
++    struct secondary_ass_queue_stage stage = secondary_ass_queue_stage_make(
++        retained_id, pts, offset, admission->old_lead, admission->max_lead);
++    if (stage.valid) {
++        stage.bound = true;
++        stage.queued_id = queued_id;
++    }
++    return stage;
++}
++
++// Any identity/offset/pts mismatch removes staging authority. The VO caller
++// clears it and returns to its normal queued flow; an old resume must never
++// be transplanted onto a different frame. This function does not mutate or
++// wait for the producer, including when a queued frame has disappeared.
++static inline bool secondary_ass_queue_stage_current(
++    const struct secondary_ass_queue_stage *stage, uint64_t retained_id,
++    uint64_t queued_id, int64_t pts, int64_t offset)
++{
++    return secondary_ass_queue_stage_sane(stage) && stage->bound &&
++        queued_id > retained_id && stage->retained_id == retained_id &&
++        stage->queued_id == queued_id && stage->pts == pts &&
++        stage->offset == offset;
++}
++
++static inline void secondary_ass_queue_stage_clear(
++    struct secondary_ass_queue_stage *stage)
++{
++    if (stage)
++        *stage = (struct secondary_ass_queue_stage){0};
++}
++
++#endif
+diff --git a/video/out/secondary_ass_stage_prefix.h b/video/out/secondary_ass_stage_prefix.h
+new file mode 100644
+index 0000000..fc0bc52
+--- /dev/null
++++ b/video/out/secondary_ass_stage_prefix.h
+@@ -0,0 +1,269 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_STAGE_PREFIX_H
++#define MP_SECONDARY_ASS_STAGE_PREFIX_H
++
++#include "secondary_ass_queue_stage.h"
++#include "secondary_ass_present_plan.h"
++#include "../../sub/secondary_ass_clock.h"
++
++// VO-thread-owned permission for one bound stage. It tracks only continuous
++// successful cache submissions after the initial cursor. It does not change
++// the sampler, physical ledger, phase, learned delay, stage F or finite resume.
++struct secondary_ass_stage_prefix {
++    bool initialized, valid;
++    struct secondary_ass_queue_stage stage;
++    struct secondary_ass_sample_snapshot grid;
++    uint64_t generation, first_id, last_id;
++    int64_t next_slot;
++};
++
++static inline void secondary_ass_stage_prefix_clear(
++    struct secondary_ass_stage_prefix *prefix)
++{
++    if (prefix)
++        *prefix = (struct secondary_ass_stage_prefix){0};
++}
++
++// Failure is sticky for this bound stage. Clear only when that stage ends;
++// a later sampler cursor must not silently restart early-prepare permission.
++static inline void secondary_ass_stage_prefix_invalidate(
++    struct secondary_ass_stage_prefix *prefix)
++{
++    if (prefix)
++        prefix->valid = false;
++}
++
++static inline bool secondary_ass_stage_prefix_snapshot_valid(
++    const struct secondary_ass_sample_snapshot *sample)
++{
++    if (!sample || !sample->valid || sample->held || sample->force ||
++        sample->sample_forced || !sample->display_forecast ||
++        !isfinite(sample->rate) || !isfinite(sample->speed) ||
++        !isfinite(sample->requested_speed) || sample->rate <= 0 ||
++        sample->speed <= 0 || sample->requested_speed <= 0 || !sample->epoch ||
++        sample->divisor <= 0 || sample->origin_slot <= 0 ||
++        sample->sample_slot < sample->origin_slot ||
++        sample->sample_slot > INT64_MAX - sample->divisor ||
++        sample->next_slot != sample->sample_slot + sample->divisor ||
++        (sample->sample_slot - sample->origin_slot) % sample->divisor ||
++        !secondary_ass_physical_interval_valid(sample->interval) ||
++        sample->divisor > INT64_MAX / sample->interval)
++        return false;
++    struct secondary_ass_physical projection = {
++        .phase = sample->phase_wall, .phase_slot = sample->phase_slot,
++        .interval = sample->interval,
++    };
++    struct secondary_ass_physical_point next =
++        secondary_ass_physical_point_at(&projection, sample->next_slot);
++    return next.slot == sample->next_slot && next.wall > 0 &&
++        next.wall == sample->next_wall;
++}
++
++static inline bool secondary_ass_stage_prefix_grid_equal(
++    const struct secondary_ass_sample_snapshot *a,
++    const struct secondary_ass_sample_snapshot *b)
++{
++    // Ordinary feedback can refine the slot-to-wall projection. Grid/speed
++    // identity and integer cursor stay fixed; do not compare anchor bytes.
++    return secondary_ass_stage_prefix_snapshot_valid(a) &&
++        secondary_ass_stage_prefix_snapshot_valid(b) &&
++        a->epoch == b->epoch && a->divisor == b->divisor &&
++        a->origin_slot == b->origin_slot &&
++        a->display_forecast == b->display_forecast &&
++        a->rate == b->rate && a->speed == b->speed &&
++        a->requested_speed == b->requested_speed;
++}
++
++static inline bool secondary_ass_stage_prefix_physical_ready(
++    const struct secondary_ass_physical *p)
++{
++    return p && p->epoch && !p->epoch_exhausted && !p->outlier_pending &&
++        p->sync_segment_consistent && p->success_contiguous &&
++        p->success_generation && p->success_first_id &&
++        p->success_last_id >= p->success_first_id &&
++        p->historical_id && p->historical_id <= p->success_last_id &&
++        p->last_submit_id == p->success_last_id && p->last_base_slot > 0 &&
++        p->phase > 0 && p->phase_slot > 0 && p->sync_slot > 0 &&
++        p->sync_qpc_ns > 0 &&
++        secondary_ass_physical_interval_valid(p->interval) && p->next < 32;
++}
++
++static inline bool secondary_ass_stage_prefix_registered(
++    const struct secondary_ass_physical *p, uint64_t id, int64_t expected_base,
++    const struct secondary_ass_present_plan *captured)
++{
++    if (!secondary_ass_stage_prefix_physical_ready(p) || !id ||
++        id != p->success_last_id || expected_base <= 0 ||
++        p->last_base_slot != expected_base)
++        return false;
++    unsigned matches = 0;
++    for (unsigned n = 0; n < 32; n++) {
++        if (p->submitted[n].id != id)
++            continue;
++        if (p->submitted[n].base_slot != expected_base ||
++            p->submitted[n].base <= 0 || p->submitted[n].gap_excluded ||
++            p->submitted[n].target_slot < expected_base ||
++            (p->history_floor_slot && expected_base < p->history_floor_slot) ||
++            (captured && (p->submitted[n].base != captured->base.wall ||
++                          p->submitted[n].target_slot != captured->target.slot)))
++            return false;
++        matches++;
++    }
++    return matches == 1;
++}
++
++// History may lag the current submission. If an ID already belongs to this
++// prefix, a known different display slot is a real MISS, not more permission.
++// Missing/duplicated history registration inside the prefix is also unknown.
++static inline bool secondary_ass_stage_prefix_history_safe(
++    const struct secondary_ass_physical *p, uint64_t first_id, uint64_t last_id)
++{
++    if (!p || !first_id || last_id < first_id)
++        return false;
++    if (p->historical_id < first_id)
++        return true;
++    if (p->historical_id > last_id)
++        return false;
++    unsigned matches = 0;
++    for (unsigned n = 0; n < 32; n++) {
++        if (p->submitted[n].id != p->historical_id)
++            continue;
++        if (p->submitted[n].gap_excluded || p->submitted[n].target_slot <= 0 ||
++            p->submitted[n].target_slot != p->phase_slot)
++            return false;
++        matches++;
++    }
++    return matches == 1;
++}
++
++static inline bool secondary_ass_stage_prefix_stage_equal(
++    const struct secondary_ass_queue_stage *a,
++    const struct secondary_ass_queue_stage *b)
++{
++    return secondary_ass_queue_stage_sane(a) &&
++        secondary_ass_queue_stage_sane(b) && a->bound && b->bound &&
++        a->queued_id > a->retained_id && b->queued_id > b->retained_id &&
++        a->retained_id == b->retained_id && a->queued_id == b->queued_id &&
++        a->pts == b->pts && a->offset == b->offset && a->due == b->due &&
++        a->old_lead == b->old_lead && a->max_lead == b->max_lead &&
++        a->admission == b->admission && a->resume == b->resume;
++}
++
++// Call once in the VO thread after accepting the bound stage, with one OSD
++// snapshot and that thread's current physical ledger. Do not read physical
++// state from the core-side bind. The caller owns identity/reset/budget checks.
++static inline bool secondary_ass_stage_prefix_begin(
++    struct secondary_ass_stage_prefix *prefix,
++    const struct secondary_ass_queue_stage *stage,
++    const struct secondary_ass_sample_snapshot *sample,
++    const struct secondary_ass_physical *p)
++{
++    if (!prefix || prefix->initialized)
++        return false;
++    prefix->initialized = true;
++    prefix->valid = false;
++    if (!secondary_ass_stage_prefix_stage_equal(stage, stage))
++        return false;
++    // A bound stage's failed first proof remains this same stage's failure.
++    // The VO compares this identity before deciding that the stage ended.
++    prefix->stage = *stage;
++    if (!secondary_ass_stage_prefix_snapshot_valid(sample) ||
++        !secondary_ass_stage_prefix_physical_ready(p) || sample->epoch != p->epoch)
++        return false;
++    int64_t previous = sample->next_slot - sample->divisor;
++    if (sample->sample_slot != previous ||
++        !secondary_ass_stage_prefix_registered(p, p->success_last_id,
++                                               previous, NULL) ||
++        !secondary_ass_stage_prefix_history_safe(p, p->success_last_id,
++                                                 p->success_last_id))
++        return false;
++    prefix->grid = *sample;
++    prefix->generation = p->success_generation;
++    prefix->first_id = p->success_last_id;
++    prefix->last_id = p->success_last_id;
++    prefix->next_slot = sample->next_slot;
++    prefix->valid = true;
++    return true;
++}
++
++// Resolve exactly one captured cache opportunity after Present/registration.
++// The caller passes actual success, not draw_frame's return or sampler change.
++// Before belongs to this captured attempt; after is taken after feedback.
++// A force/reset observed during the actual OSD draw must be passed as missed
++// (or invalidate first): it cannot be recovered from a cleared after.force.
++// Skips, MISS, force, failed/unregistered/repeated Presents revoke permission;
++// this minimal version never grants again from an expired-MISS disposition.
++static inline bool secondary_ass_stage_prefix_resolve(
++    struct secondary_ass_stage_prefix *prefix,
++    const struct secondary_ass_present_plan *captured, bool submit_success,
++    bool missed, uint64_t submit_id,
++    const struct secondary_ass_sample_snapshot *before,
++    const struct secondary_ass_sample_snapshot *sample,
++    const struct secondary_ass_physical *p)
++{
++    if (!prefix || !prefix->initialized || !prefix->valid)
++        return false;
++    bool valid = captured && captured->valid && captured->display_forecast &&
++        submit_success && !missed &&
++        secondary_ass_stage_prefix_grid_equal(&prefix->grid, before) &&
++        before->next_slot == prefix->next_slot &&
++        before->sample_slot == prefix->next_slot - prefix->grid.divisor &&
++        secondary_ass_stage_prefix_grid_equal(&prefix->grid, sample) &&
++        secondary_ass_stage_prefix_physical_ready(p) &&
++        captured->epoch == prefix->grid.epoch && p->epoch == prefix->grid.epoch &&
++        captured->generation == prefix->generation &&
++        p->success_generation == prefix->generation &&
++        captured->base.slot == prefix->next_slot && captured->base.wall > 0 &&
++        captured->target.slot >= captured->base.slot &&
++        captured->target.wall >= captured->base.wall &&
++        captured->base.slot <= INT64_MAX - prefix->grid.divisor &&
++        sample->next_slot == captured->base.slot + prefix->grid.divisor &&
++        sample->sample_slot == captured->base.slot &&
++        prefix->last_id < UINT64_MAX && submit_id == prefix->last_id + 1 &&
++        secondary_ass_stage_prefix_history_safe(p, prefix->first_id, submit_id) &&
++        secondary_ass_stage_prefix_registered(p, submit_id,
++                                               captured->base.slot, captured);
++    if (!valid) {
++        secondary_ass_stage_prefix_invalidate(prefix);
++        return false;
++    }
++    prefix->last_id = submit_id;
++    prefix->next_slot = sample->next_slot;
++    return true;
++}
++
++// False at G<F means park/service the original cache, not a permanent failure.
++// Bad identity/proof is sticky. The VO still checks budget/reset/visibility,
++// stage admission/resume and final Sync1 guard, then keeps the original G S.
++static inline bool secondary_ass_stage_prefix_can_promote(
++    struct secondary_ass_stage_prefix *prefix,
++    const struct secondary_ass_queue_stage *stage,
++    const struct secondary_ass_sample_snapshot *sample,
++    const struct secondary_ass_physical *p)
++{
++    if (!prefix || !prefix->initialized || !prefix->valid)
++        return false;
++    bool valid = secondary_ass_stage_prefix_stage_equal(&prefix->stage, stage) &&
++        secondary_ass_stage_prefix_grid_equal(&prefix->grid, sample) &&
++        secondary_ass_stage_prefix_physical_ready(p) &&
++        p->epoch == prefix->grid.epoch &&
++        p->success_generation == prefix->generation &&
++        secondary_ass_stage_prefix_history_safe(p, prefix->first_id, prefix->last_id) &&
++        p->success_last_id == prefix->last_id && sample->next_slot == prefix->next_slot &&
++        sample->sample_slot == prefix->next_slot - prefix->grid.divisor &&
++        secondary_ass_stage_prefix_registered(p, prefix->last_id,
++            prefix->next_slot - prefix->grid.divisor, NULL);
++    if (!valid) {
++        secondary_ass_stage_prefix_invalidate(prefix);
++        return false;
++    }
++    struct secondary_ass_physical_point current =
++        secondary_ass_physical_point_at(p, prefix->next_slot);
++    if (current.slot != prefix->next_slot || current.wall <= 0) {
++        secondary_ass_stage_prefix_invalidate(prefix);
++        return false;
++    }
++    return current.wall >= stage->due;
++}
++
++#endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index ff9f2ae..bb92b72 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -45,6 +45,8 @@
+ #include "secondary_ass_physical.h"
+ #include "secondary_ass_present_plan.h"
+ #include "secondary_ass_queue_lead.h"
++#include "secondary_ass_queue_stage.h"
++#include "secondary_ass_stage_prefix.h"
+ #include "aspect.h"
+ #include "dr_helper.h"
+ #include "input/input.h"
+@@ -186,8 +188,13 @@ struct vo_internal {
+     bool secondary_present_grid; // opt-in cadence experiment, not a default
+     bool secondary_fifo_present; // isolated opt-in FIFO submission experiment
+     bool secondary_present_plan; // isolated planned-base consumption experiment
++    bool secondary_display_forecast; // opt-in separate eligibility/display slots
+     bool secondary_split_budget; // opt-in measured submission envelope forecast
+     bool secondary_queue_lead; // opt-in coherent native queue admission
++    bool secondary_queue_stage; // opt-in early ownership, normal render admission
++    struct secondary_ass_queue_stage secondary_stage_admission; // core, locked
++    struct secondary_ass_queue_stage secondary_stage_pending; // bound, locked
++    struct secondary_ass_stage_prefix secondary_stage_prefix; // VO thread only
+     struct secondary_ass_queue_hint secondary_queue_hint; // copied under lock
+     struct secondary_ass_queue_token secondary_queue_admission; // core, under lock
+     struct secondary_ass_queue_token secondary_queue_pending; // under lock
+@@ -380,8 +387,79 @@ struct secondary_ass_grid_task {
+     double rate;
+     bool plan_enabled;
+     struct secondary_ass_present_plan plan;
++    struct secondary_ass_queue_stage stage;
+ };
+ 
++// Caller holds in->lock. This validates the accepted frame's finite hold;
++// it does not authorize an early draw or extend a cache deadline.
++static bool secondary_stage_owner(struct vo *vo,
++                                  const struct secondary_ass_queue_stage *stage)
++{
++    struct vo_internal *in = vo->in;
++    return in->secondary_queue_stage && stage->valid &&
++        in->current_frame && in->frame_queued && !in->paused && in->hasframe &&
++        !in->send_reset && !in->dropped_frame &&
++        !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++        !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) &&
++        !in->current_frame->still && !in->current_frame->display_synced &&
++        !in->frame_queued->still && !in->frame_queued->display_synced &&
++        stage->max_lead == MPMIN(in->timing_offset, MP_TIME_MS_TO_NS(50)) &&
++        secondary_ass_queue_stage_current(stage, in->current_frame->frame_id,
++            in->frame_queued->frame_id, in->frame_queued->pts,
++            in->flip_queue_offset);
++}
++
++static int64_t secondary_stage_budget_resume(struct vo *vo,
++    const struct secondary_ass_queue_stage *stage, double rate, int64_t now);
++
++static bool secondary_stage_cache_current(struct vo *vo,
++    const struct secondary_ass_queue_stage *stage, int64_t now,
++    int64_t interval, int64_t block_cost, double rate)
++{
++    struct vo_internal *in = vo->in;
++    const struct secondary_ass_queue_stage *pending = &in->secondary_stage_pending;
++    block_cost = block_cost > 0 ? block_cost : interval;
++    return secondary_stage_owner(vo, stage) && secondary_stage_owner(vo, pending) &&
++        stage->old_lead == pending->old_lead &&
++        stage->max_lead == pending->max_lead && stage->resume == pending->resume &&
++        in->secondary_queue_resume == stage->resume && now < stage->resume &&
++        secondary_ass_budget_affordable(in->secondary_render_cost,
++            in->secondary_redraw_cost, in->frame_queued->duration, interval) &&
++        secondary_ass_budget_before_deadline(now,
++            secondary_stage_budget_resume(vo, stage, rate, now), 0, block_cost,
++                                             MP_TIME_MS_TO_NS(1));
++}
++
++// Recheck the existing native admission formula after the retained draw has
++// updated its cost. The captured hold can end earlier, never later; F, S and
++// the sampler's physical lattice remain unchanged.
++static int64_t secondary_stage_budget_resume(struct vo *vo,
++    const struct secondary_ass_queue_stage *stage, double rate, int64_t now)
++{
++    struct vo_internal *in = vo->in;
++    int64_t lead = stage->max_lead;
++    if (isfinite(rate) && rate > 0 && rate >= 1e9 / INT64_MAX &&
++        in->current_frame)
++    {
++        int64_t interval = MPMAX(MP_TIME_S_TO_NS(1.0 / rate), in->vsync_interval);
++        int64_t duration = in->current_frame->duration;
++        bool affordable = secondary_ass_budget_affordable(in->secondary_render_cost,
++            in->secondary_redraw_cost, duration, interval);
++        bool probe = secondary_ass_budget_probe_due(in->secondary_render_cost,
++            duration, interval, now, in->secondary_next_probe);
++        if (affordable || probe) {
++            int64_t minimum = MP_TIME_MS_TO_NS(2);
++            if (isfinite(in->reported_display_fps) && in->reported_display_fps > 0 &&
++                in->reported_display_fps >= 1e9 / (INT64_MAX - minimum))
++                minimum += MP_TIME_S_TO_NS(1.0 / in->reported_display_fps);
++            int64_t cost = in->secondary_render_cost;
++            if (cost >= 0 && cost <= INT64_MAX - MP_TIME_MS_TO_NS(2))
++                lead = MPMIN(lead, MPMAX(minimum, cost + MP_TIME_MS_TO_NS(2)));
++        }
++    }
++    return MPMIN(stage->resume, stage->due - lead);
++}
++
+ static bool secondary_plan_enabled(struct vo *vo, bool display_synced,
+                                    int64_t divisor)
+ {
+@@ -391,6 +469,29 @@ static bool secondary_plan_enabled(struct vo *vo, bool display_synced,
+         !display_synced && divisor > 0;
+ }
+ 
++static bool secondary_forecast_enabled(struct vo *vo, bool display_synced,
++                                       int64_t divisor)
++{
++    return vo->in->secondary_display_forecast &&
++        secondary_plan_enabled(vo, display_synced, divisor);
++}
++
++static struct secondary_ass_present_plan secondary_cache_plan(struct vo *vo,
++    struct secondary_ass_physical_point logical)
++{
++    return vo->in->secondary_display_forecast
++        ? secondary_ass_present_plan_cache_forecast(&vo->in->secondary_physical, logical)
++        : secondary_ass_present_plan_cache(&vo->in->secondary_physical, logical);
++}
++
++static void secondary_capture_grid_plan(struct secondary_ass_grid_task *task)
++{
++    if (task->plan_enabled && task->plan.valid && task->plan.display_forecast) {
++        task->deadline = task->plan.deadline;
++        task->submit_time = task->plan.submit;
++    }
++}
++
+ static int64_t secondary_cache_block_cost(struct vo *vo, bool planned_audio)
+ {
+     struct vo_internal *in = vo->in;
+@@ -481,6 +582,9 @@ static void secondary_trace_plan(struct vo *vo, bool fresh,
+ static void secondary_trace_plan_missed(struct vo *vo, const char *reason,
+     const char *stage, const struct secondary_ass_present_plan *plan)
+ {
++    // A missed captured task cannot close the successful stage prefix.
++    if (vo->in->secondary_queue_stage)
++        secondary_ass_stage_prefix_invalidate(&vo->in->secondary_stage_prefix);
+     if (mp_ass_pacing_enabled(vo->global)) {
+         struct mp_ass_pacing_record record = {
+             .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
+@@ -582,6 +686,11 @@ static void read_opts(struct vo *vo)
+             token->old_admission = token->fresh_due - timing_offset;
+         }
+     }
++    if (in->secondary_queue_stage && in->timing_offset != timing_offset) {
++        secondary_ass_queue_stage_clear(&in->secondary_stage_admission);
++        secondary_ass_queue_stage_clear(&in->secondary_stage_pending);
++        in->secondary_queue_resume = 0;
++    }
+     in->timing_offset = timing_offset;
+     mp_mutex_unlock(&in->lock);
+ }
+@@ -663,7 +772,16 @@ static struct vo *vo_create(bool probing, struct mpv_global *global,
+     const char *queue_trace = getenv("MPV_NATIVE_ASS_TRACE");
+     const char *queue_grid = getenv("MPV_NATIVE_PRESENT_GRID");
+     const char *queue_plan = getenv("MPV_NATIVE_PRESENT_PLAN");
++    const char *queue_stage = getenv("MPV_NATIVE_QUEUE_STAGE");
++    const char *queue_forecast = getenv("MPV_NATIVE_DISPLAY_FORECAST");
++    vo->in->secondary_queue_stage = queue_stage && !strcmp(queue_stage, "1") &&
++        ((queue_diagnostic && !strcmp(queue_diagnostic, "1")) ||
++         (queue_trace && !strcmp(queue_trace, "1"))) &&
++        queue_grid && !strcmp(queue_grid, "1") &&
++        queue_plan && !strcmp(queue_plan, "1");
+     vo->in->secondary_queue_lead = queue_lead && !strcmp(queue_lead, "1") &&
++        !vo->in->secondary_queue_stage &&
++        !(queue_forecast && !strcmp(queue_forecast, "1")) &&
+         ((queue_diagnostic && !strcmp(queue_diagnostic, "1")) ||
+          (queue_trace && !strcmp(queue_trace, "1"))) &&
+         queue_grid && !strcmp(queue_grid, "1") &&
+@@ -1078,6 +1196,8 @@ static void forget_frames(struct vo *vo)
+     in->secondary_queue_hint = (struct secondary_ass_queue_hint){0};
+     in->secondary_queue_admission = (struct secondary_ass_queue_token){0};
+     in->secondary_queue_pending = (struct secondary_ass_queue_token){0};
++    secondary_ass_queue_stage_clear(&in->secondary_stage_admission);
++    secondary_ass_queue_stage_clear(&in->secondary_stage_pending);
+     in->secondary_queue_resume = 0;
+     in->current_frame_id += VO_MAX_REQ_FRAMES + 1;
+     // don't unref current_frame; we always want to be able to redraw it
+@@ -1337,6 +1457,7 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+         : (struct secondary_ass_sample_snapshot){0};
+     mp_mutex_lock(&in->lock);
+     in->secondary_queue_admission = (struct secondary_ass_queue_token){0};
++    secondary_ass_queue_stage_clear(&in->secondary_stage_admission);
+     bool r = vo->config_ok && !in->frame_queued &&
+              (!in->current_frame || in->current_frame->num_vsyncs < 1);
+     if (r && next_pts >= 0) {
+@@ -1363,6 +1484,23 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
+             lead = MPMIN(lead, MPMAX(minimum,
+                 in->secondary_render_cost + MP_TIME_S_TO_NS(0.002)));
+         }
++        if (in->secondary_queue_stage && isfinite(secondary_rate) &&
++            secondary_rate > 0 && affordable && !probe && in->hasframe &&
++            in->current_frame && !in->current_frame->still &&
++            !in->current_frame->display_synced && !in->paused &&
++            !in->dropped_frame && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)))
++        {
++            struct secondary_ass_queue_stage stage = secondary_ass_queue_stage_make(
++                in->current_frame->frame_id, next_pts, in->flip_queue_offset,
++                lead, in->timing_offset);
++            if (stage.valid) {
++                lead = stage.max_lead;
++                if (now >= stage.admission)
++                    in->secondary_stage_admission = stage;
++            }
++        }
+         if (in->secondary_queue_lead && affordable && !probe &&
+             in->current_frame && !in->current_frame->still && !in->paused &&
+             queue_sample.rate == secondary_rate &&
+@@ -1461,7 +1599,30 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+     frame->frame_id = ++(in->current_frame_id);
+     uint64_t queued_id = trace_queue ? frame->frame_id : 0;
+     in->frame_queued = frame;
++    if (in->secondary_queue_stage) {
++        struct secondary_ass_queue_stage stage = secondary_ass_queue_stage_bind(
++            &in->secondary_stage_admission,
++            in->current_frame ? in->current_frame->frame_id : 0,
++            frame->frame_id, frame->pts, in->flip_queue_offset);
++        // The core proposal was not immutable. Only this accepted frame's
++        // real PTS establishes F, and only within the original queue cap.
++        bool eligible = stage.valid && !frame->display_synced && !frame->still &&
++            in->current_frame && !in->current_frame->still &&
++            !in->current_frame->display_synced && in->hasframe && !in->paused &&
++            !in->dropped_frame && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) &&
++            mp_time_ns() >= stage.admission;
++        in->secondary_stage_pending = eligible ? stage
++            : (struct secondary_ass_queue_stage){0};
++        secondary_ass_queue_stage_clear(&in->secondary_stage_admission);
++        // Publish the hold immediately: the current draw may still be in
++        // flight and its first outer iteration must see the parked image.
++        if (eligible)
++            in->secondary_queue_resume = stage.resume;
++    }
+     struct secondary_ass_queue_token recorded_queue_token = *queue_token;
++    struct secondary_ass_queue_stage recorded_stage = in->secondary_stage_pending;
+     in->wakeup_pts = frame->display_synced
+                    ? 0 : frame->pts + MPMAX(frame->duration, 0);
+     wakeup_locked(vo);
+@@ -1472,7 +1633,10 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+             .frame_id = queued_id, .flags = queue_ds,
+             .v = {(int64_t)retained_id, queue_pts, queue_duration,
+                 recorded_queue_token.old_admission, recorded_queue_token.admission,
+-                recorded_queue_token.plan.target.slot, recorded_queue_token.valid},
++                recorded_queue_token.plan.target.slot, recorded_queue_token.valid,
++                recorded_stage.valid, recorded_stage.admission, recorded_stage.resume,
++                recorded_stage.due, recorded_stage.offset, recorded_stage.old_lead,
++                recorded_stage.max_lead},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_QUEUE, &record);
+     }
+@@ -1605,9 +1769,14 @@ static struct secondary_ass_physical_point secondary_cache_next_sample(
+     bool ds = vo->in->current_frame && vo->in->current_frame->display_synced;
+     const struct secondary_ass_physical *p = secondary_planning_state(vo, ds, divisor, &storage);
+     struct secondary_ass_physical_point next = secondary_plan_enabled(vo, ds, divisor)
+-        ? secondary_ass_present_plan_cache_next(&vo->in->secondary_physical,
+-            first.slot, divisor, effective_start)
++        ? (secondary_forecast_enabled(vo, ds, divisor)
++            ? secondary_ass_present_plan_cache_next_forecast(&vo->in->secondary_physical,
++                first.slot, divisor, effective_start)
++            : secondary_ass_present_plan_cache_next(&vo->in->secondary_physical,
++                first.slot, divisor, effective_start))
+         : secondary_ass_physical_cache_next(p, first.slot, divisor, effective_start);
++    if (vo->in->secondary_queue_stage && next.slot > first.slot)
++        secondary_ass_stage_prefix_invalidate(&vo->in->secondary_stage_prefix);
+     if (vo->in->secondary_trace && next.slot > first.slot)
+         MP_INFO(vo, "native-ass-cache-reschedule: first_slot=%"PRId64
+             " next_slot=%"PRId64" skipped_samples=%"PRId64
+@@ -1710,9 +1879,33 @@ static void secondary_physical_feedback(struct vo *vo,
+ 
+ static bool secondary_set_presentation(struct vo *vo,
+     struct secondary_ass_physical_point point, int64_t fallback,
+-    int64_t interval, int64_t submit, bool quiet_output)
++    int64_t interval, int64_t submit, bool quiet_output, bool forecast,
++    const struct secondary_ass_present_plan *plan)
+ {
+     struct secondary_ass_physical *p = &vo->in->secondary_physical;
++    if (forecast) {
++        struct secondary_ass_present_plan quiet_plan = {0};
++        if ((!plan || !plan->valid) && quiet_output && p->epoch && !p->outlier_pending) {
++            int64_t divisor = osd_get_secondary_physical_sample_divisor(vo->osd);
++            struct secondary_ass_physical_point first = secondary_next_sample(vo, divisor);
++            // Quiet draws must also stay on the existing divided G lattice;
++            // a raw prediction could select odd slots forever on an even grid.
++            struct secondary_ass_physical_point logical = divisor > 0
++                ? secondary_ass_present_plan_cache_next_forecast(p, first.slot,
++                    divisor, MPMAX(submit, mp_time_ns()))
++                : (struct secondary_ass_physical_point){0};
++            quiet_plan = secondary_ass_present_plan_make_forecast(p, logical);
++            plan = &quiet_plan;
++        }
++        if (plan && plan->valid && plan->display_forecast)
++            return osd_set_secondary_physical_forecast_time(vo->osd,
++                plan->target.wall, plan->base.slot, plan->target.slot,
++                p->phase, p->phase_slot, p->interval, p->epoch, submit);
++        // Missing authority must not replace an established physical clock
++        // with a wall oscillator during one jitter or pressure episode.
++        osd_hold_secondary_sample(vo->osd);
++        return false;
++    }
+     if (!(point.slot > 0 && point.wall > 0) && quiet_output && p->epoch &&
+         !p->outlier_pending) {
+         // Quiet output needs no extra redraw, but future events still need an
+@@ -1820,12 +2013,57 @@ static bool render_frame(struct vo *vo)
+     struct secondary_ass_physical prepass_storage;
+     const struct secondary_ass_physical *prepass_state =
+         secondary_planning_state(vo, false, 0, &prepass_storage);
+-    struct secondary_ass_sample_snapshot queue_sample = in->secondary_queue_lead
++    struct secondary_ass_sample_snapshot queue_sample =
++        (in->secondary_queue_lead || in->secondary_queue_stage)
+         ? osd_get_secondary_sample_snapshot(vo->osd)
+         : (struct secondary_ass_sample_snapshot){0};
+ 
+     mp_mutex_lock(&in->lock);
+ 
++    if (in->secondary_stage_prefix.initialized &&
++        !secondary_ass_stage_prefix_stage_equal(&in->secondary_stage_prefix.stage,
++                                                &in->secondary_stage_pending))
++        secondary_ass_stage_prefix_clear(&in->secondary_stage_prefix);
++    if (in->secondary_stage_pending.valid) {
++        struct secondary_ass_queue_stage *stage = &in->secondary_stage_pending;
++        bool current = secondary_stage_owner(vo, stage);
++        int64_t now = mp_time_ns();
++        int64_t resume = current
++            ? secondary_stage_budget_resume(vo, stage, native_rate, now) : 0;
++        if (current && now < resume) {
++            if (!in->secondary_stage_prefix.initialized)
++                secondary_ass_stage_prefix_begin(&in->secondary_stage_prefix, stage,
++                                                  &queue_sample, &in->secondary_physical);
++            if (secondary_forecast_enabled(vo, false, sample_divisor) &&
++                queue_sample.valid && queue_sample.rate == native_rate &&
++                queue_sample.divisor == sample_divisor &&
++                secondary_ass_budget_affordable(in->secondary_render_cost,
++                    in->secondary_redraw_cost, in->frame_queued->duration,
++                    MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate),
++                          in->secondary_physical.interval)) &&
++                secondary_ass_stage_prefix_can_promote(&in->secondary_stage_prefix,
++                    stage, &queue_sample, &in->secondary_physical))
++            {
++                struct secondary_ass_physical_point logical =
++                    secondary_ass_physical_point_at(&in->secondary_physical,
++                                                    queue_sample.next_slot);
++                struct secondary_ass_present_plan plan =
++                    secondary_ass_present_plan_fresh_forecast(&in->secondary_physical,
++                                                               stage->due, logical);
++                if (secondary_ass_present_plan_current(&in->secondary_physical, &plan) &&
++                    plan.base.wall >= stage->due && now < plan.submit)
++                    early_plan = plan;
++            }
++            if (!early_plan.valid) {
++                in->secondary_queue_resume = stage->resume;
++                goto done;
++            }
++        }
++        secondary_ass_queue_stage_clear(stage);
++        secondary_ass_stage_prefix_clear(&in->secondary_stage_prefix);
++        in->secondary_queue_resume = 0;
++    }
++
+     if (in->frame_queued && in->secondary_queue_pending.old_admission > 0) {
+         struct secondary_ass_queue_token *token = &in->secondary_queue_pending;
+         bool current = in->current_frame && !in->paused && !in->send_reset &&
+@@ -1861,6 +2099,7 @@ static bool render_frame(struct vo *vo)
+     // physical ASS slot. Service that cheap cached slot first when both draws
+     // still fit before the fresh image's actual scanout opportunity.
+     if (in->frame_queued && in->current_frame && !in->paused &&
++        !(in->secondary_queue_stage && early_plan.valid) &&
+         in->hasframe && !in->current_frame->still && !in->dropped_frame &&
+         !in->send_reset && !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
+         !(vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) &&
+@@ -1912,9 +2151,10 @@ static bool render_frame(struct vo *vo)
+                         prepass_state, sample.wall),
+                     .plan_enabled = secondary_plan_enabled(vo, false, sample_divisor),
+                     .plan = secondary_plan_enabled(vo, false, sample_divisor)
+-                        ? secondary_ass_present_plan_cache(&in->secondary_physical, sample)
++                        ? secondary_cache_plan(vo, sample)
+                         : (struct secondary_ass_present_plan){0},
+                 };
++            secondary_capture_grid_plan(&grid_task);
+         }
+         if (in->secondary_schedule_trace || mp_ass_pacing_enabled(vo->global))
+             prepass_trace = (struct secondary_ass_prepass_trace){
+@@ -1962,6 +2202,8 @@ static bool render_frame(struct vo *vo)
+         in->current_frame = in->frame_queued;
+         in->frame_queued = NULL;
+         in->secondary_queue_pending = (struct secondary_ass_queue_token){0};
++        secondary_ass_queue_stage_clear(&in->secondary_stage_pending);
++        secondary_ass_stage_prefix_clear(&in->secondary_stage_prefix);
+         in->secondary_queue_resume = 0;
+     } else if (in->paused || !in->current_frame || !in->hasframe ||
+                (in->current_frame->display_synced && in->current_frame->num_vsyncs < 1) ||
+@@ -2071,10 +2313,20 @@ static bool render_frame(struct vo *vo)
+         if (physical_phase && in->secondary_physical.phase) {
+             int64_t physical_ready = MPMAX(present_ready,
+                 mp_time_ns() + in->secondary_render_cost);
+-            if (planned_audio)
++            if (planned_audio) {
+                 present_plan = early_plan.valid ? early_plan :
+-                    secondary_ass_present_plan_fresh(
+-                        &in->secondary_physical, physical_ready, native_point);
++                    (secondary_forecast_enabled(vo, false, sample_divisor)
++                        ? secondary_ass_present_plan_fresh_forecast(
++                            &in->secondary_physical, physical_ready, native_point)
++                        : secondary_ass_present_plan_fresh(
++                            &in->secondary_physical, physical_ready, native_point));
++                if (present_plan.display_forecast && present_plan.valid &&
++                    present_plan.base.wall < original_video_target) {
++                    secondary_trace_plan_missed(vo, "before_video_due", "before-draw",
++                                                &present_plan);
++                    present_plan.valid = false;
++                }
++            }
+             struct secondary_ass_physical_point candidate =
+                 planned_audio ? present_plan.target :
+                 (native_point.slot > in->secondary_physical.last_base_slot &&
+@@ -2106,12 +2358,17 @@ static bool render_frame(struct vo *vo)
+         physical_phase = physical_point.slot > 0 && !frame->display_synced;
+         bool secondary_target_updated = secondary_set_presentation(vo,
+             physical_point, presentation_time, display_interval, present_ready,
+-            native_rate <= 0 && !frame->display_synced);
++            native_rate <= 0 && !frame->display_synced,
++            secondary_forecast_enabled(vo, frame->display_synced, sample_divisor),
++            &present_plan);
+         if (!secondary_target_updated && in->secondary_trace)
+             MP_INFO(vo, "native-ass-phase-hold: fresh=%d target_updated=0 "
+                 "physical_point_available=0 actual_display_known=0 "
+                 "raw_video_target_ns=%"PRId64" epoch=%"PRIu64"\n",
+                 !frame->repeat, target, in->secondary_physical.epoch);
++        if (!secondary_target_updated && present_plan.valid && present_plan.display_forecast)
++            secondary_trace_plan_missed(vo, "display_pose_unavailable", "before-draw",
++                                        &present_plan);
+         if (clock_rate > 0 && frame->current &&
+             (frame->display_synced || !frame->repeat)) {
+             double media_pts = frame->current->pts +
+@@ -2224,7 +2481,8 @@ static bool render_frame(struct vo *vo)
+                 vo->driver->can_present_early &&
+                 vo->driver->can_present_early(vo, present_plan.generation,
+                     present_plan.lifecycle_safe_wait, secondary_plan_wait_until);
+-            early_present = plan_guard_armed && in->secondary_fifo_present &&
++            early_present = plan_guard_armed && !present_plan.display_forecast &&
++                !in->secondary_queue_stage && in->secondary_fifo_present &&
+                 in->visible && !frame->repeat && physical_phase &&
+                 secondary_target_updated && present_plan.fifo_known &&
+                 present_plan.fifo_lower == present_plan.target.slot &&
+@@ -2238,7 +2496,9 @@ static bool render_frame(struct vo *vo)
+         }
+         int64_t fifo_lower = secondary_ass_physical_fifo_lower_bound(
+             &in->secondary_physical);
+-        if (!planned_audio && in->secondary_fifo_present && in->visible && !frame->repeat &&
++        if (!planned_audio && !in->secondary_display_forecast &&
++            !in->secondary_queue_stage && in->secondary_fifo_present &&
++            in->visible && !frame->repeat &&
+             physical_phase &&
+             secondary_target_updated && fifo_lower > 0 && target > mp_time_ns() &&
+             fifo_lower == physical_point.slot &&
+@@ -2357,6 +2617,9 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     double grid_rate = grid_task ? osd_get_secondary_refresh(vo->osd) : 0;
+     int64_t grid_divisor = grid_task
+         ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
++    struct secondary_ass_sample_snapshot stage_before = grid_task && grid_task->stage.valid
++        ? osd_get_secondary_sample_snapshot(vo->osd)
++        : (struct secondary_ass_sample_snapshot){0};
+ 
+     mp_mutex_lock(&in->lock);
+     if (grid_task && (in->paused || !in->hasframe || in->send_reset ||
+@@ -2393,6 +2656,18 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                 " now_ns=%"PRId64" epoch=%"PRIu64"\n",
+                 grid_task->point.slot, grid_task->point.wall,
+                 grid_task->deadline, now, grid_task->epoch);
++        if (grid_task->stage.valid)
++            secondary_trace_plan_missed(vo, "cache_deadline_expired", "before-draw",
++                                        &grid_task->plan);
++        return false;
++    }
++    if (grid_task && grid_task->stage.valid &&
++        !secondary_stage_cache_current(vo, &grid_task->stage, mp_time_ns(),
++            MPMAX(MP_TIME_S_TO_NS(1.0 / grid_rate), grid_task->interval),
++            secondary_cache_block_cost(vo, grid_task->plan_enabled), grid_rate))
++    {
++        mp_mutex_unlock(&in->lock);
++        secondary_ass_stage_prefix_invalidate(&in->secondary_stage_prefix);
+         return false;
+     }
+     // A seek or live resize can interrupt the short preparation wait. Take
+@@ -2493,6 +2768,10 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                     "before-draw", &present_plan);
+                 return false;
+             }
++            if (present_plan.display_forecast) {
++                physical_point = present_plan.target;
++                presentation_time = physical_point.wall;
++            }
+         }
+         physical_phase = physical_point.slot > 0 && physical_point.wall > 0;
+     }
+@@ -2506,12 +2785,17 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     bool secondary_target_updated = secondary_set_presentation(vo,
+         physical_point, presentation_time, display_interval,
+         planned_audio && present_plan.valid ? present_plan.submit : mp_time_ns(),
+-        secondary_rate <= 0 && !frame->display_synced);
++        secondary_rate <= 0 && !frame->display_synced,
++        secondary_forecast_enabled(vo, frame->display_synced, grid_divisor),
++        &present_plan);
+     if (!secondary_target_updated && in->secondary_trace)
+         MP_INFO(vo, "native-ass-phase-hold: fresh=0 target_updated=0 "
+             "physical_point_available=0 actual_display_known=0 "
+             "raw_video_target_ns=0 epoch=%"PRIu64"\n",
+             in->secondary_physical.epoch);
++    if (!secondary_target_updated && present_plan.valid && present_plan.display_forecast)
++        secondary_trace_plan_missed(vo, "display_pose_unavailable", "before-draw",
++                                    &present_plan);
+     if (planned_audio && in->secondary_trace && presentation_time > 0)
+         secondary_trace_plan(vo, false, &present_plan);
+     if (in->secondary_trace && presentation_time > 0)
+@@ -2546,6 +2830,9 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                 " now_ns=%"PRId64" epoch=%"PRIu64"\n",
+                 grid_task->point.slot, grid_task->point.wall,
+                 grid_task->deadline, draw_begin, grid_task->epoch);
++        if (grid_task->stage.valid)
++            secondary_trace_plan_missed(vo, "cache_deadline_expired", "after-preparation",
++                                        &grid_task->plan);
+         return false;
+     }
+     in->secondary_last_draw = draw_begin;
+@@ -2581,9 +2868,14 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                                                     presentation_time));
+         }
+     }
+-    int64_t flip_call = in->secondary_trace && trace_deadline > 0 ? mp_time_ns() : 0;
++    // VO flip boundaries are not the backend API entry or actual scanout.
++    // Capture them for stage permission even with text tracing disabled.
++    bool stage_attempt = grid_task && grid_task->stage.valid;
++    int64_t flip_call = ((in->secondary_trace && trace_deadline > 0) || stage_attempt)
++        ? mp_time_ns() : 0;
+     int64_t flip_budget_begin = in->secondary_split_budget ? mp_time_ns() : 0;
+     vo->driver->flip_page(vo);
++    int64_t stage_flip_end = stage_attempt ? mp_time_ns() : 0;
+     if (clock_rate > 0) {
+         struct vo_vsync_info vsync = {
+             .last_queue_display_time = -1,
+@@ -2593,6 +2885,30 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+             vo->driver->get_vsync(vo, &vsync);
+         secondary_physical_feedback(vo, &vsync, physical_point,
+             planned_audio ? &present_plan : NULL);
++        if (grid_task && grid_task->stage.valid) {
++            struct secondary_ass_sample_snapshot after =
++                osd_get_secondary_sample_snapshot(vo->osd);
++            mp_mutex_lock(&in->lock);
++            if (!flip_budget_guard_armed || stage_flip_end >= trace_deadline) {
++                // A backend fallback/long flip is not proven timely here.
++                // Withdraw early preparation without calling completion a
++                // Display timestamp or modifying the observed Present result.
++                secondary_ass_stage_prefix_invalidate(&in->secondary_stage_prefix);
++            } else if (secondary_stage_owner(vo, &grid_task->stage) &&
++                secondary_ass_stage_prefix_stage_equal(&grid_task->stage,
++                                                       &in->secondary_stage_pending))
++                secondary_ass_stage_prefix_resolve(&in->secondary_stage_prefix,
++                    &present_plan, !vsync.secondary_phase_reset &&
++                        vsync.secondary_submit_valid &&
++                        vsync.secondary_submit_sync_interval == 1,
++                    !secondary_target_updated || cpu_end >= trace_deadline ||
++                        flip_call >= trace_deadline,
++                    vsync.secondary_submit_id, &stage_before, &after,
++                    &in->secondary_physical);
++            else
++                secondary_ass_stage_prefix_invalidate(&in->secondary_stage_prefix);
++            mp_mutex_unlock(&in->lock);
++        }
+         secondary_ass_present_feedback(&in->secondary_presentation,
+                                        vsync.last_queue_display_time);
+         if (in->secondary_trace)
+@@ -2690,6 +3006,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+     const char *present_plan = getenv("MPV_NATIVE_PRESENT_PLAN");
+     in->secondary_present_plan = diagnostic && present_plan &&
+         strcmp(present_plan, "1") == 0;
++    const char *display_forecast = getenv("MPV_NATIVE_DISPLAY_FORECAST");
++    in->secondary_display_forecast = diagnostic && in->secondary_present_plan &&
++        in->secondary_present_grid && display_forecast &&
++        strcmp(display_forecast, "1") == 0;
+     const char *split_budget = getenv("MPV_NATIVE_SPLIT_BUDGET");
+     in->secondary_split_budget = diagnostic && in->secondary_present_plan &&
+         in->secondary_present_grid && split_budget && strcmp(split_budget, "1") == 0;
+@@ -2699,7 +3019,8 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             .v = {in->secondary_trace, diagnostic, in->secondary_schedule_trace,
+                 in->secondary_fifo_present, in->secondary_present_grid,
+                 in->secondary_present_plan, in->secondary_split_budget,
+-                vo->pacing_spans, in->secondary_queue_lead},
++                vo->pacing_spans, in->secondary_queue_lead,
++                in->secondary_queue_stage, in->secondary_display_forecast},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_CONFIG, &record);
+     }
+@@ -2716,12 +3037,29 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         secondary_publish_queue_hint(vo);
+         int64_t now = mp_time_ns();
+         int64_t wait_until = now + MP_TIME_S_TO_NS(working ? 0 : 1000);
++        double staged_rate = in->secondary_queue_stage
++            ? osd_get_secondary_refresh(vo->osd) : 0;
++        struct secondary_ass_sample_snapshot staged_sample = in->secondary_queue_stage
++            ? osd_get_secondary_sample_snapshot(vo->osd)
++            : (struct secondary_ass_sample_snapshot){0};
+ 
+         mp_mutex_lock(&in->lock);
+         int64_t queue_resume = in->secondary_queue_resume;
+-        bool queue_held = in->frame_queued && queue_resume > now;
++        struct secondary_ass_queue_stage held_stage = {0};
++        if (in->secondary_queue_stage &&
++            secondary_stage_owner(vo, &in->secondary_stage_pending) &&
++            in->secondary_stage_pending.resume == queue_resume && queue_resume > now)
++            held_stage = in->secondary_stage_pending;
++        bool queue_held = in->frame_queued && queue_resume > now &&
++            (!in->secondary_queue_stage || held_stage.valid);
++        if (held_stage.valid && !in->secondary_stage_prefix.initialized)
++            secondary_ass_stage_prefix_begin(&in->secondary_stage_prefix, &held_stage,
++                                              &staged_sample, &in->secondary_physical);
+         if (queue_held)
+             wait_until = MPMIN(wait_until, queue_resume);
++        if (held_stage.valid)
++            wait_until = MPMIN(wait_until,
++                secondary_stage_budget_resume(vo, &held_stage, staged_rate, now));
+         if (in->wakeup_pts) {
+             if (in->wakeup_pts > now) {
+                 wait_until = MPMIN(wait_until, in->wakeup_pts);
+@@ -2764,6 +3102,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             ? in->current_frame->duration : 0;
+         bool secondary_ds = in->current_frame && in->current_frame->display_synced;
+         int64_t secondary_deadline = get_current_frame_end(vo) - in->flip_queue_offset;
++        if (held_stage.valid)
++            secondary_deadline = MPMIN(secondary_deadline, held_stage.due);
++        // Preserve real work/end wakeups before an unbound ASS proposal can
++        // replace them with an artificial now+1 preparation timer.
++        int64_t real_wait_until = wait_until;
+         mp_mutex_unlock(&in->lock);
+ 
+         double secondary_rate = osd_get_secondary_refresh(vo->osd);
+@@ -2776,6 +3119,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             secondary_planning_state(vo, secondary_ds, 0,
+                                      &thread_planning_storage);
+         struct secondary_ass_grid_task grid_task = {0};
++        int64_t staged_cache_wake = 0;
+         if (!working && secondary_eligible && secondary_rate > 0) {
+             int64_t interval = MP_TIME_S_TO_NS(1.0 / secondary_rate);
+             interval = MPMAX(interval, in->secondary_physical.phase &&
+@@ -2841,17 +3185,35 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                         MPMAX(now, next), deadline, secondary_cost, cost,
+                         MP_TIME_MS_TO_NS(1));
+                 }
++                if (held_stage.valid) {
++                    // A staged cache draw must finish before promotion and
++                    // reserve the accepted incoming frame's real budget.
++                    mp_mutex_lock(&in->lock);
++                    headroom &= secondary_stage_cache_current(vo, &held_stage,
++                        MPMAX(now, next), interval, cost, secondary_rate);
++                    mp_mutex_unlock(&in->lock);
++                }
+                 if (headroom) {
+                     redraw |= now >= next;
+                     wait_until = MPMIN(wait_until, MPMAX(now + 1, next));
++                    if (held_stage.valid && !probe && physical_sample.slot > 0 && next > now) {
++                        mp_mutex_lock(&in->lock);
++                        struct secondary_ass_present_plan pending_cache =
++                            secondary_cache_plan(vo, physical_sample);
++                        if (secondary_stage_cache_current(vo, &held_stage, next,
++                                                          interval, cost, secondary_rate) &&
++                            secondary_ass_present_plan_current(&in->secondary_physical,
++                                                               &pending_cache))
++                            staged_cache_wake = next;
++                        mp_mutex_unlock(&in->lock);
++                    }
+                     if (in->secondary_present_grid && physical_sample.slot > 0 &&
+                         now >= next && !probe) {
+                         int64_t divisor = in->secondary_present_plan ? thread_divisor :
+                             osd_get_secondary_physical_sample_divisor(vo->osd);
+                         mp_mutex_lock(&in->lock);
+                         struct secondary_ass_present_plan held_cache_plan = queue_held
+-                            ? secondary_ass_present_plan_cache(&in->secondary_physical,
+-                                                              physical_sample)
++                            ? secondary_cache_plan(vo, physical_sample)
+                             : (struct secondary_ass_present_plan){0};
+                         if (divisor > 0 && in->current_frame &&
+                             (!in->frame_queued || queue_held) &&
+@@ -2862,6 +3224,9 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                                 !in->current_frame->display_synced &&
+                                 secondary_ass_present_plan_current(&in->secondary_physical,
+                                                                   &held_cache_plan))) &&
++                            (!held_stage.valid ||
++                                secondary_stage_cache_current(vo, &held_stage, now,
++                                                              interval, cost, secondary_rate)) &&
+                             divisor <= INT64_MAX / in->secondary_physical.interval &&
+                             secondary_duration >= divisor * in->secondary_physical.interval)
+                             grid_task = (struct secondary_ass_grid_task){
+@@ -2872,6 +3237,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                                     ? in->frame_queued->frame_id : 0,
+                                 .divisor = divisor, .delay = thread_planning_state->delay,
+                                 .rate = secondary_rate,
++                                .stage = held_stage,
+                                 .interval = in->secondary_physical.interval,
+                                 .deadline = secondary_ass_physical_cache_deadline(physical_sample,
+                                     thread_planning_state->interval, thread_planning_state->delay),
+@@ -2880,10 +3246,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                                 .plan_enabled = secondary_plan_enabled(vo,
+                                     secondary_ds, divisor),
+                                 .plan = secondary_plan_enabled(vo, secondary_ds, divisor)
+-                                    ? secondary_ass_present_plan_cache(
+-                                        &in->secondary_physical, physical_sample)
++                                    ? secondary_cache_plan(vo, physical_sample)
+                                     : (struct secondary_ass_present_plan){0},
+                             };
++                        secondary_capture_grid_plan(&grid_task);
+                         mp_mutex_unlock(&in->lock);
+                     }
+                 } else if (in->secondary_trace) {
+@@ -2913,7 +3279,10 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+             // The unbound scheduler may already have proposed now+1. Keep
+             // the finite captured boundary instead of spinning on that task;
+             // normal wait_vo wakeups still interrupt this wait.
+-            wait_until = queue_resume;
++            wait_until = held_stage.valid
++                ? MPMIN(real_wait_until, queue_resume) : queue_resume;
++            if (held_stage.valid && staged_cache_wake > now)
++                wait_until = MPMIN(wait_until, staged_cache_wake);
+         }
+         if (wait_until > now && redraw) {
+             // Allow manual redraws at most at display fps.
+@@ -2953,6 +3322,11 @@ void vo_set_paused(struct vo *vo, bool paused)
+     mp_mutex_lock(&in->lock);
+     if (in->paused != paused) {
+         in->paused = paused;
++        if (in->secondary_queue_stage) {
++            secondary_ass_queue_stage_clear(&in->secondary_stage_admission);
++            secondary_ass_queue_stage_clear(&in->secondary_stage_pending);
++            in->secondary_queue_resume = 0;
++        }
+         if (in->paused && in->dropped_frame) {
+             in->request_redraw = true;
+             wakeup_core(vo);
+@@ -3080,6 +3454,11 @@ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames,
+             }
+         }
+     }
++    if (in->secondary_queue_stage && in->flip_queue_offset != offset_ns) {
++        secondary_ass_queue_stage_clear(&in->secondary_stage_admission);
++        secondary_ass_queue_stage_clear(&in->secondary_stage_pending);
++        in->secondary_queue_resume = 0;
++    }
+     in->flip_queue_offset = offset_ns;
+     in->req_frames = MPCLAMP(num_req_frames, 1, VO_MAX_REQ_FRAMES);
+     in->frame_refs = MPCLAMP(num_frame_refs, in->req_frames, 2 * VO_MAX_REQ_FRAMES);
+-- 
+2.54.0.windows.1
+

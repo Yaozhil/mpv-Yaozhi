@@ -40,8 +40,6 @@ HEADERS = (
     "video/out/secondary_ass_physical.h",
     "video/out/secondary_ass_present_plan.h",
     "sub/secondary_ass_clock.h", "video/out/secondary_ass_queue_lead.h",
-    "video/out/secondary_ass_queue_stage.h",
-    "video/out/secondary_ass_stage_prefix.h",
 )
 
 
@@ -188,256 +186,7 @@ def consumer_expressions(path, text):
     return expressions
 
 
-FORECAST_RUNTIME_C = r'''
-#ifdef MP_V23_FORECAST_CALLER_TEST
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-static unsigned caller_checks;
-static int64_t fixture_now;
-static bool fixture_forecast_env;
-#define CALLER_CHECK(x) do { caller_checks++; if (!(x)) { \
- fprintf(stderr,"actual caller check %u failed:%d:%s\n",caller_checks,__LINE__,#x);exit(2); } } while(0)
-// Explicit OS/timer/log/record endpoints only. The mpv lock wrappers,
-// complete state, setters, getter and selected sample branch are verbatim.
-void AcquireSRWLockExclusive(SRWLOCK *p) { CALLER_CHECK(!*p);*p=(void*)1; }
-void ReleaseSRWLockExclusive(SRWLOCK *p) { CALLER_CHECK(*p==(void*)1);*p=NULL; }
-void WakeAllConditionVariable(CONDITION_VARIABLE *p) { (void)p; }
-int SetEvent(HANDLE p) { (void)p;return 1; }
-DWORD GetCurrentThreadId(void) { return 1; }
-int64_t mp_thread_cpu_time_ns(void) { return 0; }
-int64_t mp_time_ns(void) { return fixture_now; }
-void integration_log(const char *fmt, ...) { (void)fmt; }
-char *integration_getenv(const char *name) {
- return fixture_forecast_env && !strcmp(name,"MPV_NATIVE_DISPLAY_FORECAST") ? "1" : NULL;
-}
-bool mp_ass_pacing_enabled(struct mpv_global *global) { (void)global;return false; }
-void mp_ass_pacing_record(struct mpv_global *global,uint32_t kind,
-                         const struct mp_ass_pacing_record *record) {
- (void)global;(void)kind;(void)record;
-}
-void osd_set_ass_pacing_scope(struct osd_state *osd,uint64_t vo_seq,
-                            uint64_t draw_seq,uint64_t frame_id) {
- (void)osd;(void)vo_seq;(void)draw_seq;(void)frame_id;
-}
-
-static void fixture_initialize(struct vo *vo,struct vo_internal *in,
-                               struct osd_state *osd,struct vo_frame *frame,
-                               int64_t T,int64_t N) {
- *in=(struct vo_internal){0};*osd=(struct osd_state){0};*frame=(struct vo_frame){0};
- *vo=(struct vo){.in=in,.osd=osd};
- in->secondary_present_plan=true;in->secondary_present_grid=true;
- in->secondary_display_forecast=true;in->current_frame=frame;
- in->reported_display_fps=1e9/T;
- in->secondary_physical=(struct secondary_ass_physical){
-  .phase=1000000000,.phase_slot=100,.interval=T,.epoch=7,
-  .sync_qpc_ns=1000000000,.sync_count=100,.sync_slot=100,
-  .sync_segment_consistent=true,.measure_qpc_ns=1000000000,.measure_count=100,
-  .periods={T,T,T},.period_count=3,.period_next=3,
-  .delay=1,.delay_samples={1,1,1},.delay_count=3,.success_generation=3,
- };
- osd->secondary_rate=1e9/(T*N);osd->secondary_speed=1;osd->secondary_requested_speed=1;
- osd->secondary_has_output=true;
- osd->secondary_clock=(struct secondary_ass_clock){
-  .valid=true,.pts=10,.speed=1,.wall=1000000000,
- };
- fixture_now=1000000000+9*T;
-}
-
-static void actual_registration(struct vo *vo,
-    const struct secondary_ass_present_plan *plan,uint64_t id,int64_t actual_slot) {
- struct secondary_ass_physical *p=&vo->in->secondary_physical;
- struct secondary_ass_physical_point actual=secondary_ass_physical_point_at(p,actual_slot);
- struct vo_vsync_info info={
-  .secondary_submit_valid=true,.secondary_submit_id=id,
-  .secondary_submit_generation=3,.secondary_submit_sync_interval=1,
-  .secondary_sync_qpc_ns=actual.wall,.secondary_sync_time=actual.wall,
-  .secondary_sync_refresh_count=(uint32_t)actual.slot,
-  .secondary_present_refresh_count=(uint32_t)actual.slot,.secondary_present_id=id,
- };
- secondary_physical_feedback(vo,&info,plan->target,plan);
- unsigned saved=(p->next+31)%32;
- CALLER_CHECK(p->submitted[saved].id==id);
- CALLER_CHECK(p->submitted[saved].base_slot==plan->base.slot);
- CALLER_CHECK(p->submitted[saved].target_slot==plan->target.slot);
- CALLER_CHECK(p->phase_slot==actual_slot && p->historical_id==id);
- CALLER_CHECK(p->last_base_slot==plan->base.slot);
-}
-
-static void caller_rate(int hz,int64_t N) {
- int64_t T=INT64_C(1000000000)/hz;
- struct vo vo;struct vo_internal in;struct osd_state osd;struct vo_frame frame;
- fixture_initialize(&vo,&in,&osd,&frame,T,N);
- struct secondary_ass_physical *p=&in.secondary_physical;
- struct secondary_ass_present_plan plan=secondary_ass_present_plan_make_forecast(p,
-  secondary_ass_physical_point_at(p,110));
- CALLER_CHECK(plan.valid);
- CALLER_CHECK(integration_actual_fresh_raw_guard(&vo,plan,plan.base.wall));
- CALLER_CHECK(!integration_actual_fresh_raw_guard(&vo,plan,plan.base.wall+1));
- CALLER_CHECK(plan.valid && plan.base.slot==110 && plan.target.slot==111);
- CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
- double pts=0;
- CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
- struct secondary_ass_sample_snapshot s=osd_get_secondary_sample_snapshot(&osd);
- CALLER_CHECK(s.valid && s.display_forecast && s.origin_slot==110 && s.sample_slot==110);
- CALLER_CHECK(s.next_slot==110+N && s.next_wall==secondary_ass_physical_point_at(p,110+N).wall);
- CALLER_CHECK(osd.secondary_sampler.sample_wall==plan.target.wall);
- CALLER_CHECK(!integration_actual_sample_selection(&osd,&pts));
- CALLER_CHECK(osd.secondary_sampler.tick==0 && osd.secondary_sampler.display_slot==111);
- actual_registration(&vo,&plan,1,plan.target.slot);
- CALLER_CHECK(p->delay==1); // The real wrapper stores G, not D-currentH.
-
- osd.secondary_sampler.force=true;
- CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
- s=osd_get_secondary_sample_snapshot(&osd);
- CALLER_CHECK(!s.force && s.sample_forced);
- CALLER_CHECK(osd.secondary_sampler.tick==0 && osd.secondary_sampler.display_slot==111);
- plan=secondary_ass_present_plan_make_forecast(p,
-  secondary_ass_physical_point_at(p,s.next_slot));
- CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
- CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
- s=osd_get_secondary_sample_snapshot(&osd);
- CALLER_CHECK(s.valid && !s.sample_forced && s.sample_slot==110+N);
-
- // Simulate a static/empty bitmap boundary. The real getter keeps clock
- // rate/grid authority; libass and actual output discovery remain untested.
- osd.secondary_has_output=false;
- int64_t origin_slot=osd.secondary_sampler.origin_slot;
- int64_t origin_wall=osd.secondary_sampler.origin_wall;
- int64_t saved_base=p->last_base_slot;
- for(int k=0;k<16;k++) {
-  int64_t next=secondary_ass_sampler_next_slot(&osd.secondary_sampler);
-  struct secondary_ass_physical_point first=secondary_ass_physical_point_at(p,next);
-  fixture_now=first.wall+T/2;
-  // For N2 this naked prediction is odd while the original G grid is even.
-  if(N==2)CALLER_CHECK((secondary_ass_physical_predict_point(
-   &(struct secondary_ass_physical){.phase=p->phase,.phase_slot=p->phase_slot,
-      .interval=p->interval,.epoch=p->epoch},fixture_now).slot-origin_slot)%N!=0);
-  CALLER_CHECK(secondary_set_presentation(&vo,(struct secondary_ass_physical_point){0},
-   0,T,fixture_now,true,true,NULL));
-  CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
-  CALLER_CHECK(osd.secondary_sampler.origin_slot==origin_slot);
-  CALLER_CHECK(osd.secondary_sampler.origin_wall==origin_wall);
-  CALLER_CHECK((secondary_ass_sampler_next_slot(&osd.secondary_sampler)-origin_slot)%N==0);
-  CALLER_CHECK(p->last_base_slot==saved_base); // Quiet pose is not a Present.
- }
- osd.secondary_has_output=true;
- s=osd_get_secondary_sample_snapshot(&osd);
- CALLER_CHECK(s.valid && !s.held && s.display_forecast);
- plan=secondary_ass_present_plan_make_forecast(p,secondary_ass_physical_point_at(p,s.next_slot));
- CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
- CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
- CALLER_CHECK(osd.secondary_sampler.origin_slot==origin_slot);
-
- // A colliding new D is an explicit held ASS MISS; a real successful primary
- // Present may register G. Its next task skips attempted G without renaming D.
- fixture_initialize(&vo,&in,&osd,&frame,T,1);
- plan=secondary_ass_present_plan_make_forecast(p,secondary_ass_physical_point_at(p,110));
- CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
- CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
- actual_registration(&vo,&plan,1,111);
- p->delay=0; // Synthetic decreasing capture; the unchanged learner is below.
- struct secondary_ass_present_plan missed=secondary_ass_present_plan_make_forecast(p,
-  secondary_ass_physical_point_at(p,111));
- CALLER_CHECK(missed.valid && missed.target.slot==osd.secondary_sampler.display_slot);
- CALLER_CHECK(!secondary_set_presentation(&vo,missed.target,0,T,missed.submit,false,true,&missed));
- CALLER_CHECK(!integration_actual_sample_selection(&osd,&pts));
- CALLER_CHECK(osd.secondary_sample_held && osd.secondary_sampler.tick==0);
- actual_registration(&vo,&missed,2,112);
- CALLER_CHECK(missed.target.slot==111 && p->delay==1);
- struct secondary_ass_physical_point first=secondary_next_sample(&vo,1);
- CALLER_CHECK(first.slot==111);
- struct secondary_ass_physical_point next=secondary_cache_next_sample(&vo,first,1,
-  secondary_ass_physical_point_at(p,112).wall-T);
- CALLER_CHECK(next.slot==112);
- plan=secondary_ass_present_plan_make_forecast(p,next);
- CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
- CALLER_CHECK(integration_actual_sample_selection(&osd,&pts));
- CALLER_CHECK(osd.secondary_sampler.origin_slot==110 && osd.secondary_sampler.tick==2);
-
- struct vo_vsync_info failed={.secondary_submit_id=3,.secondary_submit_generation=3};
- saved_base=p->last_base_slot;
- secondary_physical_feedback(&vo,&failed,plan.target,&plan);
- CALLER_CHECK(p->last_base_slot==saved_base); // Failed ID cannot consume G.
-}
-
-int main(void) {
- struct vo_internal flags={0};
- for(unsigned bits=0;bits<16;bits++) {
-  bool diagnostic=bits&1;flags.secondary_present_plan=bits&2;
-  flags.secondary_present_grid=bits&4;fixture_forecast_env=bits&8;
-  integration_actual_forecast_flag(&flags,diagnostic);
-  CALLER_CHECK(flags.secondary_display_forecast==(bits==15));
- }
- const int rates[]={30,60,120,144,165,240,360};
- for(unsigned k=0;k<sizeof(rates)/sizeof(rates[0]);k++)
-  for(int64_t N=1;N<=4;N++)caller_rate(rates[k],N);
- printf("{\"actual_caller_checks\":%u,\"passed\":true,\"GPU\":false}\n",caller_checks);
- return 0;
-}
-#endif
-'''
-
-
-def forecast_runtime_gate(generated, source, cc):
-    quiet = re.search(r"struct secondary_ass_physical_point logical = divisor > 0\s*"
-                      r"\? secondary_ass_present_plan_cache_next_forecast\([^;]+;", generated)
-    sample_slot = re.search(r"\.sample_slot = secondary_ass_sampler_next_slot\(s\)[^;{}]*?: 0,", generated)
-    if not quiet or not sample_slot:
-        raise ValueError("actual quiet-grid/snapshot sample-slot closure changed")
-    mutations = (
-        ("collision_setter_accepts", "valid = display_slot > s->display_slot && display_wall > s->sample_wall;", "valid = true;"),
-        ("force_latch_lost", "osd->secondary_forecast_forced_sample |= osd->secondary_sampler.force;", "osd->secondary_forecast_forced_sample |= false;"),
-        ("rawF_guard_removed", "present_plan.base.wall < original_video_target", "false"),
-        ("registration_uses_D", "submitted_id, plan->epoch, plan->base, plan->target);", "submitted_id, plan->epoch, plan->target, plan->target);"),
-        ("quiet_bare_prediction_off_grid", quiet[0],
-         "struct secondary_ass_physical view=secondary_ass_present_plan_view(p);\n"
-         "struct secondary_ass_physical_point logical=secondary_ass_physical_predict_point(&view, MPMAX(submit,mp_time_ns()));"),
-        ("snapshot_sample_slot_becomes_D", sample_slot[0], ".sample_slot = s->display_slot,"),
-        ("forecast_without_diagnostic_permission", "in->secondary_display_forecast = diagnostic && in->secondary_present_plan", "in->secondary_display_forecast = in->secondary_present_plan"),
-    )
-    results = {}
-    with tempfile.TemporaryDirectory(prefix="mpv-v23-forecast-callers-") as directory:
-        work = Path(directory)
-        for name, needle, replacement in (("positive", "", ""),) + mutations:
-            text = generated
-            if needle:
-                if text.count(needle) != 1:
-                    raise ValueError("actual C mutant operand missing/ambiguous: " + name)
-                text = text.replace(needle, replacement)
-            cfile = work / (name + ".c")
-            cfile.write_text(text + FORECAST_RUNTIME_C, encoding="utf-8")
-            exe = work / (name + ".exe")
-            command = [str(cc), "-std=c99", "-Werror", "-O1", "-ffunction-sections", "-fdata-sections",
-                       "-DMP_V23_FORECAST_CALLER_TEST=1", "-I", str(source), str(cfile),
-                       "-Wl,--gc-sections", "-lm", "-o", str(exe)]
-            compiled = subprocess.run(command, capture_output=True, text=True, timeout=60)
-            item = {"compile_returncode": compiled.returncode,
-                    "compile_command": command,
-                    "diagnostics": (compiled.stdout + compiled.stderr)[-12000:],
-                    "translation_sha256": hashlib.sha256((text + FORECAST_RUNTIME_C).encode()).hexdigest()}
-            if compiled.returncode == 0:
-                executed = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
-                item.update(execute_returncode=executed.returncode, stdout=executed.stdout,
-                            stderr=executed.stderr[-4000:])
-                if name == "positive" and executed.returncode == 0:
-                    try:
-                        item["result"] = json.loads(executed.stdout)
-                    except ValueError:
-                        item["result"] = None
-            item["pass"] = compiled.returncode == 0 and (
-                item.get("execute_returncode") == 0 and isinstance(item.get("result"), dict) and
-                item["result"].get("passed") is True and item["result"].get("GPU") is False and
-                type(item["result"].get("actual_caller_checks")) is int and
-                item["result"]["actual_caller_checks"] > 0 if name == "positive" else
-                item.get("execute_returncode") not in (None, 0))
-            results[name] = item
-    return {"pass": all(v["pass"] for v in results.values()), "cases": results,
-            "scope": "ACTUAL_COMPLETE_OSD_STATE_SETTERS_GETTER_SAMPLE_SELECTION_AND_SELECTED_VO_CALLERS_WITH_MOCK_PLATFORM_ENDPOINTS",
-            "not_verified": ["real OS wait/threading, libass output discovery, actual full VO loop, GPU, Display/frame pacing"]}
-
-
-def compile_gate(source, cc, read, include_osd_getter=True, output_translation=None):
+def compile_gate(source, cc, read, include_osd_getter=True):
     vo_header = read("video/out/vo.h")
     vo_source = read("video/out/vo.c")
     thread_header = read("osdep/threads-win32.h")
@@ -472,8 +221,8 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
     if len(re.findall(r'^\s*#include\s+"secondary_ass_queue_lead.h"\s*$', vo_source, re.M)) != 1:
         raise ValueError("actual vo.c queue-lead include missing/duplicated")
     common = read("common/common.h")
-    for macro in ("MPMIN", "MPMAX", "MP_NOPTS_VALUE"):
-        found = re.findall(r"^#define\s+" + macro + r"(?:\([^\n]+|\s+[^\n]+)", common, re.M)
+    for macro in ("MPMIN", "MPMAX"):
+        found = re.findall(r"^#define\s+" + macro + r"\([^\n]+", common, re.M)
         if len(found) != 1:
             raise ValueError(f"real macro closure changed: {macro}")
         chunks += found
@@ -506,10 +255,6 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
     declarations.append({"file": "video/out/vo.c", "struct": "vo_internal", "line": line,
                          "sha256": hashlib.sha256(decl.encode()).hexdigest()})
     chunks.append(f'#line {line} "video/out/vo.c"\n#define _WIN32 1\n{decl}\n')
-    decl, line = declaration(vo_source, "secondary_ass_grid_task")
-    declarations.append({"file": "video/out/vo.c", "struct": "secondary_ass_grid_task", "line": line,
-                         "sha256": hashlib.sha256(decl.encode()).hexdigest()})
-    chunks.append(f'#line {line} "video/out/vo.c"\n{decl}\n')
     timer = read("osdep/timer.h")
     timer_decl = re.search(r"\bint64_t\s+mp_time_ns\s*\(\s*void\s*\)\s*;", timer)
     osd = read("sub/osd.h")
@@ -521,10 +266,6 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
     if len(unit_macros) != 1:
         raise ValueError("real timer conversion macro closure changed")
     chunks += unit_macros
-    milliseconds = re.findall(r"^#define\s+MP_TIME_MS_TO_NS\([^\n]+", timer, re.M)
-    if len(milliseconds) != 1:
-        raise ValueError("actual millisecond macro closure changed")
-    chunks += milliseconds
     # Keep the real mpv declarations and alias used by the new span helpers.
     # GetCurrentThreadId is an explicit opaque platform-call boundary here;
     # its Windows SDK calling convention/ABI still requires the full build.
@@ -554,33 +295,7 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
     chunks.append("DWORD GetCurrentThreadId(void);\n" + thread_header[alias.start():alias.end()] + "\n")
     chunks.append("void integration_log(const char *, ...);\n#define MP_INFO(obj, ...) integration_log(__VA_ARGS__)\n")
     full = list(platform_full)
-    selected = set(FUNCTIONS) | {
-        "secondary_forecast_enabled", "secondary_cache_plan", "secondary_capture_grid_plan",
-        "secondary_next_sample", "secondary_cache_next_sample",
-        "secondary_set_presentation", "secondary_physical_feedback",
-    }
-    selected.update(name for name in actual_functions if re.match(r"^secondary_.*stage", name))
-    # Preserve real OSD prototypes instead of manufacturing signatures from
-    # call operands. Forward selected VO functions retain their actual types.
-    osd_prototypes = ("osd_get_secondary_physical_next_sample_slot",
-        "osd_get_secondary_physical_next_sample_time", "osd_get_secondary_physical_sample_divisor",
-        "osd_set_secondary_physical_forecast_time", "osd_set_secondary_physical_presentation_time",
-        "osd_set_secondary_presentation_time", "osd_hold_secondary_sample", "osd_reset_secondary_clock")
-    for name in osd_prototypes:
-        matches = list(re.finditer(r"^[A-Za-z_][^;{}]*\b" + re.escape(name) +
-                                  r"\s*\([^;{}]*\)\s*;", mask_c(osd), re.M))
-        if len(matches) != 1:
-            raise ValueError("actual OSD prototype missing/duplicated: " + name)
-        m = matches[0]
-        proto = osd[m.start():m.end()]
-        chunks.append(proto)
-        prototypes.append({"file": "sub/osd.h", "function": name,
-                           "sha256": hashlib.sha256(proto.encode()).hexdigest()})
-    for name in selected:
-        if name not in actual_functions:
-            raise ValueError("actual V23 function missing: " + name)
-        chunks.append(actual_functions[name]["signature"] + ";")
-    for name in sorted(selected, key=lambda n: actual_functions[n]["line"]):
+    for name in FUNCTIONS:
         if name not in actual_functions:
             raise ValueError(f"required actual VO function absent: {name}")
         function = actual_functions[name]
@@ -629,52 +344,6 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
         chunks.append(f'#line {getter["line"]} "sub/osd.c"\n{getter["text"]}\n')
         full.append({"file": "sub/osd.c", "function": "osd_get_secondary_sample_snapshot",
                      "line": getter["line"], "sha256": hashlib.sha256(getter["text"].encode()).hexdigest()})
-        for name in ("osd_get_secondary_refresh", "osd_get_secondary_clock_rate",
-                     "osd_get_secondary_physical_next_sample_slot",
-                     "osd_get_secondary_physical_next_sample_time",
-                     "osd_get_secondary_physical_sample_divisor",
-                     "osd_set_secondary_presentation_time",
-                     "osd_set_secondary_physical_presentation_time",
-                     "osd_set_secondary_physical_forecast_time", "osd_hold_secondary_sample",
-                     "osd_anchor_secondary_clock", "osd_reset_secondary_clock"):
-            function = osd_functions.get(name)
-            if not function:
-                raise ValueError("actual V23 OSD function missing: " + name)
-            chunks.append(f'#line {function["line"]} "sub/osd.c"\n{function["text"]}\n')
-            full.append({"file": "sub/osd.c", "function": name,
-                         "line": function["line"], "sha256": hashlib.sha256(function["text"].encode()).hexdigest()})
-        render_object = osd_functions["render_object"]
-        start = render_object["text"].index("        if (osd->secondary_sample_held)")
-        end = render_object["text"].index("        struct mp_ass_pacing_record scope", start)
-        piece = render_object["text"][start:end]
-        chunks.append("\nstatic bool integration_actual_sample_selection(struct osd_state *osd, double *pts) {\n"
-                      "double video_pts=*pts; bool changed_sample=false;\n" + piece +
-                      "\n*pts=video_pts;return changed_sample;\n}\n")
-        fragments.append({"file": "sub/osd.c", "function": "render_object",
-                          "context": "complete_secondary_sample_selection_before_bitmap_boundary",
-                          "sha256": hashlib.sha256(piece.encode()).hexdigest()})
-    fresh_guard = re.search(r"\bif\s*\(present_plan\.display_forecast[^{};]+\)\s*\{", render["masked"])
-    if not fresh_guard:
-        raise ValueError("actual fresh G>=rawF guard absent")
-    guard_end = balanced(render["masked"], render["masked"].index("{", fresh_guard.start()))
-    piece = render["text"][fresh_guard.start():guard_end]
-    chunks.append("\nstatic bool integration_actual_fresh_raw_guard(struct vo *vo, "
-                  "struct secondary_ass_present_plan present_plan, int64_t original_video_target) {\n" +
-                  piece + "\nreturn present_plan.valid;\n}\n")
-    fragments.append({"file": "video/out/vo.c", "function": "render_frame",
-                      "context": "fresh_G_at_or_after_original_video_target",
-                      "sha256": hashlib.sha256(piece.encode()).hexdigest()})
-    flag_start = thread["text"].index('    const char *display_forecast = getenv(')
-    flag_match = re.search(r"\bin->secondary_display_forecast\s*=[^;]+;", thread["masked"][flag_start:])
-    if not flag_match:
-        raise ValueError("actual forecast flag authorization absent")
-    piece = thread["text"][flag_start:flag_start + flag_match.end()]
-    chunks.append("\nchar *integration_getenv(const char *);\n#define getenv integration_getenv\n"
-                  "static void integration_actual_forecast_flag(struct vo_internal *in, bool diagnostic) {\n" +
-                  piece + "\n}\n#undef getenv\n")
-    fragments.append({"file": "video/out/vo.c", "function": "vo_thread",
-                      "context": "actual_default_off_forecast_env_authorization",
-                      "sha256": hashlib.sha256(piece.encode()).hexdigest()})
     gpu_functions = functions(read("video/out/vo_gpu_next.c"))
     closure_errors = []
     stage = gpu_functions.get("pacing_gpu_stage")
@@ -709,9 +378,6 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
                      "line": early["line"], "sha256": hashlib.sha256(early["text"].encode()).hexdigest(),
                      "preprocessor_scope": "HAVE_D3D11=0; callback type contract, no SDK backend branch"})
     generated = "\n".join(chunks)
-    if output_translation:
-        output_translation.parent.mkdir(parents=True, exist_ok=True)
-        output_translation.write_text(generated, encoding="utf-8")
     with tempfile.TemporaryDirectory(prefix="mpv-native-ass-integration-") as directory:
         work = Path(directory)
         translation = work / "real-declarations-consumers.c"
@@ -719,7 +385,6 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
         command = [str(cc), "-std=c99", "-Werror", "-I", str(source), "-c", str(translation), "-o", str(work / "gate.o")]
         completed = subprocess.run(command, capture_output=True, text=True, timeout=60)
         result = {"pass": completed.returncode == 0 and not closure_errors,
-                  "compile_command": command,
                   "returncode": completed.returncode, "closure_errors": closure_errors,
                   "compiler": str(cc), "diagnostics": (completed.stdout + completed.stderr)[-18000:],
                   "real_complete_structs": declarations,
@@ -741,11 +406,6 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
                   "not_covered": ["full vo.c/d3d11/context.c/vo_gpu_next.c translation units and their external SDK APIs",
                                   "OSD getter actual body/complete osd_state when --queue-vo-only; this limited mode cannot substitute for default GCC gate",
                                   "Meson dependency discovery, linker, optimization, ABI, threading, runtime, GPU, Display/frame pacing"]}
-    if include_osd_getter and result["pass"]:
-        result["cpu_forecast_caller_execution"] = forecast_runtime_gate(generated, source, cc)
-        result["pass"] &= result["cpu_forecast_caller_execution"]["pass"]
-    elif not include_osd_getter:
-        result["cpu_forecast_caller_execution"] = {"pass": None, "status": "UNVERIFIED_TCC_VO_ONLY_CANNOT_REPLACE_FULL_GCC_GATE"}
     return result
 
 
@@ -757,9 +417,6 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--queue-vo-only", action="store_true",
                         help="Limited local TCC diagnostic only; leaves actual OSD getter compilation unverified")
-    parser.add_argument("--translation-output", type=Path,
-                        help="Save verbatim declaration/function/fragment compilation evidence")
-    parser.add_argument("--quiet", action="store_true", help="Print compact status; full evidence remains in --output")
     args = parser.parse_args()
     source = args.source.resolve()
     hashes = {}
@@ -778,8 +435,7 @@ def main():
     try:
         result["meson"] = meson_check(source, args.variant, read)
         # Collect C evidence even if Meson fails; do not hide a second blocker.
-        result["compile"] = compile_gate(source, args.cc.resolve(), read, not args.queue_vo_only,
-                                         args.translation_output)
+        result["compile"] = compile_gate(source, args.cc.resolve(), read, not args.queue_vo_only)
         success = result["meson"]["pass"] and result["compile"]["pass"]
         changed = [path for path,digest in hashes.items()
                    if hashlib.sha256((source/path).read_bytes()).hexdigest() != digest]
@@ -796,8 +452,7 @@ def main():
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(output + "\n", encoding="utf-8")
-    print(json.dumps({"status": result["status"], "compile_pass": result.get("compile", {}).get("pass"),
-                      "error": result.get("error")}, ensure_ascii=False) if args.quiet else output)
+    print(output)
     return 0 if success else 1
 
 

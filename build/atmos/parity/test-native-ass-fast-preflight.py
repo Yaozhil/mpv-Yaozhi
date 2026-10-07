@@ -1,4 +1,4 @@
-"""Fast CPU GCC gate for exact V22 replay; no dependencies, SDK, GPU or core build."""
+"""Fast CPU GCC gate for exact V23 replay; no dependencies, SDK, GPU or core build."""
 import argparse
 import ast
 import hashlib
@@ -18,8 +18,9 @@ BASE_COMMIT = 'c318236b8882af860f16f936225430ad053a2179'
 ARCHIVE_SHA = '4d104937a06fbac23e79eb91019b4ee834ea516eb4b8d5574acae15c3fc8933d'
 PARITY_SHA = 'e260b59f67babd3c5a94edd98611b6ea7e37426666fcaaef9ca19a8a232cb207'
 BASELINE_GATE_SHA = '670b01d525a6ab7790c0643606f262b2ba8da0d79d797ec54a95c9592ef61348'
+V22_REFERENCE_GATE_SHA = 'dbaed04501303ea866ca1d3bacc9b69ed173724dbbf1e82fad2d385fcf4d40b9'
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
-# V22 changes sub/video/test only; these 19 existing entries must stay exact.
+# V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
 ATMOS_ENTRIES = '''
 :100644 100644 61d3a038e75a28fdf40ec229b2c38f98d8ee8c16 e4ba143f08d0db572d82ddf2ac05f777ad9b44b8 M\tCopyright
 :000000 100644 0000000000000000000000000000000000000000 1c9591aeb4b3ec8157a89454d3951c4d6467568e A\taudio/decode/ad_orender.c
@@ -82,9 +83,15 @@ def lock_inputs():
             require(sha(path) == digest, 'Locked patch changed: '+name)
             inputs[str(path.relative_to(CONFIG))] = digest
     require(sha(HERE/'mpv-9100-omniphony-parity.patch') == PARITY_SHA, 'Existing Atmos parity patch changed')
+    require(sha(HERE/'verify-native-ass-integration-v22-baseline.py') == V22_REFERENCE_GATE_SHA,
+            'Frozen V22 integration reference bytes changed')
     require(len([name for name in lock['common_patches'] if name.startswith('build/bluray-menu/patches/0040-')]) == 1,
             'Exactly one locked V22 0040 patch is required')
-    for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py', Path(__file__).resolve(),
+    require(len([name for name in lock['common_patches'] if name.startswith('build/bluray-menu/patches/0041-')]) == 1,
+            'Exactly one locked V23 0041 patch is required')
+    for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py',
+                 HERE/'verify-native-ass-integration-v22-baseline.py',
+                 HERE/'verify-native-ass-queue-stage-caller.py', Path(__file__).resolve(),
                  CONFIG/'.github/workflows/native-ass-fast-gcc-preflight.yml',
                  CONFIG/'.github/workflows/build-mpv-v100-parity.yml'):
         inputs[str(path.relative_to(CONFIG))] = sha(path)
@@ -106,7 +113,7 @@ def compile_only(gate, source, cc):
     return result
 
 
-def execute_queue_tests(gate, source, baseline_ref, cc, work):
+def execute_queue_tests(gate, source, legacy_source, baseline_ref, cc, work):
     """Run real C fixtures; registration or a compile-only result is insufficient."""
     result = {}
     for name,flags in [('ordinary',[]),('NDEBUG',['-DNDEBUG'])]:
@@ -122,13 +129,15 @@ def execute_queue_tests(gate, source, baseline_ref, cc, work):
         require(measured == {'checks':149,'passed':True}, 'Pure fixture execution/count mismatch')
         result[name] = {'command':command,'result':measured,
                         'source_sha256':sha(source/'test/secondary_ass_queue_lead.c')}
-    script = source/'test/queue_lead_actual_review.py'
+    # The original controlled 6076 fixture remains exact at V22. The current
+    # V23 complete declaration/OSD/caller gates independently test new code.
+    script = legacy_source/'test/queue_lead_actual_review.py'
     nodes = ast.parse(script.read_text(encoding='utf-8'))
     body = []
     for node in nodes.body:
         names = {target.id for target in node.targets if isinstance(target,ast.Name)} if isinstance(node,ast.Assign) else set()
         if 'ROOT' in names:
-            node.value = ast.Call(func=ast.Name(id='Path',ctx=ast.Load()),args=[ast.Constant(str(source))],keywords=[])
+            node.value = ast.Call(func=ast.Name(id='Path',ctx=ast.Load()),args=[ast.Constant(str(legacy_source))],keywords=[])
         elif 'OUT' in names:
             node.value = ast.Call(func=ast.Name(id='Path',ctx=ast.Load()),args=[ast.Constant(str(work))],keywords=[])
         elif 'original_ready' in names:
@@ -137,14 +146,14 @@ def execute_queue_tests(gate, source, baseline_ref, cc, work):
         if 'c' in names:
             break
     require('c' in names, 'Actual caller fixture construction not found')
-    baseline_vo = subprocess.check_output(['git','-C',str(source),'show',baseline_ref+':video/out/vo.c'],text=True,timeout=30)
+    baseline_vo = subprocess.check_output(['git','-C',str(legacy_source),'show',baseline_ref+':video/out/vo.c'],text=True,timeout=30)
     namespace = {'__file__':str(script),'baseline_vo':baseline_vo}
     exec(compile(ast.fix_missing_locations(ast.Module(body=body,type_ignores=[])),str(script),'exec'),namespace)
     c = namespace['c']
     actual_file = work/'queue-actual.c'
     actual_file.write_text(c,encoding='utf-8',newline='\n')
     executable = work/'queue-actual'
-    command = [str(cc),'-std=c99','-O2','-I'+str(source),str(actual_file),'-lm','-o',str(executable)]
+    command = [str(cc),'-std=c99','-O2','-I'+str(legacy_source),str(actual_file),'-lm','-o',str(executable)]
     compiled = subprocess.run(command,text=True,capture_output=True,timeout=30)
     require(compiled.returncode == 0, 'Actual caller GCC fixture failed: '+compiled.stderr)
     executed = subprocess.run([str(executable)],text=True,capture_output=True,timeout=30)
@@ -158,8 +167,89 @@ def execute_queue_tests(gate, source, baseline_ref, cc, work):
     result['actual_caller'] = {'command':command,'result':measured,
         'source_sha256':sha(script),'generated_C_sha256':sha(actual_file),
         'baseline_vo_sha256':hashlib.sha256(baseline_vo.encode()).hexdigest(),
-        'scope':'Controlled CPU fixture, not full VO thread or physical Display acceptance'}
+        'reference_commit':git(legacy_source,'rev-parse','HEAD'),
+        'reference_tree':git(legacy_source,'rev-parse','HEAD^{tree}'),
+        'original_ready_reference':baseline_ref,
+        'scope':'LEGACY_REFERENCE_REGRESSION_NOT_V23_CALLER_NOT_DISPLAY_ACCEPTANCE'}
     return result
+
+
+FORECAST_PURE_CASES = (
+    ('secondary_ass_queue_stage.c', 'secondary_ass_queue_stage: 292 checks passed', 292, None),
+    ('secondary_ass_stage_prefix.c', 'secondary_ass_stage_prefix: 87529 checks, 5894 feedback frames passed', 87529, 5894),
+    ('secondary_ass_display_forecast.c', 'display-forecast: 59483690 checks; 2148322 complete feedback frames; CPU only', 59483690, 2148322),
+)
+
+
+def execute_forecast_tests(gate, source, cc, work):
+    """Execute the actual headers and registered fixtures in both assert modes."""
+    meson = gate.meson_uncomment((source/'test/meson.build').read_text(encoding='utf-8'))
+    result = {}
+    for filename, expected, checks, feedback_frames in FORECAST_PURE_CASES:
+        stem = Path(filename).stem
+        target = stem.replace('_', '-')
+        require(len(re.findall(r"\bexecutable\s*\(\s*'"+re.escape(target)+"'", meson)) == 1 and
+                len(re.findall(r"\btest\s*\(\s*'"+re.escape(target)+"'", meson)) == 1 and
+                meson.count("'"+filename+"'") == 1,
+                'New pure fixture must be registered once in actual test/meson.build: '+filename)
+        test_source = source/'test'/filename
+        inputs = {name:sha(source/name) for name in gate.HEADERS}
+        inputs['test/'+filename] = sha(test_source)
+        inputs['test/meson.build'] = sha(source/'test/meson.build')
+        modes = {}
+        for name, flags in [('ordinary', []), ('NDEBUG', ['-DNDEBUG'])]:
+            executable = work/(stem+'-'+name)
+            command = [str(cc), '-std=c99', '-O2', '-Wall', '-Werror', *flags,
+                       '-I'+str(source), str(test_source), '-lm', '-o', str(executable)]
+            compiled = subprocess.run(command, text=True, capture_output=True, timeout=60)
+            require(compiled.returncode == 0, 'New actual C fixture compile failed: '+filename+' '+compiled.stderr)
+            executed = subprocess.run([str(executable)], text=True, capture_output=True, timeout=60)
+            require(executed.returncode == 0 and executed.stdout.strip() == expected,
+                    'New actual C fixture execution/count mismatch: '+filename+' '+executed.stdout+' '+executed.stderr)
+            modes[name] = {'command':command, 'compile_returncode':compiled.returncode,
+                           'execute_returncode':executed.returncode, 'stdout':executed.stdout,
+                           'checks':checks, 'complete_feedback_frames':feedback_frames,
+                           'executable_sha256':sha(executable)}
+        require(all(sha(source/path) == digest for path, digest in inputs.items()),
+                'New fixture source changed during execution: '+filename)
+        result[stem] = {'modes':modes, 'source_sha256':inputs,
+                       'scope':'ACTUAL_C_CPU_MODEL_NOT_DISPLAY_OR_FRAME_PACING_ACCEPTANCE'}
+    return result
+
+
+def execute_stage_caller(source, baseline, cc, work):
+    """Replay actual VO queue/promotion/outer fragments, not mirror structs."""
+    tool = HERE/'verify-native-ass-queue-stage-caller.py'
+    output = work/'stage-actual'
+    command = [sys.executable, str(tool), '--source', str(source), '--baseline', str(baseline),
+               '--cc', str(cc), '--output', str(output), '--mutants',
+               '--gate', str(HERE/'verify-native-ass-integration-v22-baseline.py')]
+    executed = subprocess.run(command, text=True, capture_output=True, timeout=600)
+    require(executed.returncode == 0, 'Actual VO stage caller execution failed: '+executed.stdout+' '+executed.stderr)
+    proof = output/'actual-C-evidence.json'
+    measured = json.loads(proof.read_text(encoding='utf-8'))
+    require(measured.get('status') == 'ACTUAL_VO_CPU_BOUNDARY_PASS_NOT_RUNTIME' and
+            measured.get('GPU_started') is False and measured.get('CI_started') is False and
+            measured.get('OSD_getter_actual_body_compiled') is False and
+            not measured.get('inputs_changed_during_run'), 'Actual VO stage boundary/scope mismatch')
+    modes = measured.get('actual_C', {})
+    require(set(modes) == {'normal', 'NDEBUG'}, 'Actual VO stage assert-mode coverage missing')
+    for mode, item in modes.items():
+        result = item.get('result', {})
+        require(item.get('compiled') is True and item.get('compile_returncode') == 0 and
+                item.get('exit_code') == 0 and result.get('checks') == 102298 and
+                result.get('failures') == 0 and result.get('actual_feedback_frames') == 312 and
+                result.get('early_prepare_positive') == 12,
+                'Actual VO stage positive execution/count mismatch: '+mode)
+    mutants = measured.get('mutants', {})
+    require(len(mutants) == 15 and all(item.get('compiled') is True and
+            item.get('compile_returncode') == 0 and item.get('compiled_and_rejected') is True
+            for item in mutants.values()), 'Actual VO stage fifteen runtime mutants did not compile and reject')
+    return {'command':command, 'evidence_path':str(proof.relative_to(work)),
+            'evidence_sha256':sha(proof), 'tool_sha256':sha(tool),
+            'actual_C':modes, 'mutants':mutants, 'source_sha256':measured['source_sha256'],
+            'scope':measured['scope'], 'OSD_getter_actual_body_compiled':False,
+            'not_covered':measured['not_covered']}
 
 
 def replace_once(folder, name, old, new):
@@ -284,8 +374,8 @@ def main():
         require(sha(args.archive) == ARCHIVE_SHA, 'Exact upstream archive SHA mismatch')
         inputs=lock_inputs();report['config_inputs_sha256']=inputs
         require(git(source,'status','--porcelain') == '', 'Fresh replay is dirty')
-        require(git(source,'rev-list','--count','HEAD') == '52', 'Exact V22 replay must contain52 Git layers')
-        require(git(source,'rev-list','--count','HEAD^') == '51', 'Exact main replay must contain51 Git layers')
+        require(git(source,'rev-list','--count','HEAD') == '53', 'Exact V23 replay must contain53 Git layers')
+        require(git(source,'rev-list','--count','HEAD^') == '52', 'Exact main replay must contain52 Git layers')
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
@@ -295,12 +385,20 @@ def main():
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
         report['replay']={'main_commit':main_ref,'main_tree':main_tree,'atmos_commit':atmos_ref,'atmos_tree':atmos_tree,
-            'commit_count':52,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+            'commit_count':53,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
         report['compiler']={'path':str(cc),'version':version,'sha256':sha(cc)}
         spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration.py')
         gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
+        legacy_root=work/'legacy-reference-v22'
+        subprocess.run(['git','-C',str(source),'worktree','add','--detach',str(legacy_root),main_ref+'^'],
+                       check=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
+        require(git(legacy_root,'rev-list','--count','HEAD') == '51' and not git(legacy_root,'status','--porcelain'),
+                'Legacy V22 reference must contain exactly51 layers and be clean')
+        report['legacy_reference']={'commit':git(legacy_root,'rev-parse','HEAD'),
+                                    'tree':git(legacy_root,'rev-parse','HEAD^{tree}'),
+                                    'scope':'LEGACY_REFERENCE_REGRESSION_NOT_V23_CALLER'}
         for variant,ref in [('main',main_ref),('atmos',atmos_ref)]:
             variant_root=work/variant
             subprocess.run(['git','-C',str(source),'worktree','add','--detach',str(variant_root),ref],check=True,
@@ -309,7 +407,8 @@ def main():
             def read(name):
                 data=(variant_root/name).read_bytes();evidence[name]=hashlib.sha256(data).hexdigest();return data.decode('utf-8')
             meson=gate.meson_check(variant_root,variant,read)
-            compile_result=gate.compile_gate(variant_root,cc,read)
+            compile_result=gate.compile_gate(variant_root,cc,read,
+                                            output_translation=work/(variant+'-real-osd-vo.c'))
             positive={'meson':meson,'compile':compile_result,'source_sha256':evidence}
             report['positive_variants'][variant]=positive;write(work/('positive-'+variant+'.json'),positive)
             require(meson['pass'] and compile_result['pass'] and compile_result.get('queue_osd_getter_compiled') is True,
@@ -317,9 +416,16 @@ def main():
             require(any(row.get('struct') == 'osd_state' for row in compile_result['real_complete_structs']) and
                 any(row.get('function') == 'osd_get_secondary_sample_snapshot' and row.get('file') == 'sub/osd.c'
                     for row in compile_result['verbatim_full_functions']), 'Actual complete OSD/getter closure was skipped')
+            actual_forecast = compile_result.get('cpu_forecast_caller_execution', {})
+            require(actual_forecast.get('pass') is True and len(actual_forecast.get('cases', {})) == 8,
+                    'Current complete forecast caller positive/seven runtime mutants did not execute: '+variant)
             test_work = work/('queue-tests-'+variant)
             test_work.mkdir()
-            positive['executed_queue_tests'] = execute_queue_tests(gate,variant_root,main_ref+'^',cc,test_work)
+            positive['executed_queue_tests'] = execute_queue_tests(gate,variant_root,legacy_root,main_ref+'^^',cc,test_work)
+            forecast_work = work/('forecast-tests-'+variant)
+            forecast_work.mkdir()
+            positive['executed_forecast_tests'] = execute_forecast_tests(gate, variant_root, cc, forecast_work)
+            positive['executed_stage_caller'] = execute_stage_caller(variant_root, legacy_root, cc, forecast_work)
             write(work/('positive-'+variant+'.json'),positive)
             mutation_root=work/('mutations-'+variant);mutation_root.mkdir()
             report['negative_variants'][variant]=negative_matrix(gate,variant_root,cc,mutation_root)
@@ -327,7 +433,8 @@ def main():
         for name,digest in inputs.items():
             require(sha(CONFIG/name) == digest, 'Config input changed during fast preflight: '+name)
         require(not git(source,'status','--porcelain'), 'Original replay changed during preflight')
-        report.update(status='EXACT_V22_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
+        require(not git(legacy_root,'status','--porcelain'), 'Legacy V22 reference changed during preflight')
+        report.update(status='EXACT_V23_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
             full_osd_getter_gcc_verified=True,negative_count_per_variant=15)
         return 0
     except BaseException as error:

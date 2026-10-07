@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       fast_native_preflight:
-        description: Run only the bounded V22 CPU GCC preflight
+        description: Run only the bounded V23 CPU GCC preflight
         type: boolean
         required: false
         default: false
