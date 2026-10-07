@@ -13,7 +13,7 @@ import sys
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
-CALLER_SHA = '8912155886367bfb6579324861ca1a7337fae68de139689114f17d28cd33aa56'
+CALLER_SHA = '197d664c74af4cfff594e34c23c19d648de24cb94f18fd6da10afac80434d558'
 
 
 def load(name, path):
@@ -144,7 +144,7 @@ def main():
     caller = load('v26_ui_versioned_vo_caller', caller_path)
     caller.ROOT = args.source.resolve()
     caller.BASELINE = args.baseline.resolve()
-    caller.GATE = HERE/'verify-native-ass-integration.py'
+    caller.GATE = HERE/'verify-native-ass-integration-v26.py'
     caller.CC = Path(shutil.which(args.cc) or args.cc).resolve()
     gate = caller.load_gate()
     original = (args.baseline/'video/out/vo.c').read_text(encoding='utf-8')

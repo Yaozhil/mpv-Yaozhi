@@ -129,7 +129,7 @@ def lock_inputs():
             'V25 UI recovery patch provenance changed')
     require(lock['common_patches'].get('build/bluray-menu/patches/0044-native-ass-ui-lifecycle.patch') == V26_PATCH_SHA,
             'V26 lifecycle patch provenance changed')
-    for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py',
+    for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py', HERE/'verify-native-ass-integration-v26.py',
                  HERE/'verify-native-ass-integration-v22-baseline.py',
                  HERE/'verify-native-ass-queue-stage-caller.py',
                  HERE/'verify-native-ass-ui-probe.py',
@@ -469,7 +469,7 @@ def main():
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
         report['compiler']={'path':str(cc),'version':version,'sha256':sha(cc)}
-        spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration.py')
+        spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration-v26.py')
         gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
         legacy_ref,legacy_ready_ref=locked_v22_reference(source,main_ref)
         legacy_root=work/'legacy-reference-v22'
@@ -509,7 +509,7 @@ def main():
             for positive_mode in (actual_forecast['cases']['positive'], actual_forecast['positive_NDEBUG']):
                 require(positive_mode.get('result') == {
                     'original_legacy_checks':7520, 'new_clock_getter_checks':896,
-                    'actual_caller_checks':15705, 'legacy_caller_checks':8416,
+                    'new_sampler_snapshot_checks':952, 'actual_caller_checks':16657, 'legacy_caller_checks':9368,
                     'fixed_caller_checks':7289, 'passed':True, 'GPU':False},
                     'Actual V24 current caller count/near-expiry boundary did not execute: '+variant)
             test_work = work/('queue-tests-'+variant)

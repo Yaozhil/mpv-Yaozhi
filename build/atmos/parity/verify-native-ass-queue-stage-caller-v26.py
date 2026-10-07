@@ -1134,7 +1134,7 @@ def main():
     parser.add_argument('--baseline', type=Path, required=True)
     parser.add_argument('--cc', required=True)
     parser.add_argument('--gate', type=Path,
-        default=Path(__file__).with_name('verify-native-ass-integration.py'))
+        default=Path(__file__).with_name('verify-native-ass-integration-v26.py'))
     parser.add_argument('--output', '--out', dest='out', type=Path, required=True)
     parser.add_argument('--mutants', action='store_true')
     args = parser.parse_args()
