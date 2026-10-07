@@ -491,6 +491,12 @@ def main():
             require(len(actual_forecast.get('v24_cases', {})) == 7 and
                     actual_forecast.get('positive_NDEBUG', {}).get('pass') is True,
                     'Actual V24 fixed flag/CONFIG/selection/reset runtime cases did not execute: '+variant)
+            for positive_mode in (actual_forecast['cases']['positive'], actual_forecast['positive_NDEBUG']):
+                require(positive_mode.get('result') == {
+                    'original_legacy_checks':7520, 'new_clock_getter_checks':896,
+                    'actual_caller_checks':15705, 'legacy_caller_checks':8416,
+                    'fixed_caller_checks':7289, 'passed':True, 'GPU':False},
+                    'Actual V24 current caller count/near-expiry boundary did not execute: '+variant)
             test_work = work/('queue-tests-'+variant)
             test_work.mkdir()
             positive['executed_queue_tests'] = execute_queue_tests(gate,variant_root,legacy_root,legacy_ready_ref,cc,test_work)

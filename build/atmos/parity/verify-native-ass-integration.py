@@ -405,6 +405,13 @@ static void fixed_caller_rate(int hz,int64_t N) {
  p->delay=3;
  struct secondary_ass_physical_point changed=secondary_forecast_next(&vo,snapshot.next_slot,N,fixture_now,osd.secondary_rate);
  CALLER_CHECK(changed.slot==next.slot && changed.wall==next.wall && p->delay==3);
+ // At the immutable delta's exact expiry, a larger retrospective H must
+ // not keep the old G alive. Exercise the real caller, not just the helper.
+ fixture_now=secondary_ass_physical_point_at(p,snapshot.next_slot+1).wall;
+ changed=secondary_forecast_next(&vo,snapshot.next_slot,N,fixture_now,osd.secondary_rate);
+ CALLER_CHECK(changed.slot==snapshot.next_slot+N &&
+  changed.wall==secondary_ass_physical_point_at(p,snapshot.next_slot+N).wall);
+ CALLER_CHECK(p->delay==3 && in.secondary_fixed_offset.valid && in.secondary_fixed_offset.offset==1);
  // Same-epoch UNKNOWN temporarily refuses plans without resetting offset.
  p->outlier_pending=true;
  CALLER_CHECK(!secondary_forecast_plan(&vo,next,N,osd.secondary_rate).valid);
@@ -451,7 +458,7 @@ int main(void) {
  fixture_fixed_env=false;
  for(unsigned k=0;k<sizeof(rates)/sizeof(rates[0]);k++)
   for(int64_t N=1;N<=4;N++)fixed_caller_rate(rates[k],N);
- if(caller_checks!=15649)return 2;
+ if(caller_checks!=15705)return 2;
  printf("{\"original_legacy_checks\":7520,\"new_clock_getter_checks\":896,\"actual_caller_checks\":%u,\"legacy_caller_checks\":%u,\"fixed_caller_checks\":%u,\"passed\":true,\"GPU\":false}\n",
   caller_checks,legacy_checks,caller_checks-legacy_checks);
  return 0;
@@ -547,11 +554,11 @@ def forecast_runtime_gate(generated, source, cc):
                 item.get("execute_returncode") == 0 and isinstance(item.get("result"), dict) and
                 item["result"].get("passed") is True and item["result"].get("GPU") is False and
                 type(item["result"].get("actual_caller_checks")) is int and
-                item["result"]["actual_caller_checks"] == 15649 and
+                item["result"]["actual_caller_checks"] == 15705 and
                 item["result"].get("legacy_caller_checks") == 8416 and
                 item["result"].get("original_legacy_checks") == 7520 and
                 item["result"].get("new_clock_getter_checks") == 896 and
-                item["result"].get("fixed_caller_checks") == 7233
+                item["result"].get("fixed_caller_checks") == 7289
                 if name in ("positive", "positive_NDEBUG") else
                 item.get("execute_returncode") not in (None, 0))
             if name in {row[0] for row in fixed_mutations}:
