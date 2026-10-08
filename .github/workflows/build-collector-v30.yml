@@ -21,6 +21,9 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
+      - name: Preserve reviewed tool bytes on Windows checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tools_ref }}
