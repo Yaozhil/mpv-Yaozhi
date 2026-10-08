@@ -153,7 +153,7 @@ def lock_inputs():
             'Frozen V28 fresh-clock caller bytes changed')
     require(sha(HERE/'verify-native-ass-fresh-retry-caller.py') == V29_RETRY_TOOL_SHA,
             'Pinned V29 actual retry caller bytes changed')
-    for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py', HERE/'verify-native-ass-integration-v26.py',
+    for path in (HERE/'verify-source.py', HERE/'verify-native-ass-integration.py', HERE/'verify-native-ass-integration-v26.py', HERE/'verify-native-ass-integration-v29.py',
                  HERE/'verify-native-ass-integration-v22-baseline.py',
                  HERE/'verify-native-ass-queue-stage-caller.py',
                  HERE/'verify-native-ass-ui-probe.py',
@@ -567,7 +567,7 @@ def main():
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
         report['compiler']={'path':str(cc),'version':version,'sha256':sha(cc)}
-        spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration-v26.py')
+        spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration-v29.py')
         gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
         legacy_ref,legacy_ready_ref=locked_v22_reference(source,main_ref)
         legacy_root=work/'legacy-reference-v22'
