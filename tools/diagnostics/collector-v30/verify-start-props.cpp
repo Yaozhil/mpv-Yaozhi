@@ -1,5 +1,6 @@
 // Diagnostic-only probe: execute the official Start() property construction,
 // intercept its first StartTrace call and fail it before any ETW operation.
+#define NOMINMAX
 #include <windows.h>
 #include <evntrace.h>
 #include <evntcons.h>
