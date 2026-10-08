@@ -45,6 +45,12 @@ V29_EXPECTED_RETRY = {'checks': 8441282, 'plans': 5, 'rejected': 41, 'time_edges
 V29_FROZEN_FRESH_FAULTS = {'fresh_eligibility_omitted': 35, 'feature_scope_lost': 32, 'repeat_scope_lost': 4, 'captured_early_scope_lost': 4, 'ready_overflow_guard_lost': 1, 'video_target_retimed_to_D': 7, 'late_equality_omitted': 11, 'after_flip_actual_draw_bit_lost': 4, 'late_captured_D_renamed': 3, 'plan_submit_retained_D': 2, 'fallback_retained_D': 2, 'lifecycle_wait_retained_D': 4, 'divided_lattice_lost': 2, 'physical_phase_mutated': 4, 'historical_H_mutated': 2}
 V29_RETRY_FAULTS = {'retry_omitted': 25, 'retry_repeat_scope_lost': 4, 'retry_captured_early_scope_lost': 3, 'retry_queue_stage_scope_lost': 4, 'retry_fixed_scope_lost': 1, 'retry_proposal_authority_lost': 2, 'retry_original_MISS_omitted': 7, 'retry_old_D_renamed': 9, 'retry_old_G_renamed': 9, 'retry_zero_clock_guard_lost': 1, 'retry_overflow_guard_lost': 1, 'retry_ready_not_refreshed': 2, 'retry_submit_retained_D': 5, 'retry_fallback_retained_D': 5, 'retry_lifecycle_retained_D': 9, 'retry_deadline_renamed': 4, 'retry_physical_phase_mutated': 13, 'retry_historical_H_mutated': 5, 'retry_fixed_offset_mutated': 5, 'retry_old_task_revived': 9, 'retry_lattice_divisor_lost': 14}
 V29_RETRY_SOURCE_FILES = ('video/out/vo.c', 'video/out/vo.h', 'sub/osd.c', 'common/ass_pacing_record.h', 'video/out/secondary_ass_budget.h', 'video/out/secondary_ass_flip_budget.h', 'video/out/secondary_ass_presentation.h', 'video/out/secondary_ass_physical.h', 'video/out/secondary_ass_present_plan.h', 'sub/secondary_ass_clock.h', 'video/out/secondary_ass_queue_lead.h', 'video/out/secondary_ass_queue_stage.h', 'video/out/secondary_ass_stage_prefix.h', 'osdep/threads-win32.h', 'misc/mp_assert.h', 'common/common.h', 'osdep/timer.h', 'options/m_option.h', 'options/options.h', 'sub/osd.h')
+
+V30_SOURCE_COMMIT = "fdde3e4649b4ddf84afaa6d84de30c83fc54f4b7"
+V30_SOURCE_TREE = "98bee49550e5d503c59dfd4139106ed33ff5d54f"
+V30_PATCH_SHA = "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c"
+V30_TOOL_PINS = {'verify-native-ass-integration-v30.py': '1ea97f67d80f04ed84bc6f299d16988aaeb90820295fec04d9868e5442011d30', 'verify-native-ass-queue-stage-caller-v30.py': '8b51405dceb018d4289daaf8036acf38e67599fe687721f221293c391e4f1e7c', 'verify-native-ass-ui-probe-v30.py': '870f9b643fdf38957ce741bae0ee05a9c672c0e991e56668acf2b7f5a24f3133', 'verify-native-ass-fixed-budget-recovery-v30.py': 'a3de667dd58c54cda3069aabdc92c1472ff83793df957a17257c2fb7c32cebc9', 'verify-native-ass-fresh-clock-caller-v30.py': '497719bf9ff6302e3c5c098252b3cfe0190e5721a3a887e9d1f2eb307a85bc65', 'verify-native-ass-fresh-retry-caller-v30.py': 'eeba21945f485a2f8558c5b0855fd86c4cc61eeec6ba09838378223db68dfd79', 'verify-native-ass-neutral-caller-v30.py': 'b27cc292f52fa52b2a1f0e411cc481ebb8e4ea4cb3fba27927f48c80493a0324', 'v30-neutral-pose-contract.c': '491bb901cc6f480948644cafab44ed56f64552f4b74b7b973fc4ab3e0311217a', 'v30-flip-window-contract.c': 'fea54d5565fe57f5f05d15135fd63abf62c0fe144313f941d7f05faf536d26a5', 'existing-53-fixtures.h': '0219f9e26f53ecc49a0e1df814882202f8ed5769154868825a3e1fba41a29aa7'}
+
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
 # V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
 ATMOS_ENTRIES = '''
@@ -166,10 +172,15 @@ def lock_inputs():
                  CONFIG/'.github/workflows/native-ass-fast-gcc-preflight.yml',
                  CONFIG/'.github/workflows/build-mpv-v100-parity.yml'):
         inputs[str(path.relative_to(CONFIG))] = sha(path)
+    require(lock['common_patches'].get('build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch') == V30_PATCH_SHA,
+            'Exact V30 cache/neutral source patch differs')
+    for name, digest in V30_TOOL_PINS.items():
+        require(sha(HERE/name) == digest, 'Reviewed V30 test/provider changed: '+name)
+        inputs[str((HERE/name).relative_to(CONFIG))] = digest
     return inputs
 
 
-def validate_fresh_retry_report(fresh, variant_root):
+def validate_fresh_retry_report_v29_frozen(fresh, variant_root):
     require(fresh['status'] == 'ACTUAL_FRESH_RETRY_CALLER_CPU_PASS_NOT_RUNTIME' and
             fresh['tool_sha256'] == V29_RETRY_TOOL_SHA and
             fresh['predecessor_sha256'] == '2b0162b53641d12874be407efa433e3b4f295bb15074821ab85093b64341e750' and
@@ -187,6 +198,77 @@ def validate_fresh_retry_report(fresh, variant_root):
         require(re.fullmatch('[0-9a-f]{64}', digest) and sha(variant_root/name) == digest,
                 'Fresh-retry actual input identity changed: '+name)
     require(fresh['source_sha256']['video/out/vo.c'] == '57e986c19a693fa9b5e4f3100b139c7bd4d913f1f52d018adf3fbb6967a933f1' and
+            fresh['source_sha256']['video/out/secondary_ass_present_plan.h'] == '3e70702f03bcc899ee21653b82b237b952fdbbd95fb8bc24b5b433d043e2a69d',
+            'Fresh-retry source lost the exact V29 caller or unchanged V28 header')
+    old_faults = V29_FROZEN_FRESH_FAULTS
+    retry_faults = V29_RETRY_FAULTS
+    expected = {suite+'_'+name+'_'+mode
+                for suite, faults in (('v28', old_faults), ('v29', retry_faults))
+                for name in ('positive', *faults) for mode in ('normal', 'NDEBUG')}
+    require(fresh['retry_faults'] == 21 and fresh['exact_cases'] == 76 and
+            fresh['expected_retry_result'] == V29_EXPECTED_RETRY and
+            fresh['expected_old_fault_failures'] == old_faults and
+            fresh['expected_retry_fault_failures'] == retry_faults and
+            type(fresh['cases']) is dict and set(fresh['cases']) == expected,
+            'Every frozen V28_32 and new V29_44 actual mode/fault is required')
+    require(fresh['old_counts'] == {'checks':103149, 'v24_checks':1097,
+            'actual_feedback_frames':312, 'early_prepare_positive':12,
+            'v28_checks':5109078, 'v28_plans':2, 'v28_matrix':30,
+            'v28_draws':340200, 'old_exact_cases':32},
+            'Fresh-retry frozen predecessor counters changed')
+    expected_v28 = {'checks':5109078, 'plans':2, 'matrix':30, 'draws':340200, 'failures':0}
+    for key, item in fresh['cases'].items():
+        suite, tail = key.split('_', 1)
+        name, mode = tail.rsplit('_', 1)
+        require(item['suite'] == suite and item['compiled_and_expected'] is True and
+                item['compiled'] is True and item['compile_returncode'] == 0 and
+                re.fullmatch('[0-9a-f]{64}', item['translation_sha256']),
+                'Fresh-retry case did not actually compile and execute with GCC: '+key)
+        legacy = item['result']
+        require(legacy['checks'] == 103149 and legacy['v24_checks'] == 1097 and legacy['failures'] == 0 and
+                legacy['actual_feedback_frames'] == 312 and legacy['early_prepare_positive'] == 12,
+                'Fresh-retry changed frozen actual legacy assertions: '+key)
+        if suite == 'v28':
+            require(item['v29_result'] == {}, 'Frozen V28 suite falsely claims new retry cases: '+key)
+            if name == 'positive':
+                require(item['negative'] is False and item['exit_code'] == 0 and item['v28_result'] == expected_v28,
+                        'Frozen V28 actual long-model positive changed: '+key)
+            else:
+                require(item['negative'] is True and item['exit_code'] == 7 and
+                        item['v28_result']['failures'] == old_faults[name],
+                        'Frozen V28 fault escaped actual assertions: '+key)
+        else:
+            require(item['v28_result'] == expected_v28,
+                    'New retry fault broke the frozen V28 suite: '+key)
+            if name == 'positive':
+                require(item['negative'] is False and item['exit_code'] == 0 and
+                        item['v29_result'] == V29_EXPECTED_RETRY,
+                        'Fresh-retry actual positive fixed counters changed: '+key)
+            else:
+                require(item['negative'] is True and item['exit_code'] == 7 and
+                        item['v29_result']['failures'] == retry_faults[name],
+                        'Fresh-retry fault escaped actual assertions: '+key)
+    return sorted(key for key in fresh['cases'] if key.startswith('v28_'))
+
+
+def validate_fresh_retry_report(fresh, variant_root):
+    require(fresh['status'] == 'ACTUAL_FRESH_RETRY_CALLER_CPU_PASS_NOT_RUNTIME' and
+            fresh['tool_sha256'] == V30_TOOL_PINS['verify-native-ass-fresh-retry-caller-v30.py'] and
+            fresh['predecessor_sha256'] == '497719bf9ff6302e3c5c098252b3cfe0190e5721a3a887e9d1f2eb307a85bc65' and
+            fresh['caller_sha256'] == '8b51405dceb018d4289daaf8036acf38e67599fe687721f221293c391e4f1e7c' and
+            fresh['declaration_gate_sha256'] == '1ea97f67d80f04ed84bc6f299d16988aaeb90820295fec04d9868e5442011d30' and
+            fresh['baseline_vo_sha256'] == 'e4e7bd710c84c43af548a66e8950cfb69814db478a4a889239572d3292bafefd',
+            'Fresh-retry caller or frozen predecessor provenance changed')
+    require(all(fresh[key] is False for key in ('GPU_started', 'CI_started', 'Display_acceptance', 'pacing_acceptance')) and
+            type(fresh['inputs_changed_during_extraction']) is list and not fresh['inputs_changed_during_extraction'],
+            'Fresh-retry source changed or false runtime/Display claim')
+    require(fresh['source_root'] == str(variant_root.resolve()) and
+            type(fresh['source_sha256']) is dict and set(fresh['source_sha256']) == set(V29_RETRY_SOURCE_FILES) | {'video/out/secondary_ass_neutral_pose.h'},
+            'Fresh-retry source root or actual 20-file closure changed')
+    for name, digest in fresh['source_sha256'].items():
+        require(re.fullmatch('[0-9a-f]{64}', digest) and sha(variant_root/name) == digest,
+                'Fresh-retry actual input identity changed: '+name)
+    require(fresh['source_sha256']['video/out/vo.c'] == '9a210433fdce8d35b48e5c9360c48e10b1fd4acfd5e229806e91a405b03e397d' and
             fresh['source_sha256']['video/out/secondary_ass_present_plan.h'] == '3e70702f03bcc899ee21653b82b237b952fdbbd95fb8bc24b5b433d043e2a69d',
             'Fresh-retry source lost the exact V29 caller or unchanged V28 header')
     old_faults = V29_FROZEN_FRESH_FAULTS
@@ -362,11 +444,11 @@ def execute_forecast_tests(gate, source, cc, work):
 
 def execute_stage_caller(source, baseline, cc, work):
     """Replay actual VO queue/promotion/outer fragments, not mirror structs."""
-    tool = HERE/'verify-native-ass-queue-stage-caller-v26.py'
+    tool = HERE/'verify-native-ass-queue-stage-caller-v30.py'
     output = work/'stage-actual'
     command = [sys.executable, str(tool), '--source', str(source), '--baseline', str(baseline),
                '--cc', str(cc), '--output', str(output), '--mutants',
-               '--gate', str(HERE/'verify-native-ass-integration-v22-baseline.py')]
+               '--gate', str(HERE/'verify-native-ass-integration-v30.py')]
     executed = subprocess.run(command, text=True, capture_output=True, timeout=600)
     require(executed.returncode == 0, 'Actual VO stage caller execution failed: '+executed.stdout+' '+executed.stderr)
     proof = output/'actual-C-evidence.json'
@@ -477,6 +559,41 @@ def negative_matrix(gate, source, cc, work):
     return results
 
 
+
+def execute_v30_contracts(gate, source, cc, work):
+    """Known observed budget inputs and real caller code; never scanout claims."""
+    work.mkdir()
+    inputs = {name: sha(source/name) for name in gate.HEADERS}
+    modes = {}
+    expected_budget = {'checks':320, 'failures':0, 'snapshot_rows':53,
+                       'prepass_budget_only_allowed':4, 'outer_budget_only_allowed':51}
+    for name, expected in (('v30-flip-window-contract.c', expected_budget),
+                           ('v30-neutral-pose-contract.c', 'neutral-pose contracts: 39 checks, 0 failures; CPU only, no Display claim')):
+        for mode, flags in (('normal', []), ('NDEBUG', ['-DNDEBUG'])):
+            exe = work/(name+'-'+mode)
+            command = [str(cc), '-std=c99', '-O2', *flags, '-I'+str(source), str(HERE/name), '-lm', '-o', str(exe)]
+            compiled = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            require(compiled.returncode == 0, 'V30 real-header GCC compile failed: '+name+' '+compiled.stderr)
+            run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+            measured = json.loads(run.stdout) if isinstance(expected, dict) and run.returncode == 0 else run.stdout.strip()
+            require(run.returncode == 0 and measured == expected, 'V30 exact header checks failed: '+name+' '+run.stdout)
+            modes[name+'-'+mode] = {'command':command, 'compile_exit':compiled.returncode,
+                                   'exit':run.returncode, 'result':measured}
+    caller_out = work/'actual-caller'
+    command = [sys.executable, str(HERE/'verify-native-ass-neutral-caller-v30.py'),
+               '--source', str(source), '--cc', str(cc), '--output', str(caller_out)]
+    run = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    caller = json.loads((caller_out/'actual-neutral-caller.json').read_bytes())
+    require(run.returncode == 0 and caller['status'] == 'PASS_CPU_ACTUAL_CALLER_FRAGMENTS_NOT_CORE_NOT_DISPLAY'
+            and caller['compiler_kind'] == 'GCC' and len(caller['runs']) == 2,
+            'V30 actual neutral caller GCC failed: '+run.stderr)
+    require(all(sha(source/name) == digest for name, digest in inputs.items()), 'V30 header changed during execution')
+    result = {'status':'V30_ACTUAL_HEADERS_AND_CALLER_GCC_PASS_NOT_RUNTIME', 'modes':modes,
+              'actual_caller':caller, 'source_header_sha256':inputs, 'GPU_started':False,
+              'pacing_acceptance':False, 'observed_input_arithmetic_not_executed_scheduler':True}
+    write(work/'report.json', result)
+    return result
+
 def self_test():
     valid_trees('a'*40,'b'*40)
     checks=1
@@ -548,8 +665,8 @@ def main():
         require(sha(args.archive) == ARCHIVE_SHA, 'Exact upstream archive SHA mismatch')
         inputs=lock_inputs();report['config_inputs_sha256']=inputs
         require(git(source,'status','--porcelain') == '', 'Fresh replay is dirty')
-        require(git(source,'rev-list','--count','HEAD') == '59', 'Exact V29 replay must contain59 Git layers')
-        require(git(source,'rev-list','--count','HEAD^') == '58', 'Exact main replay must contain58 Git layers')
+        require(git(source,'rev-list','--count','HEAD') == '60', 'Exact V30 replay must contain60 Git layers')
+        require(git(source,'rev-list','--count','HEAD^') == '59', 'Exact main replay must contain59 Git layers')
         require('Add current Omniphony renderer and ASIO' in git(source,'log','-1','--format=%s'), 'Last layer is not existing Atmos parity')
         main_ref,atmos_ref=git(source,'rev-parse','HEAD^'),git(source,'rev-parse','HEAD')
         main_tree,atmos_tree=git(source,'rev-parse',main_ref+'^{tree}'),git(source,'rev-parse',atmos_ref+'^{tree}')
@@ -559,15 +676,15 @@ def main():
         delta=git(source,'diff','--raw','--no-abbrev','HEAD^','HEAD')
         exact_delta(delta)
         report['replay']={'main_commit':main_ref,'main_tree':main_tree,'atmos_commit':atmos_ref,'atmos_tree':atmos_tree,
-            'commit_count':59,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
-        report['candidate_source_provenance'] = {'commit':V29_SOURCE_COMMIT,
-            'windows_tree':V29_SOURCE_TREE, 'incremental_patch_sha256':V29_PATCH_SHA,
-            'frozen_v28_parent_commit':V28_SOURCE_COMMIT, 'frozen_v28_parent_tree':V28_SOURCE_TREE,
+            'commit_count':60,'exact_existing19_atmos_entries':delta.splitlines(),'archive_sha256':ARCHIVE_SHA}
+        report['candidate_source_provenance'] = {'commit':V30_SOURCE_COMMIT,
+            'windows_tree':V30_SOURCE_TREE, 'incremental_patch_sha256':V30_PATCH_SHA,
+            'frozen_v29_parent_commit':V29_SOURCE_COMMIT, 'frozen_v29_parent_tree':V29_SOURCE_TREE,
             'replay_commit_metadata_equal_to_author_commit':False}
         version=subprocess.check_output([str(cc),'--version'],text=True,timeout=15)
         require(re.search(r'\b(?:gcc|GCC)\b',version), 'Fast preflight requires actual GCC, never TCC partial')
         report['compiler']={'path':str(cc),'version':version,'sha256':sha(cc)}
-        spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration-v29.py')
+        spec=importlib.util.spec_from_file_location('native_ass_default_gcc_gate',HERE/'verify-native-ass-integration-v30.py')
         gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
         legacy_ref,legacy_ready_ref=locked_v22_reference(source,main_ref)
         legacy_root=work/'legacy-reference-v22'
@@ -616,9 +733,10 @@ def main():
             forecast_work = work/('forecast-tests-'+variant)
             forecast_work.mkdir()
             positive['executed_forecast_tests'] = execute_forecast_tests(gate, variant_root, cc, forecast_work)
+            positive['executed_v30_contracts'] = execute_v30_contracts(gate, variant_root, cc, work/('v30-contracts-'+variant))
             positive['executed_stage_caller'] = execute_stage_caller(variant_root, legacy_root, cc, forecast_work)
             ui_output = work/('ui-probe-'+variant)
-            ui_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-ui-probe-v26.py'),
+            ui_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-ui-probe-v30.py'),
                 '--source',str(variant_root),'--baseline',str(legacy_root),'--cc',str(cc),
                 '--output',str(ui_output)],capture_output=True,text=True,timeout=120)
             ui_result = json.loads((ui_output/'ui-probe.json').read_text(encoding='utf-8'))
@@ -643,7 +761,7 @@ def main():
             positive['executed_sample_lifecycle'] = {'report':lifecycle,
                 'report_sha256':sha(lifecycle_out/'report.json')}
             recovery_out = work/('fixed-budget-recovery-'+variant)
-            recovery_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-fixed-budget-recovery.py'),
+            recovery_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-fixed-budget-recovery-v30.py'),
                 '--source',str(variant_root),'--baseline',str(legacy_root),'--cc',str(cc),
                 '--output',str(recovery_out)],capture_output=True,text=True,timeout=180)
             recovery = json.loads((recovery_out/'fixed-budget-recovery.json').read_bytes())
@@ -668,7 +786,7 @@ def main():
                 'stdout':recovery_run.stdout,'stderr':recovery_run.stderr,'report':recovery,
                 'report_sha256':sha(recovery_out/'fixed-budget-recovery.json')}
             fresh_out = work/('fresh-retry-'+variant)
-            fresh_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-fresh-retry-caller.py'),
+            fresh_run = subprocess.run([sys.executable,str(HERE/'verify-native-ass-fresh-retry-caller-v30.py'),
                 '--source',str(variant_root),'--baseline',str(legacy_root),'--parity',str(HERE),
                 '--cc',str(cc),'--output',str(fresh_out)],capture_output=True,text=True,timeout=360)
             fresh = json.loads((fresh_out/'fresh-retry-caller.json').read_bytes())
@@ -690,7 +808,7 @@ def main():
             require(sha(CONFIG/name) == digest, 'Config input changed during fast preflight: '+name)
         require(not git(source,'status','--porcelain'), 'Original replay changed during preflight')
         require(not git(legacy_root,'status','--porcelain'), 'Legacy V22 reference changed during preflight')
-        report.update(status='EXACT_V29_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
+        report.update(status='EXACT_V30_REPLAY_DUAL_DEFAULT_GCC_POSITIVE_AND_NEGATIVE_PASS_NOT_CORE_BUILD_OR_RUNTIME',
             full_osd_getter_gcc_verified=True,negative_count_per_variant=15)
         return 0
     except BaseException as error:

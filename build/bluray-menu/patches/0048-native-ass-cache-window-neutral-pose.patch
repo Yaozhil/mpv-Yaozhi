@@ -1,0 +1,576 @@
+From fdde3e4649b4ddf84afaa6d84de30c83fc54f4b7 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 8 Oct 2026 16:26:29 +0800
+Subject: [PATCH] vo: reserve cache compute once and retain its submitted ASS
+ pose
+
+---
+ video/out/secondary_ass_flip_budget.h  |  62 ++++++++
+ video/out/secondary_ass_neutral_pose.h | 151 +++++++++++++++++++
+ video/out/vo.c                         | 201 ++++++++++++++++++++++---
+ 3 files changed, 392 insertions(+), 22 deletions(-)
+ create mode 100644 video/out/secondary_ass_neutral_pose.h
+
+diff --git a/video/out/secondary_ass_flip_budget.h b/video/out/secondary_ass_flip_budget.h
+index df7d538..bafa6dd 100644
+--- a/video/out/secondary_ass_flip_budget.h
++++ b/video/out/secondary_ass_flip_budget.h
+@@ -57,4 +57,66 @@ static inline int64_t secondary_ass_flip_budget_cost(
+     return redraw_cost + b->cost;
+ }
+ 
++// Q is only the observed post-CPU envelope for this exact successful prefix.
++// Zero is unknown: callers must retain their original conservative guard,
++// not subtract redraw work from an unrelated legacy whole-draw estimate.
++static inline int64_t secondary_ass_flip_budget_post_cpu_cost(
++    const struct secondary_ass_flip_budget *b,
++    uint64_t epoch, uint64_t generation, uint64_t last_id)
++{
++    if (!b || !epoch || !generation || !last_id || !b->samples.count ||
++        b->epoch != epoch || b->generation != generation ||
++        b->last_id != last_id || b->cost <= 0)
++        return 0;
++    return b->cost;
++}
++
++struct secondary_ass_flip_window {
++    bool valid;
++    int64_t prepare, cpu_done, submit, post_cpu_done, reserved_end;
++};
++
++// Preserve the caller's baseline policy and immutable S/F. Charge R once
++// from actual preparation, then charge Q after CPU submission. A late cache
++// cannot gain permission by starting its accounting at the elapsed S.
++// This predicts a CPU/VO envelope, never GPU Ready or actual Display.
++static inline struct secondary_ass_flip_window secondary_ass_flip_budget_window(
++    bool baseline_guard, int64_t now, int64_t original_prepare,
++    int64_t earliest_redraw, int64_t captured_submit, int64_t video_deadline,
++    int64_t redraw_cost, int64_t post_cpu_cost, int64_t fresh_cost,
++    int64_t margin)
++{
++    struct secondary_ass_flip_window none = {0};
++    if (!baseline_guard || now <= 0 || original_prepare <= 0 ||
++        earliest_redraw < 0 || captured_submit <= 0 ||
++        video_deadline <= captured_submit || redraw_cost < 0 ||
++        post_cpu_cost <= 0 || fresh_cost < 0 || margin < 0)
++        return none;
++    int64_t prepare = now > original_prepare ? now : original_prepare;
++    if (earliest_redraw > prepare)
++        prepare = earliest_redraw;
++    if (redraw_cost > INT64_MAX - prepare)
++        return none;
++    int64_t cpu_done = prepare + redraw_cost;
++    if (cpu_done > captured_submit)
++        return none;
++    int64_t submit = cpu_done > captured_submit ? cpu_done : captured_submit;
++    if (post_cpu_cost > INT64_MAX - submit)
++        return none;
++    int64_t post_cpu_done = submit + post_cpu_cost;
++    if (fresh_cost > INT64_MAX - post_cpu_done)
++        return none;
++    int64_t reserved_end = post_cpu_done + fresh_cost;
++    if (margin > INT64_MAX - reserved_end)
++        return none;
++    reserved_end += margin;
++    if (reserved_end >= video_deadline)
++        return none;
++    return (struct secondary_ass_flip_window){
++        .valid = true, .prepare = prepare, .cpu_done = cpu_done,
++        .submit = submit, .post_cpu_done = post_cpu_done,
++        .reserved_end = reserved_end,
++    };
++}
++
+ #endif
+diff --git a/video/out/secondary_ass_neutral_pose.h b/video/out/secondary_ass_neutral_pose.h
+new file mode 100644
+index 0000000..739ac9e
+--- /dev/null
++++ b/video/out/secondary_ass_neutral_pose.h
+@@ -0,0 +1,151 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_NEUTRAL_POSE_H
++#define MP_SECONDARY_ASS_NEUTRAL_POSE_H
++
++#include "sub/secondary_ass_clock.h"
++#include "secondary_ass_present_plan.h"
++
++// A one-use VO-thread lease for an ASS pose actually submitted by a grid-cache
++// draw. This does not certify its Display time or authorize another G/D task.
++struct secondary_ass_neutral_pose {
++    bool valid;
++    uint64_t submit_id;
++    struct secondary_ass_present_plan plan;
++    struct secondary_ass_sample_snapshot sample;
++};
++
++static inline void secondary_ass_neutral_pose_clear(
++    struct secondary_ass_neutral_pose *pose)
++{
++    *pose = (struct secondary_ass_neutral_pose){0};
++}
++
++static inline bool secondary_ass_neutral_pose_tuple_equal(
++    const struct secondary_ass_sample_snapshot *a,
++    const struct secondary_ass_sample_snapshot *b)
++{
++    return a->valid && b->valid && !a->held && !b->held &&
++        !a->force && !b->force && !a->sample_forced && !b->sample_forced &&
++        a->display_forecast && b->display_forecast &&
++        a->epoch == b->epoch && a->rate == b->rate &&
++        a->speed == b->speed && a->requested_speed == b->requested_speed &&
++        a->divisor == b->divisor && a->origin_slot == b->origin_slot &&
++        a->sample_slot == b->sample_slot && a->next_slot == b->next_slot &&
++        a->next_wall == b->next_wall && a->phase_wall == b->phase_wall &&
++        a->phase_slot == b->phase_slot && a->interval == b->interval;
++}
++
++static inline bool secondary_ass_neutral_pose_prefix_current(
++    const struct secondary_ass_neutral_pose *pose,
++    const struct secondary_ass_physical *p)
++{
++    if (!pose->valid || p->epoch_exhausted || p->outlier_pending ||
++        p->history_floor_slot || !p->sync_segment_consistent ||
++        !p->success_contiguous || p->epoch != pose->plan.epoch ||
++        p->success_generation != pose->plan.generation ||
++        p->success_last_id != pose->submit_id ||
++        p->last_submit_id != pose->submit_id ||
++        p->last_base_slot != pose->plan.base.slot ||
++        p->interval != pose->plan.interval)
++        return false;
++    unsigned n = (p->next + 31) % 32;
++    return p->submitted[n].id == pose->submit_id &&
++        !p->submitted[n].gap_excluded &&
++        p->submitted[n].base == pose->plan.base.wall &&
++        p->submitted[n].base_slot == pose->plan.base.slot &&
++        p->submitted[n].target_slot == pose->plan.target.slot;
++}
++
++// Call after physical feedback has registered this exact successful Sync1 ID.
++// A failed capture clears an old lease; no earlier successful pose can conceal
++// a sampler advanced by an unsuccessful/unknown intervening Present.
++static inline bool secondary_ass_neutral_pose_capture(
++    struct secondary_ass_neutral_pose *pose,
++    const struct secondary_ass_physical *p,
++    const struct secondary_ass_present_plan *plan,
++    const struct secondary_ass_sample_snapshot *before,
++    const struct secondary_ass_sample_snapshot *after,
++    bool grid_cache, bool owner_current, bool target_updated,
++    bool submit_valid, bool phase_reset,
++    uint64_t submit_id, uint64_t submit_generation, int sync_interval)
++{
++    secondary_ass_neutral_pose_clear(pose);
++    if (!grid_cache || !owner_current || !target_updated ||
++        !submit_valid || phase_reset ||
++        !submit_id || sync_interval != 1 || !plan->valid ||
++        !plan->display_forecast || plan->fresh_clock_only ||
++        !plan->epoch || !plan->generation || plan->base.slot <= 0 ||
++        plan->base.wall <= 0 || plan->target.slot < plan->base.slot ||
++        plan->target.wall < plan->base.wall || plan->submit <= 0 ||
++        submit_generation != plan->generation || !after->valid ||
++        after->held || after->force || after->sample_forced ||
++        !after->display_forecast || after->epoch != plan->epoch ||
++        after->divisor <= 0 ||
++        after->divisor > INT64_MAX - plan->base.slot ||
++        after->sample_slot != plan->base.slot ||
++        after->next_slot != plan->base.slot + after->divisor ||
++        after->interval != plan->interval || before->force ||
++        before->epoch != after->epoch || before->rate != after->rate ||
++        before->speed != after->speed ||
++        before->requested_speed != after->requested_speed ||
++        before->divisor != after->divisor ||
++        before->origin_slot != after->origin_slot ||
++        before->next_slot != plan->base.slot)
++        return false;
++    struct secondary_ass_sampler projection = {
++        .phase_wall = after->phase_wall, .phase_slot = after->phase_slot,
++        .physical_interval = after->interval,
++    };
++    if (secondary_ass_sampler_slot_wall(&projection, plan->base.slot) !=
++            plan->base.wall ||
++        secondary_ass_sampler_slot_wall(&projection, plan->target.slot) !=
++            plan->target.wall ||
++        secondary_ass_sampler_slot_wall(&projection, after->next_slot) !=
++            after->next_wall)
++        return false;
++    struct secondary_ass_neutral_pose candidate = {
++        .valid = true, .submit_id = submit_id, .plan = *plan, .sample = *after,
++    };
++    if (!secondary_ass_neutral_pose_prefix_current(&candidate, p))
++        return false;
++    *pose = candidate;
++    return true;
++}
++
++// The caller includes its unchanged headroom margin in predicted_release.
++// next_prepare is the original next-G S minus its known redraw cost. A neutral
++// Present retains raw F and consumes this lease once; it never samples next G.
++// These CPU/VO bounds are admission estimates, not actual Display guarantees.
++static inline bool secondary_ass_neutral_pose_admit(
++    const struct secondary_ass_neutral_pose *pose,
++    const struct secondary_ass_physical *p,
++    const struct secondary_ass_sample_snapshot *sample,
++    const struct secondary_ass_present_plan *next_plan,
++    bool owner_current, int64_t now, int64_t raw_video_target,
++    int64_t predicted_release, int64_t next_prepare)
++{
++    if (!owner_current || !secondary_ass_neutral_pose_prefix_current(pose, p) ||
++        !secondary_ass_neutral_pose_tuple_equal(&pose->sample, sample) ||
++        !secondary_ass_present_plan_current(p, next_plan) ||
++        !next_plan->display_forecast || next_plan->fresh_clock_only ||
++        next_plan->epoch != pose->plan.epoch ||
++        next_plan->generation != pose->plan.generation ||
++        next_plan->interval != pose->plan.interval ||
++        next_plan->base.slot != sample->next_slot ||
++        next_plan->captured_forecast != pose->plan.captured_forecast ||
++        next_plan->target.slot <= pose->plan.target.slot ||
++        next_plan->target.slot - pose->plan.target.slot != sample->divisor ||
++        now <= 0 || raw_video_target < pose->plan.submit ||
++        raw_video_target >= next_plan->submit ||
++        next_prepare <= now || next_prepare > next_plan->submit ||
++        predicted_release < now || predicted_release < raw_video_target ||
++        predicted_release >= next_prepare)
++        return false;
++    // A lower bound is sufficient to veto a known collision. It cannot prove
++    // that the neutral frame, GPU work or the following task will hit scanout.
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    return lower > 0 && lower < next_plan->target.slot;
++}
++
++#endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index fb54a57..eb7a3a9 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -44,6 +44,7 @@
+ #include "secondary_ass_presentation.h"
+ #include "secondary_ass_physical.h"
+ #include "secondary_ass_present_plan.h"
++#include "secondary_ass_neutral_pose.h"
+ #include "secondary_ass_queue_lead.h"
+ #include "secondary_ass_queue_stage.h"
+ #include "secondary_ass_stage_prefix.h"
+@@ -202,6 +203,7 @@ struct vo_internal {
+     struct secondary_ass_queue_token secondary_queue_pending; // under lock
+     int64_t secondary_queue_resume; // deferred promotion, under lock
+     struct secondary_ass_flip_budget secondary_flip_budget; // VO thread only
++    struct secondary_ass_neutral_pose secondary_neutral_pose; // one-use cache pose
+     struct mp_ass_pacing_record pacing_draw_record; // diagnostic, VO thread only
+     struct mp_ass_pacing_record pacing_plan_record;
+     int64_t pacing_cpu_end;
+@@ -350,6 +352,7 @@ static void secondary_reset_physical(struct vo *vo, const char *reason)
+     secondary_ass_physical_reset(&in->secondary_physical);
+     in->secondary_fixed_offset = (struct secondary_ass_present_fixed_offset){0};
+     secondary_ass_flip_budget_reset(&in->secondary_flip_budget);
++    secondary_ass_neutral_pose_clear(&in->secondary_neutral_pose);
+     if (mp_ass_pacing_enabled(vo->global)) {
+         struct mp_ass_pacing_record record = {
+             .event_ns = mp_time_ns(), .vo_seq = vo->pacing_vo_seq,
+@@ -585,21 +588,37 @@ static int64_t secondary_cache_block_cost(struct vo *vo, bool planned_audio)
+         in->secondary_redraw_block_cost);
+ }
+ 
++static int64_t secondary_cache_post_cpu_cost(struct vo *vo, bool planned_audio)
++{
++    struct vo_internal *in = vo->in;
++    if (!in->secondary_split_budget || !planned_audio ||
++        !in->secondary_physical.success_contiguous)
++        return 0;
++    return secondary_ass_flip_budget_post_cpu_cost(&in->secondary_flip_budget,
++        in->secondary_physical.epoch, in->secondary_physical.success_generation,
++        in->secondary_physical.success_last_id);
++}
++
+ static void secondary_observe_flip_budget(struct vo *vo,
+     const struct vo_vsync_info *vsync,
+     const struct secondary_ass_present_plan *plan, int64_t begin,
+-    int64_t vo_wait, int64_t flip_begin, bool guard_armed, bool fresh)
++    int64_t vo_wait, int64_t flip_begin, bool guard_armed, bool fresh,
++    bool neutral_admitted)
+ {
+     struct vo_internal *in = vo->in;
+     if (!in->secondary_split_budget)
+         return;
+     int64_t end = mp_time_ns();
+-    bool valid = guard_armed && plan && plan->valid && !vsync->secondary_phase_reset &&
++    bool valid = guard_armed && plan && (plan->valid || neutral_admitted) &&
++        !vsync->secondary_phase_reset &&
+         vsync->secondary_submit_valid && vsync->secondary_submit_sync_interval == 1 &&
+         vsync->secondary_submit_generation == plan->generation &&
+         plan->epoch == in->secondary_physical.epoch &&
+         plan->generation == in->secondary_physical.success_generation &&
+-        in->secondary_physical.success_contiguous;
++        in->secondary_physical.success_contiguous &&
++        (!neutral_admitted || (!in->secondary_physical.outlier_pending &&
++            !in->secondary_physical.history_floor_slot &&
++            vsync->secondary_submit_id == in->secondary_physical.success_last_id));
+     bool observed = secondary_ass_flip_budget_observe(&in->secondary_flip_budget,
+         valid, plan ? plan->epoch : 0, plan ? plan->generation : 0,
+         vsync->secondary_submit_id, begin, end, vo_wait);
+@@ -610,7 +629,8 @@ static void secondary_observe_flip_budget(struct vo *vo,
+             .epoch = in->secondary_physical.epoch,
+             .generation = in->secondary_physical.success_generation,
+             .flags = (uint64_t)fresh | ((uint64_t)valid << 1) |
+-                ((uint64_t)observed << 2) | ((uint64_t)guard_armed << 3),
++                ((uint64_t)observed << 2) | ((uint64_t)guard_armed << 3) |
++                ((uint64_t)neutral_admitted << 4),
+             .v = {(int64_t)vsync->secondary_submit_id, begin, end, vo_wait,
+                 flip_begin, in->secondary_flip_budget.cost,
+                 in->secondary_redraw_block_cost, in->secondary_redraw_cost},
+@@ -2250,9 +2270,23 @@ static bool render_frame(struct vo *vo)
+                     ? grid_task.plan.submit - in->secondary_redraw_cost : 0;
+                 if (prepare > 0 && fixed_prepare > prepare)
+                     prepare = fixed_prepare;
+-                // The later D-window must still reserve this actual queued
+-                // video's original F. A budget computed at G is insufficient.
+-                if (!grid_task.plan.valid || fixed_prepare <= 0 ||
++                int64_t post_cpu = secondary_cache_post_cpu_cost(vo,
++                    secondary_plan_enabled(vo, false, sample_divisor));
++                if (post_cpu > 0) {
++                    // The original preparation guard already charged R+Q.
++                    // At S only Q remains, while late preparation must still
++                    // fit all of R before S and reserve the real queued F.
++                    struct secondary_ass_flip_window window =
++                        secondary_ass_flip_budget_window(prepare > 0 &&
++                            grid_task.plan.valid && fixed_prepare > 0,
++                            now, prepare,
++                            vo->previous_redraw_time + in->secondary_physical.interval,
++                            grid_task.plan.submit,
++                            in->frame_queued->pts - in->flip_queue_offset,
++                            in->secondary_redraw_cost, post_cpu,
++                            in->secondary_render_cost, MP_TIME_MS_TO_NS(1));
++                    prepare = window.valid ? window.prepare : 0;
++                } else if (!grid_task.plan.valid || fixed_prepare <= 0 ||
+                     !secondary_ass_budget_before_deadline(
+                         MPMAX(now, grid_task.plan.submit),
+                         in->frame_queued->pts - in->flip_queue_offset,
+@@ -2422,7 +2456,67 @@ static bool render_frame(struct vo *vo)
+         in->secondary_sync_mode = frame->display_synced;
+         in->secondary_sync_mode_valid = true;
+         int64_t physical_now = mp_time_ns();
+-        if (physical_phase && in->secondary_physical.phase &&
++        struct secondary_ass_neutral_pose neutral_source = in->secondary_neutral_pose;
++        struct secondary_ass_present_plan neutral_next = {0};
++        bool neutral_admitted = false;
++        bool media_anchored = false;
++        int64_t neutral_release = 0;
++        if (neutral_source.valid && clock_rate > 0 && frame->current &&
++            !frame->display_synced && !frame->repeat)
++        {
++            // A discontinuity may invalidate the sampled pose. Apply the
++            // normal media authority once before considering its reuse.
++            osd_anchor_secondary_clock(vo->osd, frame->current->pts,
++                                       frame->pts, false);
++            media_anchored = true;
++            physical_now = mp_time_ns();
++        }
++        if (in->secondary_fixed_forecast && planned_audio && !frame->repeat &&
++            !early_plan.valid && !in->secondary_queue_stage &&
++            !in->secondary_queue_lead && !in->paused && !in->send_reset &&
++            !in->dropped_frame && in->visible &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            in->secondary_render_cost >= 0 && in->secondary_redraw_cost >= 0)
++        {
++            struct secondary_ass_sample_snapshot sample =
++                osd_get_secondary_sample_snapshot(vo->osd);
++            neutral_next = secondary_forecast_plan(vo, native_point,
++                                                   sample_divisor, native_rate);
++            int64_t post_cpu = secondary_cache_post_cpu_cost(vo, true);
++            if (post_cpu > 0 &&
++                physical_now <= INT64_MAX - in->secondary_render_cost)
++            {
++                int64_t release = MPMAX(original_video_target,
++                    physical_now + in->secondary_render_cost);
++                int64_t margin = MP_TIME_MS_TO_NS(2);
++                if (release <= INT64_MAX - post_cpu &&
++                    release + post_cpu <= INT64_MAX - margin &&
++                    neutral_next.submit > in->secondary_redraw_cost) {
++                    neutral_release = release + post_cpu + margin;
++                    neutral_admitted = secondary_ass_neutral_pose_admit(
++                        &neutral_source, &in->secondary_physical, &sample,
++                        &neutral_next, true, physical_now, original_video_target,
++                        neutral_release,
++                        neutral_next.submit - in->secondary_redraw_cost);
++                }
++            }
++        }
++        // A lease is tied to the latest cache submission and may cover one
++        // intervening video frame only, regardless of admission outcome.
++        secondary_ass_neutral_pose_clear(&in->secondary_neutral_pose);
++        if (neutral_admitted) {
++            // Reuse its actually submitted pose; do not sample a future G or
++            // register a second H sample for the previous ASS target.
++            target = original_video_target;
++            presentation_time = 0;
++            present_plan = (struct secondary_ass_present_plan){
++                .display_forecast = true, .epoch = neutral_source.plan.epoch,
++                .generation = neutral_source.plan.generation,
++                .submit = original_video_target,
++                .fallback_submit = original_video_target,
++                .lifecycle_safe_wait = original_video_target,
++            };
++        } else if (physical_phase && in->secondary_physical.phase &&
+             in->secondary_render_cost >= 0 &&
+             physical_now <= INT64_MAX - in->secondary_render_cost) {
+             int64_t physical_ready = MPMAX(present_ready,
+@@ -2517,11 +2611,15 @@ static bool render_frame(struct vo *vo)
+             }
+         }
+         physical_phase = physical_point.slot > 0 && !frame->display_synced;
+-        bool secondary_target_updated = secondary_set_presentation(vo,
+-            physical_point, presentation_time, display_interval, present_ready,
+-            native_rate <= 0 && !frame->display_synced,
+-            secondary_forecast_enabled(vo, frame->display_synced, sample_divisor),
+-            &present_plan);
++        bool secondary_target_updated = false;
++        if (neutral_admitted)
++            osd_hold_secondary_sample(vo->osd);
++        else
++            secondary_target_updated = secondary_set_presentation(vo,
++                physical_point, presentation_time, display_interval, present_ready,
++                native_rate <= 0 && !frame->display_synced,
++                secondary_forecast_enabled(vo, frame->display_synced, sample_divisor),
++                &present_plan);
+         if (!secondary_target_updated && in->secondary_trace)
+             MP_INFO(vo, "native-ass-phase-hold: fresh=%d target_updated=0 "
+                 "physical_point_available=0 actual_display_known=0 "
+@@ -2530,7 +2628,7 @@ static bool render_frame(struct vo *vo)
+         if (!secondary_target_updated && present_plan.valid && present_plan.display_forecast)
+             secondary_trace_plan_missed(vo, "display_pose_unavailable", "before-draw",
+                                         &present_plan);
+-        if (clock_rate > 0 && frame->current &&
++        if (!media_anchored && clock_rate > 0 && frame->current &&
+             (frame->display_synced || !frame->repeat)) {
+             double media_pts = frame->current->pts +
+                 (frame->display_synced ? frame->ideal_frame_vsync : 0);
+@@ -2558,6 +2656,25 @@ static bool render_frame(struct vo *vo)
+             presentation_time, planned_audio ? present_plan.deadline : 0,
+             &physical_point, planned_audio ? &present_plan : NULL,
+             !frame->repeat, secondary_target_updated, false);
++        if (neutral_admitted && vo->pacing_draw_seq) {
++            in->pacing_draw_record.flags |= UINT64_C(1) << 6;
++            in->pacing_plan_record.flags |= UINT64_C(1) << 3;
++            struct mp_ass_pacing_record reuse = {
++                .event_ns = physical_now, .vo_seq = vo->pacing_vo_seq,
++                .draw_seq = vo->pacing_draw_seq, .frame_id = frame->frame_id,
++                .epoch = neutral_source.plan.epoch,
++                .generation = neutral_source.plan.generation,
++                .v = {340, (int64_t)neutral_source.submit_id,
++                    neutral_source.plan.base.slot, neutral_source.plan.base.wall,
++                    neutral_source.plan.target.slot, neutral_source.plan.target.wall,
++                    original_video_target, neutral_next.base.slot,
++                    neutral_next.target.slot, neutral_next.target.wall,
++                    neutral_next.submit,
++                    neutral_next.submit - in->secondary_redraw_cost,
++                    neutral_release},
++            };
++            mp_ass_pacing_record(vo->global, MP_ASS_PACING_SPAN, &reuse);
++        }
+         in->visible = vo->driver->draw_frame(vo, frame);
+         fresh_drawn = true;
+ 
+@@ -2632,7 +2749,13 @@ static bool render_frame(struct vo *vo)
+ 
+         bool early_present = false;
+         bool plan_guard_armed = false;
+-        if (planned_audio && present_plan.valid) {
++        if (neutral_admitted) {
++            plan_guard_armed = in->secondary_physical.epoch == present_plan.epoch &&
++                in->secondary_physical.success_generation == present_plan.generation &&
++                vo->driver->can_present_early &&
++                vo->driver->can_present_early(vo, present_plan.generation,
++                    original_video_target, secondary_plan_wait_until);
++        } else if (planned_audio && present_plan.valid) {
+             // Arming lifecycle protection is distinct from skipping the VO
+             // wait.  Normal Sync1 submission also needs final Sync0/resize
+             // protection; an elapsed original S must not bypass this guard.
+@@ -2710,7 +2833,7 @@ static bool render_frame(struct vo *vo)
+         secondary_observe_flip_budget(vo, &vsync,
+             planned_audio ? &present_plan : NULL, flip_budget_begin,
+             0, flip_budget_begin,
+-            plan_guard_armed, !frame->repeat);
++            plan_guard_armed, !frame->repeat, neutral_admitted);
+         if (present_plan.valid && present_plan.fresh_clock_only &&
+             flip_call >= present_plan.deadline)
+             secondary_trace_plan_missed(vo, "fresh_clock_vo_flip_after_target",
+@@ -2783,7 +2906,8 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+     double grid_rate = grid_task ? osd_get_secondary_refresh(vo->osd) : 0;
+     int64_t grid_divisor = grid_task
+         ? osd_get_secondary_physical_sample_divisor(vo->osd) : 0;
+-    struct secondary_ass_sample_snapshot stage_before = grid_task && grid_task->stage.valid
++    struct secondary_ass_sample_snapshot stage_before = grid_task &&
++        (grid_task->stage.valid || in->secondary_fixed_forecast)
+         ? osd_get_secondary_sample_snapshot(vo->osd)
+         : (struct secondary_ass_sample_snapshot){0};
+ 
+@@ -3068,6 +3192,23 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+             vo->driver->get_vsync(vo, &vsync);
+         secondary_physical_feedback(vo, &vsync, physical_point,
+             planned_audio ? &present_plan : NULL);
++        struct secondary_ass_sample_snapshot pose_after =
++            osd_get_secondary_sample_snapshot(vo->osd);
++        mp_mutex_lock(&in->lock);
++        bool pose_owner = grid_task && in->secondary_fixed_forecast &&
++            !in->secondary_queue_stage && !in->secondary_queue_lead &&
++            in->current_frame &&
++            in->current_frame->frame_id == grid_task->current_id &&
++            (in->frame_queued ? in->frame_queued->frame_id : 0) == grid_task->queued_id &&
++            !in->paused && !in->send_reset && !in->dropped_frame &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING);
++        secondary_ass_neutral_pose_capture(&in->secondary_neutral_pose,
++            &in->secondary_physical, &present_plan, &stage_before, &pose_after,
++            grid_task != NULL, pose_owner, secondary_target_updated,
++            vsync.secondary_submit_valid, vsync.secondary_phase_reset,
++            vsync.secondary_submit_id, vsync.secondary_submit_generation,
++            vsync.secondary_submit_sync_interval);
++        mp_mutex_unlock(&in->lock);
+         if (grid_task && grid_task->stage.valid) {
+             struct secondary_ass_sample_snapshot after =
+                 osd_get_secondary_sample_snapshot(vo->osd);
+@@ -3101,7 +3242,7 @@ static bool do_redraw(struct vo *vo, uint64_t current_id, uint64_t queued_id,
+                     vsync.last_queue_display_time);
+         secondary_observe_flip_budget(vo, &vsync,
+             planned_audio ? &present_plan : NULL, flip_budget_begin, 0,
+-            flip_budget_begin, flip_budget_guard_armed, false);
++            flip_budget_begin, flip_budget_guard_armed, false, false);
+     }
+     // Presentation may wait for vsync. Include that blocking time in deadline
+     // headroom, but do not mistake a mostly idle wait for sustained GPU work.
+@@ -3391,13 +3532,29 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                         MP_TIME_MS_TO_NS(1));
+                 }
+                 if (in->secondary_fixed_forecast) {
+-                    // Preserve the old budget, and additionally account for
+-                    // the actual later submission boundary. No unknown future
+-                    // F is invented to grant an extra cache opportunity.
+-                    headroom &= fixed_cache_plan.valid &&
++                    int64_t post_cpu = secondary_cache_post_cpu_cost(vo,
++                        secondary_plan_enabled(vo, secondary_ds, thread_divisor));
++                    if (post_cpu > 0) {
++                        // Preserve the original headroom boundary. Recover
++                        // its preparation wake without charging CPU R twice.
++                        // An accepted queued image rechecks its actual F in
++                        // render_frame; no future video deadline is invented.
++                        struct secondary_ass_flip_window window =
++                            secondary_ass_flip_budget_window(headroom &&
++                                fixed_cache_plan.valid, now, next,
++                                vo->previous_redraw_time + in->secondary_physical.interval,
++                                fixed_cache_plan.submit, secondary_deadline,
++                                secondary_redraw_cost, post_cpu, secondary_cost,
++                                MP_TIME_S_TO_NS(0.002));
++                        headroom = window.valid;
++                        if (headroom)
++                            next = window.prepare;
++                    } else {
++                        headroom &= fixed_cache_plan.valid &&
+                         secondary_ass_budget_headroom(secondary_duration,
+                             MPMAX(now, fixed_cache_plan.submit), secondary_deadline,
+                             secondary_cost, cost, MP_TIME_S_TO_NS(0.002));
++                    }
+                 }
+                 if (held_stage.valid) {
+                     // A staged cache draw must finish before promotion and
+-- 
+2.54.0.windows.1
+

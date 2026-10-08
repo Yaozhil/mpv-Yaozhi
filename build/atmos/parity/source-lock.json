@@ -61,7 +61,8 @@
     "build/bluray-menu/patches/0044-native-ass-ui-lifecycle.patch": "78629c1c34c0e5c2dca4e4e1aac5edd477b45021eb91589757d3e72b6e6bdd69",
     "build/bluray-menu/patches/0045-native-ass-fixed-budget-recovery.patch": "ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f",
     "build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch": "ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28",
-    "build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2"
+    "build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2",
+    "build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
