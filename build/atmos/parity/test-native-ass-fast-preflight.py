@@ -49,7 +49,7 @@ V29_RETRY_SOURCE_FILES = ('video/out/vo.c', 'video/out/vo.h', 'sub/osd.c', 'comm
 V30_SOURCE_COMMIT = "fdde3e4649b4ddf84afaa6d84de30c83fc54f4b7"
 V30_SOURCE_TREE = "98bee49550e5d503c59dfd4139106ed33ff5d54f"
 V30_PATCH_SHA = "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c"
-V30_TOOL_PINS = {'verify-native-ass-integration-v30.py': '1ea97f67d80f04ed84bc6f299d16988aaeb90820295fec04d9868e5442011d30', 'verify-native-ass-queue-stage-caller-v30.py': '8b51405dceb018d4289daaf8036acf38e67599fe687721f221293c391e4f1e7c', 'verify-native-ass-ui-probe-v30.py': '870f9b643fdf38957ce741bae0ee05a9c672c0e991e56668acf2b7f5a24f3133', 'verify-native-ass-fixed-budget-recovery-v30.py': 'a3de667dd58c54cda3069aabdc92c1472ff83793df957a17257c2fb7c32cebc9', 'verify-native-ass-fresh-clock-caller-v30.py': '497719bf9ff6302e3c5c098252b3cfe0190e5721a3a887e9d1f2eb307a85bc65', 'verify-native-ass-fresh-retry-caller-v30.py': 'eeba21945f485a2f8558c5b0855fd86c4cc61eeec6ba09838378223db68dfd79', 'verify-native-ass-neutral-caller-v30.py': 'b27cc292f52fa52b2a1f0e411cc481ebb8e4ea4cb3fba27927f48c80493a0324', 'v30-neutral-pose-contract.c': '491bb901cc6f480948644cafab44ed56f64552f4b74b7b973fc4ab3e0311217a', 'v30-flip-window-contract.c': 'fea54d5565fe57f5f05d15135fd63abf62c0fe144313f941d7f05faf536d26a5', 'existing-53-fixtures.h': '0219f9e26f53ecc49a0e1df814882202f8ed5769154868825a3e1fba41a29aa7'}
+V30_TOOL_PINS = {'verify-native-ass-integration-v30.py': '1ea97f67d80f04ed84bc6f299d16988aaeb90820295fec04d9868e5442011d30', 'verify-native-ass-queue-stage-caller-v30.py': '8b51405dceb018d4289daaf8036acf38e67599fe687721f221293c391e4f1e7c', 'verify-native-ass-ui-probe-v30.py': '870f9b643fdf38957ce741bae0ee05a9c672c0e991e56668acf2b7f5a24f3133', 'verify-native-ass-fixed-budget-recovery-v30.py': 'a3de667dd58c54cda3069aabdc92c1472ff83793df957a17257c2fb7c32cebc9', 'verify-native-ass-fresh-clock-caller-v30.py': '31db47194f8d2630b315eae13082529b38ec706a0406c97ebb4537404403c017', 'verify-native-ass-fresh-retry-caller-v30.py': 'd3beac23df33314b3637327a5d5e31314430c5a256c9aee671983af0cd7ea246', 'verify-native-ass-neutral-caller-v30.py': 'b27cc292f52fa52b2a1f0e411cc481ebb8e4ea4cb3fba27927f48c80493a0324', 'v30-neutral-pose-contract.c': '491bb901cc6f480948644cafab44ed56f64552f4b74b7b973fc4ab3e0311217a', 'v30-flip-window-contract.c': 'fea54d5565fe57f5f05d15135fd63abf62c0fe144313f941d7f05faf536d26a5', 'existing-53-fixtures.h': '0219f9e26f53ecc49a0e1df814882202f8ed5769154868825a3e1fba41a29aa7'}
 
 # Actual raw mode/blob/status/path entries of the existing V21 parity layer.
 # V22/V23 change sub/video/test only; these 19 existing entries must stay exact.
@@ -254,7 +254,7 @@ def validate_fresh_retry_report_v29_frozen(fresh, variant_root):
 def validate_fresh_retry_report(fresh, variant_root):
     require(fresh['status'] == 'ACTUAL_FRESH_RETRY_CALLER_CPU_PASS_NOT_RUNTIME' and
             fresh['tool_sha256'] == V30_TOOL_PINS['verify-native-ass-fresh-retry-caller-v30.py'] and
-            fresh['predecessor_sha256'] == '497719bf9ff6302e3c5c098252b3cfe0190e5721a3a887e9d1f2eb307a85bc65' and
+            fresh['predecessor_sha256'] == '31db47194f8d2630b315eae13082529b38ec706a0406c97ebb4537404403c017' and
             fresh['caller_sha256'] == '8b51405dceb018d4289daaf8036acf38e67599fe687721f221293c391e4f1e7c' and
             fresh['declaration_gate_sha256'] == '1ea97f67d80f04ed84bc6f299d16988aaeb90820295fec04d9868e5442011d30' and
             fresh['baseline_vo_sha256'] == 'e4e7bd710c84c43af548a66e8950cfb69814db478a4a889239572d3292bafefd',

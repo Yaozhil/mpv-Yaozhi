@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 sys.dont_write_bytecode = True
-V28_SHA = '497719bf9ff6302e3c5c098252b3cfe0190e5721a3a887e9d1f2eb307a85bc65'
+V28_SHA = '31db47194f8d2630b315eae13082529b38ec706a0406c97ebb4537404403c017'
 EXPECTED_RETRY = {'checks':8441282,'plans':5,'rejected':41,'time_edges':3,
                   'matrix':30,'draws':340200,'failures':0}
 EXPECTED_RETRY_FAULT_FAILURES = {

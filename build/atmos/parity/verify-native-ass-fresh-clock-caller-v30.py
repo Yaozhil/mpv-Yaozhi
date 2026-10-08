@@ -320,6 +320,7 @@ def caller_boundaries(gate, read, generated, report):
         'mp_image_operand_and_layout_compiled': False,
         'neutral_lease_scope': 'INVALID_LEASE_ONLY; separate V30 neutral caller covers admission',
         'extra_OSD_check_counter': 'fixture_v30_new_osd_checks',
+        'downstream_media_anchor_read': '(void)media_anchored;',
         'old_CHECK_assertions_changed': False, 'lock_failure_still_fails': True}
 
     report['fresh_wait_boundary'] = {'sha256': sha(wait.encode()), 'text': wait}
@@ -393,6 +394,7 @@ static struct fresh_clock_boundary_result actual_fresh_selection_boundary(
  int64_t sample_divisor=osd_get_secondary_physical_sample_divisor(vo->osd);
  int64_t duration=frame->duration,target=original_video_target;
 ''' + selection + r'''
+ (void)media_anchored; // The full render_frame reads it after this extracted scope.
  return (struct fresh_clock_boundary_result){present_plan,physical_point,target,present_ready,
   presentation_time,display_interval,physical_phase,planned_audio,secondary_target_updated};
 }
