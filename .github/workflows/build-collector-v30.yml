@@ -2,6 +2,11 @@
 # temporary tools commit and workflow before dispatch; no product/core build.
 name: Build isolated PresentMon V30 startup buffers
 on:
+  workflow_call:
+    inputs:
+      tools_ref:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       tools_ref:
