@@ -66,8 +66,9 @@ if not args.inspect_existing:
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0044-native-ass-ui-lifecycle.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0045-native-ass-fixed-budget-recovery.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch'))
+    git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch'))
     git('am','--3way',str(here/'mpv-9100-omniphony-parity.patch'))
-assert git('rev-list','--count','HEAD').strip()=='58'
+assert git('rev-list','--count','HEAD').strip()=='59'
 assert 'Add current Omniphony renderer and ASIO' in git('log','-1','--format=%s')
 assert not git('status','--porcelain').strip()
 text=(source/'filters/f_swresample.c').read_text(encoding='utf-8')
@@ -86,6 +87,8 @@ assert 'frame->ideal_frame_vsync' in (source/'video/out/vo.c').read_text(encodin
 assert 'native-ass-phase-hold' in (source/'video/out/vo.c').read_text(encoding='utf-8')
 assert 'MPV_NATIVE_SPANS' in (source/'video/out/vo.c').read_text(encoding='utf-8')
 assert 'MPV_NATIVE_FIXED_FORECAST' in (source/'video/out/vo.c').read_text(encoding='utf-8')
+assert 'bool uncaptured_fixed_fresh' in (source/'video/out/vo.c').read_text(encoding='utf-8')
+assert 'bool fresh_clock_retry' in (source/'video/out/vo.c').read_text(encoding='utf-8')
 assert 'secondary_ass_present_plan_make_fixed_forecast' in (source/'video/out/secondary_ass_present_plan.h').read_text(encoding='utf-8')
 assert 'osd_render_timed' in (source/'sub/osd.c').read_text(encoding='utf-8')
 assert 'MP_ASS_PACING_SPAN' in (source/'common/ass_pacing_record.h').read_text(encoding='utf-8')

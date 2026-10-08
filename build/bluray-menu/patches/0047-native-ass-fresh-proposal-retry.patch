@@ -1,0 +1,68 @@
+From e4ab57c7223bcb6708811c5ec804b317122b3312 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 8 Oct 2026 10:06:03 +0800
+Subject: [PATCH] Preserve fresh ASS progress after rejected uncaptured
+ proposals
+
+---
+ video/out/vo.c | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 905305e..fb54a57 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -2440,11 +2440,26 @@ static bool render_frame(struct vo *vo)
+                         : secondary_ass_present_plan_fresh(
+                             &in->secondary_physical, physical_ready, native_point));
+                 }
++                bool uncaptured_fixed_fresh = in->secondary_fixed_forecast &&
++                    !frame->repeat && !early_plan.valid &&
++                    !in->secondary_queue_stage && secondary_affordable &&
++                    secondary_forecast_enabled(vo, frame->display_synced,
++                                               sample_divisor) &&
++                    present_plan.display_forecast && !present_plan.fresh_clock_only &&
++                    present_plan.epoch == in->secondary_physical.epoch &&
++                    present_plan.generation == in->secondary_physical.success_generation &&
++                    present_plan.base.slot == native_point.slot &&
++                    present_plan.base.wall == native_point.wall &&
++                    present_plan.submit > 0 && present_plan.fallback_submit > 0 &&
++                    present_plan.deadline > 0 &&
++                    present_plan.deadline == present_plan.target.wall;
++                bool fresh_clock_retry = false;
+                 if (present_plan.display_forecast && present_plan.valid &&
+                     !present_plan.fresh_clock_only &&
+                     present_plan.base.wall < original_video_target) {
+                     secondary_trace_plan_missed(vo, "before_video_due", "before-draw",
+                                                 &present_plan);
++                    fresh_clock_retry = uncaptured_fixed_fresh;
+                     present_plan.valid = false;
+                 }
+                 if (in->secondary_fixed_forecast && present_plan.target.slot > 0 &&
+@@ -2455,8 +2470,23 @@ static bool render_frame(struct vo *vo)
+                     secondary_trace_plan_missed(vo, present_plan.valid
+                         ? "fixed_display_deadline_expired" : "fixed_fifo_after_target",
+                         "before-draw", &present_plan);
++                    fresh_clock_retry = uncaptured_fixed_fresh;
+                     present_plan.valid = false;
+                 }
++                if (fresh_clock_retry) {
++                    // The rejected proposal and its original G/D remain a MISS.
++                    // Only this uncaptured mandatory draw may select a new task;
++                    // captured early/cache plans and ordinary valid plans stay put.
++                    int64_t retry_now = mp_time_ns();
++                    if (retry_now > 0 && in->secondary_render_cost >= 0 &&
++                        retry_now <= INT64_MAX - in->secondary_render_cost) {
++                        int64_t retry_ready = MPMAX(present_ready,
++                            retry_now + in->secondary_render_cost);
++                        present_plan = secondary_forecast_fresh_clock_plan(vo,
++                            retry_ready, original_video_target, native_point,
++                            sample_divisor, native_rate);
++                    }
++                }
+             }
+             struct secondary_ass_physical_point candidate =
+                 planned_audio ? present_plan.target :
+-- 
+2.54.0.windows.1
+
