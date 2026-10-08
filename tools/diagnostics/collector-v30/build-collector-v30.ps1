@@ -67,7 +67,7 @@ foreach ($collectorUnit in $collectorPresentData + $collectorConsole + @('Hash.c
     $collectorObject = Join-Path $collectorObjects ($collectorCategory + '-' + [IO.Path]::GetFileNameWithoutExtension($collectorUnit) + '.obj')
     $collectorFlags = $collectorCommonFlags + @('/Fo' + $collectorObject)
     if ($collectorCategory -ne 'Hash') { $collectorFlags += $collectorWinFlags }
-    if ($collectorCategory -eq 'PresentMon') { $collectorFlags += @('/std:c++17', '/D_CONSOLE', '/I' + $collectorObjects) }
+    if ($collectorCategory -eq 'PresentMon') { $collectorFlags += @('/std:c++17', '/D_CONSOLE', ('/I' + $collectorObjects)) }
     else { $collectorFlags += @('/std:c++latest') }
     if ($collectorCategory -eq 'PresentData') { $collectorFlags += @('/D_LIB', '/sdl') }
     $collectorFlags += @($collectorFile)
@@ -78,7 +78,7 @@ foreach ($collectorUnit in $collectorPresentData + $collectorConsole + @('Hash.c
 }
 $collectorLibraries = @('advapi32.lib', 'shell32.lib', 'tdh.lib', 'user32.lib')
 $collectorExe = Join-Path $collectorOutput 'PresentMon-2.3.1-v30-buffers-x64.exe'
-Invoke-CollectorNative 'link.exe' (@('/nologo', '/MACHINE:X64', '/SUBSYSTEM:CONSOLE', '/OPT:REF', '/OPT:ICF', '/OUT:' + $collectorExe) + $collectorObjectFiles + $collectorLibraries) 'link-console.log'
+Invoke-CollectorNative 'link.exe' (@('/nologo', '/MACHINE:X64', '/SUBSYSTEM:CONSOLE', '/OPT:REF', '/OPT:ICF', ('/OUT:' + $collectorExe)) + $collectorObjectFiles + $collectorLibraries) 'link-console.log'
 
 # Execute property construction from the actual official source, with its first
 # StartTraceW symbol replaced in this separate probe translation unit only.
@@ -89,13 +89,13 @@ $collectorProbeSupport = $collectorObjectFiles | Where-Object {
 $collectorProbeSupport += Join-Path $collectorObjects 'Hash-Hash.obj'
 foreach ($collectorProbeVariant in @('baseline', 'patched')) {
     $collectorProbeObject = Join-Path $collectorObjects ('probe-' + $collectorProbeVariant + '.obj')
-    $collectorProbeFlags = $collectorCommonFlags + $collectorWinFlags + @('/std:c++latest', '/I' + (Join-Path $collectorSource 'PresentData'),
-        '/I' + $collectorObjects, '/Fo' + $collectorProbeObject)
+    $collectorProbeFlags = $collectorCommonFlags + $collectorWinFlags + @('/std:c++latest', ('/I' + (Join-Path $collectorSource 'PresentData')),
+        ('/I' + $collectorObjects), ('/Fo' + $collectorProbeObject))
     if ($collectorProbeVariant -eq 'baseline') { $collectorProbeFlags += @('/DPM_PROBE_BASELINE') }
     $collectorProbeFlags += Join-Path $PSScriptRoot 'verify-start-props.cpp'
     Invoke-CollectorNative 'cl.exe' $collectorProbeFlags ('compile-probe-' + $collectorProbeVariant + '.log')
     $collectorProbeExe = Join-Path $collectorOutput ('verify-start-props-' + $collectorProbeVariant + '.exe')
-    Invoke-CollectorNative 'link.exe' (@('/nologo', '/MACHINE:X64', '/SUBSYSTEM:CONSOLE', '/OPT:REF', '/OPT:ICF', '/OUT:' + $collectorProbeExe,
+    Invoke-CollectorNative 'link.exe' (@('/nologo', '/MACHINE:X64', '/SUBSYSTEM:CONSOLE', '/OPT:REF', '/OPT:ICF', ('/OUT:' + $collectorProbeExe),
         $collectorProbeObject) + $collectorProbeSupport + $collectorLibraries) ('link-probe-' + $collectorProbeVariant + '.log')
     Invoke-CollectorNative $collectorProbeExe @() ('props-' + $collectorProbeVariant + '.json')
 }
