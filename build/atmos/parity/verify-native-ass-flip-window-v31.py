@@ -83,7 +83,7 @@ static unsigned logs,checks,failures,model_rates;
 static uint64_t model_ticks;
 #define CHECK(c) do { checks++; if(!(c)) {failures++;fprintf(stderr,"FAIL %d: %s\n",__LINE__,#c);} } while(0)
 bool mp_ass_pacing_enabled(struct mpv_global *g) {(void)g;return true;}
-void mp_ass_pacing_record(struct mpv_global *g,enum mp_ass_pacing_kind k,const struct mp_ass_pacing_record *r) {
+void mp_ass_pacing_record(struct mpv_global *g,uint32_t k,const struct mp_ass_pacing_record *r) {
     (void)g;CHECK(k==MP_ASS_PACING_SPAN);logs++;last_record=*r;
 }
 '''
