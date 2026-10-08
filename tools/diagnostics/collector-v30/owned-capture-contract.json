@@ -1,0 +1,25 @@
+{
+  "status": "STATIC_HANDOFF_ONLY_NOT_A_CAPTURE_ENTRY",
+  "new_binary": "PresentMon-2.3.1-v30-buffers-x64.exe",
+  "binary_sha256": "PENDING_ACTUAL_COMPILED_ARTIFACT_PROOF",
+  "target": "one new root OwnedJob player PID; never any already-running user process",
+  "session": "YaozhiV30UI- plus one fresh UUID4 hex token; collision must fail without STOP/reuse",
+  "arguments": [
+    "<new independently pinned binary>", "--process_id", "<new OwnedJob player PID>",
+    "--output_file", "<new bounded task runtime>/presents.csv",
+    "--no_console_stats", "--no_track_input", "--qpc_time_ms",
+    "--session_name", "YaozhiV30UI-<new UUID4 hex token>",
+    "--terminate_on_proc_exit", "--timed", "32", "--terminate_after_timed"
+  ],
+  "capture_seconds": 32,
+  "collector_flush_seconds": 2,
+  "existing_parent_OwnedJob_absolute_bound_seconds": 45,
+  "changed_capture_options": ["binary path and its exact SHA", "new UUID session prefix"],
+  "preserve": ["BufferSize=0", "QPC clock", "official providers and filtering", "GPU Ready extraction", "CSV schema", "all original loss vetoes", "all MISS/UNKNOWN", "frame pacing and phase thresholds"],
+  "forbid": ["stop_existing_session", "terminate_existing_session", "restart_as_admin", "ControlTrace UPDATE", "capture of other PID", "exclude_dropped", "no_track_display", "no_track_gpu", "product installation", "formal release", "PR"],
+  "root_must_verify_before_capture": ["actual compiled console SHA and source/build receipt", "actual CLI help/banner and unsupported version behavior", "actual no-ETW ABI/StartTrace props probes", "new OwnedJob PID/UUID exact association", "root collector lifecycle/query helper new pinned executable identity"],
+  "live_query_requirement": "QUERY only the owned UUID/handle. Record effective startup counts/number of buffers/log mode/clock and all EventsLost, LogBuffersLost, RealTimeBuffersLost at startup and exit. No UPDATE or old-session reuse.",
+  "measurement_valid": false,
+  "Display_acceptance": false,
+  "player_delivery_allowed": false
+}

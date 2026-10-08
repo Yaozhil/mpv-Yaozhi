@@ -1,0 +1,122 @@
+{
+  "official_repository": "https://github.com/GameTechDev/PresentMon",
+  "tag": "v2.3.1",
+  "full_commit": "717c5bf14e80a4a06b70cd16415ae8d40a7ce201",
+  "commit_verification": "official release downloaded HTML links to full commit; runner also verifies git tag^{commit}",
+  "source_url_base": "https://raw.githubusercontent.com/GameTechDev/PresentMon/717c5bf14e80a4a06b70cd16415ae8d40a7ce201/",
+  "official_downloads": {
+    "BUILDING.md": {
+      "bytes": 5278,
+      "sha256": "0a4d22a876c317b8a239f0e10baeaf6ba4ef1bf938137c67373459bcd7edf9ae"
+    },
+    "IntelPresentMon/Common.props": {
+      "bytes": 821,
+      "sha256": "bc557050cddddd8d02ce0119e96d4d752ac7ea0f773b54945f28764068ee08d0"
+    },
+    "IntelPresentMon/CommonUtilities/CommonUtilities.vcxproj": {
+      "bytes": 14982,
+      "sha256": "971faef59ab155f53f0a43bda0d2f1426352197597c2fe4ea3d3467c8a40d2b6"
+    },
+    "IntelPresentMon/CommonUtilities/Hash.cpp": {
+      "bytes": 1145,
+      "sha256": "c2459eb5c151b676d9e0b6c83da10253e3dcd832b0028f905abe4d866a63495b"
+    },
+    "IntelPresentMon/CommonUtilities/Hash.h": {
+      "bytes": 609,
+      "sha256": "5fe29b3b139c583042cd55f06fcbb067a3ec6e3ef14e59039cb8738e5ea64cf0"
+    },
+    "IntelPresentMon/CommonUtilities/win/WinAPI.h": {
+      "bytes": 216,
+      "sha256": "f72b662bac74d4e0843d2fcaeb974ed30702c3cf3b412baabfa35a16bbdfbb0a"
+    },
+    "IntelPresentMon/RuntimeControl.props": {
+      "bytes": 1404,
+      "sha256": "4555bd1ad3b06b7fe68ea644a8e6ff040da50c14b80580d0edd3eb9abbe9f6c5"
+    },
+    "PresentData/Debug.hpp": {
+      "bytes": 2157,
+      "sha256": "91adaeb9a25f8d401b752967c930010c784b3e9097b3288b859cfad318626e50"
+    },
+    "PresentData/GpuTrace.cpp": {
+      "bytes": 22682,
+      "sha256": "674ad26437549fc63b2c74129c1ec78c3ed7df2b11568d48aa60b815aaf18bd1"
+    },
+    "PresentData/PresentData.vcxproj": {
+      "bytes": 19941,
+      "sha256": "698d5fc821a1c13d9f21dd8a6ade0b23e386590abf1e0dc3f53b2aff2a60dbe7"
+    },
+    "PresentData/PresentMonTraceConsumer.cpp": {
+      "bytes": 133152,
+      "sha256": "aa26b8d4d5b8a2b04a2dbf68ee89356b243163eb4faf7e6902cfe971c3bb4d6a"
+    },
+    "PresentData/PresentMonTraceConsumer.hpp": {
+      "bytes": 31059,
+      "sha256": "696e687f5ac6221589e3e8194b0f97557ecc5986d0b0845f83c4011bf2b5cbc4"
+    },
+    "PresentData/PresentMonTraceSession.hpp": {
+      "bytes": 2403,
+      "sha256": "bb7fbfcf1d05352a901f27036b1aa42501ae7b4aa830574567f143e55a5ce905"
+    },
+    "PresentData/TraceConsumer.cpp": {
+      "bytes": 11758,
+      "sha256": "393277bf7f9ba51504f96ea66cc4e82ac9d5f00cdaecc96b8fad0bf7247ac4e9"
+    },
+    "PresentMon.props": {
+      "bytes": 1491,
+      "sha256": "4c58753e8ae82515d893f773cac1267fc0beac86fd677555e18dca5be55804d3"
+    },
+    "PresentMon/CommandLine.cpp": {
+      "bytes": 26200,
+      "sha256": "c5ebc70d57a82040dbfb3506f25940d11bba0e80ba9e4e24f011aacfaa44e887"
+    },
+    "PresentMon/ConsoleApplication.sln": {
+      "bytes": 3646,
+      "sha256": "60d265b2185b0a41b2eac7b693082dbb1a09628435398877c8be56ea75cad6bc"
+    },
+    "PresentMon/MainThread.cpp": {
+      "bytes": 14883,
+      "sha256": "506e06fe91f9f0e1bcd7a60ec5d2aa40a238535979b62cb457e532a4d3dbfb46"
+    },
+    "PresentMon/PresentMon.hpp": {
+      "bytes": 8244,
+      "sha256": "b59e381ac1c1500fd392344c9f94d458a60b22f5dabce8cb5986f15352b4fb75"
+    },
+    "PresentMon/PresentMon.vcxproj": {
+      "bytes": 8265,
+      "sha256": "3018cb309498d7d31fe2724fd65a093e35fd64cb8150e16104a9523499555f2c"
+    },
+    "PresentData/PresentMonTraceSession.cpp": {
+      "bytes": 38609,
+      "sha256": "e4dfe92174d0ee5d2f3bef139722f0c1a92d19e3f2060658aee1f66fa1fb7c06"
+    },
+    "README-ConsoleApplication.md": {
+      "bytes": 12506,
+      "sha256": "faeacfe63d0fd87c75dab3367146e9a4b89d66da58ae8f25f4d362d55b091286"
+    },
+    "README.md": {
+      "bytes": 7001,
+      "sha256": "be63d86941169b48555f18ce5c0cb53aedfebeef632b70aa5888a6007ba7095d"
+    },
+    "release-v2.3.1.html": {
+      "bytes": 201399,
+      "sha256": "e9ccae89a76f4c3e2891db8f9024d9acb6bcfc9cea098ae216006aaa7fd670f8"
+    },
+    "Tools/generate_version_header.cmd": {
+      "bytes": 2149,
+      "sha256": "e8537b1f196bcf88d12f49a0322aa8d75be782de44176bbe821205d3a32267ea"
+    },
+    "vcpkg.json": {
+      "bytes": 395,
+      "sha256": "dd2cc713be83a8039d47767ffe09f1e8dbddb55e78f36805ba9b99152542438e"
+    },
+    "vcpkg.props": {
+      "bytes": 550,
+      "sha256": "75cd0a6a0b4cf5a89656599598d9143687c7ef80b9258628a890c240135b5ea5"
+    }
+  },
+  "api_ref_lookup": "FAILED_UNAUTHENTICATED_RATE_LIMIT; not used as commit proof",
+  "git_ls_remote_local": "CANCELLED_NO_OUTPUT; not used as commit proof",
+  "original_session_sha256": "e4dfe92174d0ee5d2f3bef139722f0c1a92d19e3f2060658aee1f66fa1fb7c06",
+  "patched_session_sha256": "27dc8edc8f9e34be52cc2f2298d22d84eb19e662ad11155a64826fdbb2ba2545",
+  "patch_sha256": "d82ee11f068957c419473083a861c4282d6ab0be8abee8d31bd2aafd4a756f8b"
+}

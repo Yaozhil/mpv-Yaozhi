@@ -1,0 +1,11 @@
+--- a/PresentData/PresentMonTraceSession.cpp
++++ b/PresentData/PresentMonTraceSession.cpp
+@@ -430,6 +430,8 @@
+         sessionProps.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+         sessionProps.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;      // We have a realtime consumer, not writing to a log file
+         sessionProps.LoggerNameOffset = offsetof(TraceProperties, mSessionName);  // Location of session name; will be written by StartTrace()
++        sessionProps.MinimumBuffers = 128;
++        sessionProps.MaximumBuffers = 512;
+ 
+         auto status = StartTraceW(&mSessionHandle, sessionName, &sessionProps);
+         if (status != ERROR_SUCCESS) {

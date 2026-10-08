@@ -1,0 +1,41 @@
+# Draft only. Root must place the reviewed diagnostic package in a separate
+# temporary tools commit and workflow before dispatch; no product/core build.
+name: Build isolated PresentMon V30 startup buffers
+on:
+  workflow_dispatch:
+    inputs:
+      tools_ref:
+        description: 'Full 40-character reviewed tools-only commit in Yaozhil/mpv-Yaozhi'
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  console:
+    if: github.repository == 'Yaozhil/mpv-Yaozhi'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tools_ref }}
+          path: collector-tools
+          persist-credentials: false
+      - name: Verify tools commit and build without ETW
+        shell: pwsh
+        env:
+          REVIEWED_TOOLS_REF: ${{ inputs.tools_ref }}
+        run: |
+          if ($env:REVIEWED_TOOLS_REF -notmatch '^[0-9a-f]{40}$') { throw 'Full reviewed tools SHA required' }
+          $actual = (& git -C collector-tools rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:REVIEWED_TOOLS_REF) { throw 'Tools checkout differs' }
+          $package = Join-Path $PWD 'collector-tools/tools/diagnostics/collector-v30'
+          $work = Join-Path $env:RUNNER_TEMP ('collector-v30-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT)
+          & (Join-Path $package 'build-collector-v30.ps1') -WorkRoot $work
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: presentmon-v30-start-buffers-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/collector-v30-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
+          if-no-files-found: error
+          retention-days: 14
