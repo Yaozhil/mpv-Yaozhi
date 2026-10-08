@@ -12,11 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       expected_main_tree:
-        description: Root-frozen exact V30 main Git tree (40 lowercase hex)
+        description: Root-frozen exact V31 main Git tree (40 lowercase hex)
         required: true
         type: string
       expected_atmos_tree:
-        description: Root-frozen exact V30 Atmos Git tree (40 lowercase hex)
+        description: Root-frozen exact V31 Atmos Git tree (40 lowercase hex)
         required: true
         type: string
 
@@ -42,8 +42,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 build/atmos/parity/test-native-ass-fast-preflight.py --self-test
-          python3 build/atmos/parity/test-native-ass-fast-preflight.py --validate-inputs \
+          python3 build/atmos/parity/test-native-ass-fast-preflight-v31.py --self-test
+          python3 build/atmos/parity/test-native-ass-fast-preflight-v31.py --validate-inputs \
             --expected-main-tree "$EXPECTED_MAIN_TREE" \
             --expected-atmos-tree "$EXPECTED_ATMOS_TREE"
       - name: Download and verify exact upstream archive
@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 build/atmos/parity/test-native-ass-fast-preflight.py \
+          python3 build/atmos/parity/test-native-ass-fast-preflight-v31.py \
             --source "$RUNNER_TEMP/native-ass-fast/replay/mpv-c318236b8882af860f16f936225430ad053a2179" \
             --archive "$RUNNER_TEMP/native-ass-fast/upstream.tar.gz" \
             --work "$RUNNER_TEMP/native-ass-fast/checks" \
@@ -101,5 +101,7 @@ jobs:
             ${{ runner.temp }}/native-ass-fast/checks/fresh-retry-atmos/**
             ${{ runner.temp }}/native-ass-fast/checks/v30-contracts-main/**
             ${{ runner.temp }}/native-ass-fast/checks/v30-contracts-atmos/**
+            ${{ runner.temp }}/native-ass-fast/checks/v31-contracts-main/**
+            ${{ runner.temp }}/native-ass-fast/checks/v31-contracts-atmos/**
           if-no-files-found: warn
           retention-days: 14

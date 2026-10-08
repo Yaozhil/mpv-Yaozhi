@@ -98,6 +98,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0045-native-ass-fixed-budget-rec
 shutil.copyfile(root/'build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch', packages/'mpv-9038-native-ass-fresh-clock-continuity.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch', packages/'mpv-9039-native-ass-fresh-proposal-retry.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch', packages/'mpv-9040-native-ass-cache-window-neutral-pose.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch', packages/'mpv-9041-native-ass-captured-submit-window.patch')
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.

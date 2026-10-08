@@ -1,0 +1,221 @@
+From fbf83ee92449379adbb948f675ea0576bf4a446d Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 8 Oct 2026 21:10:52 +0800
+Subject: [PATCH] vo: preserve captured display deadline for cache submission
+ window
+
+---
+ video/out/secondary_ass_flip_budget.h | 66 +++++++++++++++++++--------
+ video/out/vo.c                        | 65 +++++++++++++++++++++-----
+ 2 files changed, 100 insertions(+), 31 deletions(-)
+
+diff --git a/video/out/secondary_ass_flip_budget.h b/video/out/secondary_ass_flip_budget.h
+index bafa6dd..9e16182 100644
+--- a/video/out/secondary_ass_flip_budget.h
++++ b/video/out/secondary_ass_flip_budget.h
+@@ -71,52 +71,78 @@ static inline int64_t secondary_ass_flip_budget_post_cpu_cost(
+     return b->cost;
+ }
+ 
++enum secondary_ass_flip_window_outcome {
++    SECONDARY_ASS_FLIP_WINDOW_INVALID_INPUT,
++    SECONDARY_ASS_FLIP_WINDOW_BASELINE_REJECTED,
++    SECONDARY_ASS_FLIP_WINDOW_OVERFLOW,
++    SECONDARY_ASS_FLIP_WINDOW_TARGET_MISSED,
++    SECONDARY_ASS_FLIP_WINDOW_VIDEO_RESERVED,
++    SECONDARY_ASS_FLIP_WINDOW_ACCEPTED,
++};
++
+ struct secondary_ass_flip_window {
+     bool valid;
++    enum secondary_ass_flip_window_outcome outcome;
+     int64_t prepare, cpu_done, submit, post_cpu_done, reserved_end;
+ };
+ 
+-// Preserve the caller's baseline policy and immutable S/F. Charge R once
+-// from actual preparation, then charge Q after CPU submission. A late cache
+-// cannot gain permission by starting its accounting at the elapsed S.
++// Preserve the caller's baseline policy and immutable S/D/F. S is the preferred
++// submission window, while D is this captured task's original target boundary.
++// Charge R once from actual preparation and Q after CPU submission. A late wake
++// must still fit before D and reserve the unchanged video F, without selecting a
++// future target or starting its accounting at an elapsed S.
+ // This predicts a CPU/VO envelope, never GPU Ready or actual Display.
+ static inline struct secondary_ass_flip_window secondary_ass_flip_budget_window(
+     bool baseline_guard, int64_t now, int64_t original_prepare,
+-    int64_t earliest_redraw, int64_t captured_submit, int64_t video_deadline,
++    int64_t earliest_redraw, int64_t captured_submit, int64_t captured_deadline,
++    int64_t video_deadline,
+     int64_t redraw_cost, int64_t post_cpu_cost, int64_t fresh_cost,
+     int64_t margin)
+ {
+-    struct secondary_ass_flip_window none = {0};
+-    if (!baseline_guard || now <= 0 || original_prepare <= 0 ||
++    struct secondary_ass_flip_window window = {0};
++    if (now <= 0 || original_prepare <= 0 ||
+         earliest_redraw < 0 || captured_submit <= 0 ||
++        captured_deadline <= captured_submit ||
+         video_deadline <= captured_submit || redraw_cost < 0 ||
+         post_cpu_cost <= 0 || fresh_cost < 0 || margin < 0)
+-        return none;
++        return window;
++    if (!baseline_guard) {
++        window.outcome = SECONDARY_ASS_FLIP_WINDOW_BASELINE_REJECTED;
++        return window;
++    }
+     int64_t prepare = now > original_prepare ? now : original_prepare;
+     if (earliest_redraw > prepare)
+         prepare = earliest_redraw;
++    window.prepare = prepare;
++    window.outcome = SECONDARY_ASS_FLIP_WINDOW_OVERFLOW;
+     if (redraw_cost > INT64_MAX - prepare)
+-        return none;
++        return window;
+     int64_t cpu_done = prepare + redraw_cost;
+-    if (cpu_done > captured_submit)
+-        return none;
++    window.cpu_done = cpu_done;
+     int64_t submit = cpu_done > captured_submit ? cpu_done : captured_submit;
++    window.submit = submit;
+     if (post_cpu_cost > INT64_MAX - submit)
+-        return none;
++        return window;
+     int64_t post_cpu_done = submit + post_cpu_cost;
++    window.post_cpu_done = post_cpu_done;
++    if (post_cpu_done >= captured_deadline) {
++        window.outcome = SECONDARY_ASS_FLIP_WINDOW_TARGET_MISSED;
++        return window;
++    }
+     if (fresh_cost > INT64_MAX - post_cpu_done)
+-        return none;
++        return window;
+     int64_t reserved_end = post_cpu_done + fresh_cost;
+     if (margin > INT64_MAX - reserved_end)
+-        return none;
++        return window;
+     reserved_end += margin;
+-    if (reserved_end >= video_deadline)
+-        return none;
+-    return (struct secondary_ass_flip_window){
+-        .valid = true, .prepare = prepare, .cpu_done = cpu_done,
+-        .submit = submit, .post_cpu_done = post_cpu_done,
+-        .reserved_end = reserved_end,
+-    };
++    window.reserved_end = reserved_end;
++    if (reserved_end >= video_deadline) {
++        window.outcome = SECONDARY_ASS_FLIP_WINDOW_VIDEO_RESERVED;
++        return window;
++    }
++    window.valid = true;
++    window.outcome = SECONDARY_ASS_FLIP_WINDOW_ACCEPTED;
++    return window;
+ }
+ 
+ #endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index eb7a3a9..9ff933c 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -653,6 +653,33 @@ static void secondary_observe_flip_budget(struct vo *vo,
+         in->secondary_physical.success_generation);
+ }
+ 
++static void secondary_trace_flip_window(struct vo *vo, unsigned location,
++    uint64_t current_id,
++    bool baseline, int64_t now, int64_t prepare, int64_t earliest,
++    const struct secondary_ass_present_plan *plan, int64_t video_deadline,
++    int64_t redraw_cost, int64_t post_cpu_cost, int64_t fresh_cost,
++    int64_t margin, const struct secondary_ass_flip_window *window)
++{
++    if (!mp_ass_pacing_enabled(vo->global))
++        return;
++    // Scheduling decisions have no new draw scope. location 1 is the queued
++    // prepass; 2 is the outer retained-frame scheduler. All inputs below are
++    // the exact values used by the helper, including the immutable S/D/F.
++    // CPUdone and reserved_end are derivable from these inputs; neither the
++    // outcome nor post_cpu_done proves GPU Ready or actual Display.
++    struct mp_ass_pacing_record record = {
++        .event_ns = now, .vo_seq = vo->pacing_vo_seq,
++        .frame_id = current_id,
++        .epoch = plan->epoch, .generation = plan->generation,
++        .flags = (uint64_t)baseline | ((uint64_t)window->valid << 1),
++        .v = {350, location, now, prepare, redraw_cost, plan->submit,
++            post_cpu_cost, fresh_cost, video_deadline, plan->deadline,
++            earliest, baseline, margin, window->outcome,
++            window->submit, window->post_cpu_done},
++    };
++    mp_ass_pacing_record(vo->global, MP_ASS_PACING_SPAN, &record);
++}
++
+ static const struct secondary_ass_physical *secondary_planning_state(
+     struct vo *vo, bool display_synced, int64_t divisor,
+     struct secondary_ass_physical *storage)
+@@ -2274,17 +2301,25 @@ static bool render_frame(struct vo *vo)
+                     secondary_plan_enabled(vo, false, sample_divisor));
+                 if (post_cpu > 0) {
+                     // The original preparation guard already charged R+Q.
+-                    // At S only Q remains, while late preparation must still
+-                    // fit all of R before S and reserve the real queued F.
++                    // At nominal S only Q remains. Actual preparation still
++                    // charges all of R; late work must fit before the original
++                    // D while reserving the real queued F.
++                    bool baseline = prepare > 0 && grid_task.plan.valid &&
++                        fixed_prepare > 0;
++                    int64_t earliest = vo->previous_redraw_time +
++                        in->secondary_physical.interval;
+                     struct secondary_ass_flip_window window =
+-                        secondary_ass_flip_budget_window(prepare > 0 &&
+-                            grid_task.plan.valid && fixed_prepare > 0,
+-                            now, prepare,
+-                            vo->previous_redraw_time + in->secondary_physical.interval,
+-                            grid_task.plan.submit,
++                        secondary_ass_flip_budget_window(baseline, now, prepare,
++                            earliest, grid_task.plan.submit, grid_task.plan.deadline,
+                             in->frame_queued->pts - in->flip_queue_offset,
+                             in->secondary_redraw_cost, post_cpu,
+                             in->secondary_render_cost, MP_TIME_MS_TO_NS(1));
++                    secondary_trace_flip_window(vo, 1, in->current_frame->frame_id,
++                        baseline, now, prepare,
++                        earliest, &grid_task.plan,
++                        in->frame_queued->pts - in->flip_queue_offset,
++                        in->secondary_redraw_cost, post_cpu,
++                        in->secondary_render_cost, MP_TIME_MS_TO_NS(1), &window);
+                     prepare = window.valid ? window.prepare : 0;
+                 } else if (!grid_task.plan.valid || fixed_prepare <= 0 ||
+                     !secondary_ass_budget_before_deadline(
+@@ -3433,6 +3468,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+         int64_t secondary_probe = in->secondary_next_probe;
+         int64_t secondary_duration = in->current_frame && !in->current_frame->display_synced
+             ? in->current_frame->duration : 0;
++        uint64_t secondary_frame_id = in->current_frame ? in->current_frame->frame_id : 0;
+         bool secondary_ds = in->current_frame && in->current_frame->display_synced;
+         int64_t secondary_deadline = get_current_frame_end(vo) - in->flip_queue_offset;
+         if (held_stage.valid)
+@@ -3539,13 +3575,20 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                         // its preparation wake without charging CPU R twice.
+                         // An accepted queued image rechecks its actual F in
+                         // render_frame; no future video deadline is invented.
++                        bool baseline = headroom && fixed_cache_plan.valid;
++                        int64_t earliest = vo->previous_redraw_time +
++                            in->secondary_physical.interval;
+                         struct secondary_ass_flip_window window =
+-                            secondary_ass_flip_budget_window(headroom &&
+-                                fixed_cache_plan.valid, now, next,
+-                                vo->previous_redraw_time + in->secondary_physical.interval,
+-                                fixed_cache_plan.submit, secondary_deadline,
++                            secondary_ass_flip_budget_window(baseline, now, next,
++                                earliest, fixed_cache_plan.submit,
++                                fixed_cache_plan.deadline, secondary_deadline,
+                                 secondary_redraw_cost, post_cpu, secondary_cost,
+                                 MP_TIME_S_TO_NS(0.002));
++                        secondary_trace_flip_window(vo, 2, secondary_frame_id,
++                            baseline, now, next,
++                            earliest, &fixed_cache_plan, secondary_deadline,
++                            secondary_redraw_cost, post_cpu, secondary_cost,
++                            MP_TIME_S_TO_NS(0.002), &window);
+                         headroom = window.valid;
+                         if (headroom)
+                             next = window.prepare;
+-- 
+2.54.0.windows.1
+

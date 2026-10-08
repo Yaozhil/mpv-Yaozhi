@@ -1,5 +1,6 @@
 """Apply both patch layers to a fresh archive of the exact upstream base."""
 import argparse
+import hashlib
 import json
 import subprocess
 import tarfile
@@ -11,6 +12,10 @@ parser.add_argument('--work',type=Path,required=True)
 parser.add_argument('--inspect-existing',action='store_true')
 args=parser.parse_args()
 here=Path(__file__).resolve().parent
+lock=json.loads((here/'source-lock.json').read_bytes())
+candidate=lock['native_ass_candidate']
+assert candidate['version']=='V31' and len(candidate['source_sha256'])==7
+assert hashlib.sha256((here.parents[2]/candidate['incremental_patch']).read_bytes()).hexdigest()==candidate['incremental_patch_sha256']
 args.work.mkdir(parents=True,exist_ok=True)
 source=args.work/'mpv-c318236b8882af860f16f936225430ad053a2179'
 if not args.inspect_existing:
@@ -68,10 +73,14 @@ if not args.inspect_existing:
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch'))
     git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch'))
+    git('am','--3way',str(here.parents[2]/'build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch'))
     git('am','--3way',str(here/'mpv-9100-omniphony-parity.patch'))
-assert git('rev-list','--count','HEAD').strip()=='60'
+assert git('rev-list','--count','HEAD').strip()=='61'
+assert git('rev-list','--count','HEAD^').strip()=='60'
 assert 'Add current Omniphony renderer and ASIO' in git('log','-1','--format=%s')
 assert not git('status','--porcelain').strip()
+actual_source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in candidate['source_sha256']}
+assert actual_source_sha256==candidate['source_sha256'], 'Exact actual V31 seven-source identity differs'
 text=(source/'filters/f_swresample.c').read_text(encoding='utf-8')
 assert 'native_equal_layout' in text
 assert 'mp_chmap_to_av_layout(&out_layout, &map_out)' in text
@@ -97,6 +106,7 @@ assert 'secondary_ass_present_plan_make_fixed_forecast' in (source/'video/out/se
 assert 'osd_render_timed' in (source/'sub/osd.c').read_text(encoding='utf-8')
 assert 'MP_ASS_PACING_SPAN' in (source/'common/ass_pacing_record.h').read_text(encoding='utf-8')
 result={'result':'PASS','scope':'fresh exact source + 17 main patches + squashed Native ASS timing/pacing evidence series, quiet-output physical sampling, HDMV video-ready, title/context, late-EL and menu audio queue, audio rate, ASS utilization/deadline fixes, continuous ASS clock and divided refresh scheduling, decoded Dolby Vision identification and common player branding + 29-patch renderer delta',
-        'source':str(source),'compiled':False}
+        'source':str(source),'compiled':False,'candidate_source_provenance':candidate,
+        'actual_source_sha256':actual_source_sha256,'pacing_acceptance':False}
 (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 print(json.dumps(result))

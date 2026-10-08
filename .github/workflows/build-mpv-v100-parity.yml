@@ -732,7 +732,7 @@ jobs:
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
           # Use actual declarations and consumer expressions, rather than
           # inferring a stand-in struct from the fields used by the consumer.
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-integration-v30.py" \
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-integration-v31.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --cc /usr/bin/cc \
             --output "$GITHUB_WORKSPACE/native-ass-integration-${{ matrix.variant }}.json" \

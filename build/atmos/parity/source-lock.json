@@ -62,8 +62,26 @@
     "build/bluray-menu/patches/0045-native-ass-fixed-budget-recovery.patch": "ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f",
     "build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch": "ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28",
     "build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2",
-    "build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c"
+    "build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c",
+    "build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
-  "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82"
+  "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
+  "native_ass_candidate": {
+    "version": "V31",
+    "source_commit": "fbf83ee92449379adbb948f675ea0576bf4a446d",
+    "source_tree": "7de20ec5a5d143e7edaebc517db11afe887a28f1",
+    "parent_commit": "fdde3e4649b4ddf84afaa6d84de30c83fc54f4b7",
+    "incremental_patch": "build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch",
+    "incremental_patch_sha256": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3",
+    "source_sha256": {
+      "video/out/vo.c": "4c715652691c8cb2a724594fe3be38a612eb91ace5be8c543e0c2144be43f52e",
+      "video/out/secondary_ass_flip_budget.h": "4d8fab468b0c70ed9f85fbbfbe78d5741a3680af9c2dad3d038203755e3e26a9",
+      "video/out/secondary_ass_neutral_pose.h": "35141cd6c42907f184fa5f45e4231c0c374ea9e569815a54d040195916c22458",
+      "sub/osd.c": "ec81f9cd456171ed0bbe5fc025bf3a4e8a3adf5d92db4ab00c85b78d6c9e63ff",
+      "sub/secondary_ass_clock.h": "bf343092600d8793bbab66d04ea83b30c3f793dc11e15fbdf7a08b2b232d70fe",
+      "video/out/secondary_ass_physical.h": "d2be57b22c03e0e82e3e0d70c6087b8c07da97a0c4be43eb64c9eee70e9b05db",
+      "video/out/secondary_ass_present_plan.h": "3e70702f03bcc899ee21653b82b237b952fdbbd95fb8bc24b5b433d043e2a69d"
+    }
+  }
 }
