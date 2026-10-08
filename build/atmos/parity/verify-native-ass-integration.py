@@ -274,8 +274,8 @@ static void caller_rate(int hz,int64_t N) {
  struct secondary_ass_present_plan plan=secondary_ass_present_plan_make_forecast(p,
   secondary_ass_physical_point_at(p,110));
  CALLER_CHECK(plan.valid);
- CALLER_CHECK(integration_actual_fresh_raw_guard(&vo,plan,plan.base.wall));
- CALLER_CHECK(!integration_actual_fresh_raw_guard(&vo,plan,plan.base.wall+1));
+ CALLER_CHECK(integration_actual_fresh_raw_guard(&vo,plan,plan.base.wall,false));
+ CALLER_CHECK(!integration_actual_fresh_raw_guard(&vo,plan,plan.base.wall+1,false));
  CALLER_CHECK(plan.valid && plan.base.slot==110 && plan.target.slot==111);
  CALLER_CHECK(secondary_set_presentation(&vo,plan.target,0,T,plan.submit,false,true,&plan));
  double pts=0;
@@ -797,9 +797,27 @@ def compile_gate(source, cc, read, include_osd_getter=True, output_translation=N
         raise ValueError("actual fresh G>=rawF guard absent")
     guard_end = balanced(render["masked"], render["masked"].index("{", fresh_guard.start()))
     piece = render["text"][fresh_guard.start():guard_end]
+    retry_context = ""
+    retry_observation = ""
+    if re.search(r"\bfresh_clock_retry\b", mask_c(piece)):
+        retry_declarations = list(re.finditer(r"\bbool\s+fresh_clock_retry\s*=[^;]+;",
+                                             render["masked"]))
+        if len(retry_declarations) != 1:
+            raise ValueError("actual fresh retry local declaration missing/duplicated")
+        retry_match = retry_declarations[0]
+        retry_decl = render["text"][retry_match.start():retry_match.end()]
+        retry_line = render["line"] + render["masked"].count("\n", 0, retry_match.start())
+        retry_context = f'#line {retry_line} "video/out/vo.c"\n{retry_decl}\n'
+        retry_observation = "\n(void)fresh_clock_retry;"
+        fragments.append({"file": "video/out/vo.c", "function": "render_frame",
+                          "context": "actual_fresh_retry_local_in_raw_guard_fragment",
+                          "line": retry_line, "sha256": hashlib.sha256(retry_decl.encode()).hexdigest(),
+                          "fixture_argument": "uncaptured_fixed_fresh=false in the two legacy raw-G guard callers",
+                          "not_executed_here": "Full uncaptured eligibility and retry planning; separate actual retry caller gate"})
     chunks.append("\nstatic bool integration_actual_fresh_raw_guard(struct vo *vo, "
-                  "struct secondary_ass_present_plan present_plan, int64_t original_video_target) {\n" +
-                  piece + "\nreturn present_plan.valid;\n}\n")
+                  "struct secondary_ass_present_plan present_plan, int64_t original_video_target, "
+                  "bool uncaptured_fixed_fresh) {\n(void)uncaptured_fixed_fresh;\n" +
+                  retry_context + piece + retry_observation + "\nreturn present_plan.valid;\n}\n")
     fragments.append({"file": "video/out/vo.c", "function": "render_frame",
                       "context": "fresh_G_at_or_after_original_video_target",
                       "sha256": hashlib.sha256(piece.encode()).hexdigest()})
