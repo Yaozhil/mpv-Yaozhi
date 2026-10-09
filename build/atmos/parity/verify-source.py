@@ -10,6 +10,7 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--archive',type=Path,required=True)
 parser.add_argument('--work',type=Path,required=True)
 parser.add_argument('--inspect-existing',action='store_true')
+parser.add_argument('--baseline-only',action='store_true',help='Replay frozen V31 for historical pacing tests only')
 args=parser.parse_args()
 here=Path(__file__).resolve().parent
 lock=json.loads((here/'source-lock.json').read_bytes())
@@ -109,4 +110,18 @@ result={'result':'PASS','scope':'fresh exact source + 17 main patches + squashed
         'source':str(source),'compiled':False,'candidate_source_provenance':candidate,
         'actual_source_sha256':actual_source_sha256,'pacing_acceptance':False}
 (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+if not args.baseline_only:
+    fix=lock['native_ass_pause_fix']
+    patch=here.parents[2]/fix['patch']
+    assert hashlib.sha256(patch.read_bytes()).hexdigest()==fix['patch_sha256']
+    git('am','--3way',str(patch))
+    assert git('diff','--name-only','HEAD^','HEAD').splitlines()==['sub/osd.c']
+    assert hashlib.sha256((source/'sub/osd.c').read_bytes()).hexdigest()==fix['after_osd_sha256']
+    result['pause_fix']=fix
+    result['actual_source_sha256']['sub/osd.c']=fix['after_osd_sha256']
+    result['baseline_only']=False
+    (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+else:
+    result['baseline_only']=True
+    (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 print(json.dumps(result))

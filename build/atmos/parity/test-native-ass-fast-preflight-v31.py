@@ -193,6 +193,7 @@ def lock_inputs():
         require(sha(HERE/name) == digest, 'Reviewed V31 provider/test changed: '+name)
         inputs[str((HERE/name).relative_to(CONFIG))] = digest
     inputs[str((HERE/'prepare-winbuild.py').relative_to(CONFIG))] = sha(HERE/'prepare-winbuild.py')
+    inputs[str((HERE/'verify-native-ass-paused-bitmap.py').relative_to(CONFIG))] = sha(HERE/'verify-native-ass-paused-bitmap.py')
     return inputs
 
 

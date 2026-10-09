@@ -1,0 +1,30 @@
+From 3cfff6d2e8253124e9e97bbb2d8d7bcc280d6708 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Fri, 9 Oct 2026 19:55:00 +0800
+Subject: [PATCH] osd: keep secondary ASS visible during paused UI redraws
+
+---
+ sub/osd.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/sub/osd.c b/sub/osd.c
+index 0854b24..806443e 100644
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -679,7 +679,12 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
+             };
+             mp_ass_pacing_record(osd->global, MP_ASS_PACING_SAMPLE, &scope);
+         }
+-        if ((!osd->secondary_sample_held || osd->secondary_sampler.valid) &&
++        // Pausing disables the refresh clock and clears its sampler. A UI
++        // repaint can still request the held pose; with refresh disabled use
++        // video_pts for static subtitle rendering instead of erasing the layer.
++        // While actively paced, missing sampler authority must remain a hold.
++        if ((!osd->secondary_sample_held || osd->secondary_sampler.valid ||
++             osd->secondary_rate <= 0) &&
+             obj->sub && sub_is_secondary_visible(obj->sub)) {
+             res = pacing ? sub_get_bitmaps_paced(obj->sub, obj->vo_res,
+                 format, video_pts, &scope) :
+-- 
+2.54.0.windows.1
+

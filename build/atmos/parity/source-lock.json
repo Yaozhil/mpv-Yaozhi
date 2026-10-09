@@ -63,7 +63,8 @@
     "build/bluray-menu/patches/0046-native-ass-fresh-clock-continuity.patch": "ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28",
     "build/bluray-menu/patches/0047-native-ass-fresh-proposal-retry.patch": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2",
     "build/bluray-menu/patches/0048-native-ass-cache-window-neutral-pose.patch": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c",
-    "build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3"
+    "build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3",
+    "build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -83,5 +84,15 @@
       "video/out/secondary_ass_physical.h": "d2be57b22c03e0e82e3e0d70c6087b8c07da97a0c4be43eb64c9eee70e9b05db",
       "video/out/secondary_ass_present_plan.h": "3e70702f03bcc899ee21653b82b237b952fdbbd95fb8bc24b5b433d043e2a69d"
     }
+  },
+  "native_ass_pause_fix": {
+    "source_commit": "3cfff6d2e8253124e9e97bbb2d8d7bcc280d6708",
+    "source_tree": "d71fd9ba762781a1fe474e0eb02bb307f4c113cf",
+    "parent_commit": "fbf83ee92449379adbb948f675ea0576bf4a446d",
+    "patch": "build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch",
+    "patch_sha256": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
+    "before_osd_sha256": "ec81f9cd456171ed0bbe5fc025bf3a4e8a3adf5d92db4ab00c85b78d6c9e63ff",
+    "after_osd_sha256": "a0129f7f7f5d80cc5bbeb726d517a8ef43a15979c3f8b71f8c51569a79ccf0cc",
+    "scope": "Paused bitmap gate only; no pacing acceptance"
   }
 }

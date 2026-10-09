@@ -730,6 +730,9 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-paused-bitmap.py" \
+            --source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-pause-${{ matrix.variant }}.json"
           # Use actual declarations and consumer expressions, rather than
           # inferring a stand-in struct from the fields used by the consumer.
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-integration-v31.py" \
