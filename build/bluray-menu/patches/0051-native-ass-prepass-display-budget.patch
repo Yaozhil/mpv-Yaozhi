@@ -1,0 +1,47 @@
+From cfc987e87511764c33982eafb18b4f5b7d953d60 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Sun, 11 Oct 2026 21:13:20 +0800
+Subject: [PATCH] vo: budget fixed ASS prepass against display deadline
+
+---
+ video/out/vo.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 9ff933c..b994099 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -2268,8 +2268,19 @@ static bool render_frame(struct vo *vo)
+                 vo, native_point, sample_divisor, MPMAX(now,
+                     vo->previous_redraw_time + in->secondary_physical.interval), native_rate);
+             prepass_candidate = sample;
++            struct secondary_ass_present_plan fixed_prepass_plan =
++                in->secondary_fixed_forecast
++                    ? secondary_cache_plan(vo, sample, sample_divisor, native_rate)
++                    : (struct secondary_ass_present_plan){0};
++            // G identifies the logical ASS task; D owns its fixed display
++            // deadline and preparation window. G may have elapsed while D
++            // remains reachable. Keep G in the task/sampler and use D only
++            // for this existing compute/submit budget, with raw video F intact.
++            int64_t budget_slot = in->secondary_fixed_forecast
++                ? (fixed_prepass_plan.valid ? fixed_prepass_plan.target.slot : 0)
++                : sample.slot;
+             prepare = secondary_ass_physical_cache_sample_prepare(
+-                (struct secondary_ass_physical *)prepass_state, now, sample.slot, sample_divisor,
++                (struct secondary_ass_physical *)prepass_state, now, budget_slot, sample_divisor,
+                 in->frame_queued->pts - in->flip_queue_offset, duration, interval,
+                 in->secondary_render_cost, in->secondary_redraw_cost,
+                 prepass_block_cost,
+@@ -2288,7 +2299,8 @@ static bool render_frame(struct vo *vo)
+                         prepass_state, sample.wall),
+                     .plan_enabled = secondary_plan_enabled(vo, false, sample_divisor),
+                     .plan = secondary_plan_enabled(vo, false, sample_divisor)
+-                        ? secondary_cache_plan(vo, sample, sample_divisor, native_rate)
++                        ? (in->secondary_fixed_forecast ? fixed_prepass_plan :
++                            secondary_cache_plan(vo, sample, sample_divisor, native_rate))
+                         : (struct secondary_ass_present_plan){0},
+                 };
+             secondary_capture_grid_plan(&grid_task);
+-- 
+2.54.0.windows.1
+

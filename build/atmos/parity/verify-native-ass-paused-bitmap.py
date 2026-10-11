@@ -53,20 +53,33 @@ def main():
     ap.add_argument('--cc',type=Path,required=True)
     ap.add_argument('--output',type=Path,required=True)
     ap.add_argument('--apply-to-baseline',action='store_true')
+    ap.add_argument('--after-prepass',action='store_true',
+                    help='Validate the unchanged pause layer below the exact locked prepass delta')
     a=ap.parse_args(); source=a.source.resolve()
     lock=json.loads((HERE/'source-lock.json').read_bytes()); fix=lock['native_ass_pause_fix']
     patch=CONFIG/fix['patch']
     assert sha(patch.read_bytes())==fix['patch_sha256']
     assert not git(source,'status','--porcelain').strip()
+    assert not (a.apply_to_baseline and a.after_prepass), 'Select one exact source stage'
     if a.apply_to_baseline:
         assert sha((source/'sub/osd.c').read_bytes())==fix['before_osd_sha256']
         git(source,'am','--3way',str(patch))
-    assert git(source,'diff','--name-only','HEAD^','HEAD').decode().splitlines()==['sub/osd.c']
-    before=git(source,'show','HEAD^:sub/osd.c'); after=(source/'sub/osd.c').read_bytes()
+    pause_ref='HEAD'
+    if a.after_prepass:
+        prepass=lock['native_ass_prepass_fix']
+        assert sha((CONFIG/prepass['patch']).read_bytes())==prepass['patch_sha256']
+        assert git(source,'diff','--name-only','HEAD^','HEAD').decode().splitlines()==['video/out/vo.c']
+        for name,digest in prepass['source_sha256'].items():
+            assert sha((source/name).read_bytes())==digest,name
+        for name,digest in prepass['before_source_sha256'].items():
+            assert sha(git(source,'show','HEAD^:'+name))==digest,name
+        pause_ref='HEAD^'
+    assert git(source,'diff','--name-only',pause_ref+'^',pause_ref).decode().splitlines()==['sub/osd.c']
+    before=git(source,'show',pause_ref+'^:sub/osd.c'); after=(source/'sub/osd.c').read_bytes()
     assert sha(before)==fix['before_osd_sha256'] and sha(after)==fix['after_osd_sha256']
     # Validate the unchanged clock, display forecast, budget and VO bytes too.
     for name,digest in lock['native_ass_candidate']['source_sha256'].items():
-        if name!='sub/osd.c': assert sha((source/name).read_bytes())==digest,name
+        if name!='sub/osd.c': assert sha(git(source,'show',pause_ref+':'+name))==digest,name
     assert '(mpv-Yaozhi)' in (source/'common/version.c').read_text()
     original=predicate(before.decode()); fixed=predicate(after.decode())
     cases={'candidate':fixed,'old_pause_failure':original,
@@ -96,6 +109,7 @@ def main():
         'source_commit':git(source,'rev-parse','HEAD').decode().strip(),
         'source_tree':git(source,'rev-parse','HEAD^{tree}').decode().strip(),
         'patch_sha256':fix['patch_sha256'],'actual_osd_sha256':sha(after),'cases':rows,
+        'validated_pause_ref':pause_ref,'after_prepass':a.after_prepass,
         'runtime_verified':False,'Display_accepted':False}
     out.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     print(json.dumps({k:report[k] for k in ('status','source_tree','actual_osd_sha256')}))

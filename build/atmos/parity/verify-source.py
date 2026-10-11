@@ -119,6 +119,18 @@ if not args.baseline_only:
     assert hashlib.sha256((source/'sub/osd.c').read_bytes()).hexdigest()==fix['after_osd_sha256']
     result['pause_fix']=fix
     result['actual_source_sha256']['sub/osd.c']=fix['after_osd_sha256']
+    prepass=lock['native_ass_prepass_fix']
+    assert result['actual_source_sha256']==prepass['before_source_sha256']
+    patch=here.parents[2]/prepass['patch']
+    assert hashlib.sha256(patch.read_bytes()).hexdigest()==prepass['patch_sha256']
+    git('am','--3way',str(patch))
+    assert git('diff','--name-only','HEAD^','HEAD').splitlines()==['video/out/vo.c']
+    actual_source_sha256={name:hashlib.sha256((source/name).read_bytes()).hexdigest()
+                          for name in prepass['source_sha256']}
+    assert actual_source_sha256==prepass['source_sha256']
+    assert not git('status','--porcelain').strip()
+    result['prepass_fix']=prepass
+    result['actual_source_sha256']=actual_source_sha256
     result['baseline_only']=False
     (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 else:
