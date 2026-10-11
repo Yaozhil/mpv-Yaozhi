@@ -195,6 +195,16 @@ def lock_inputs():
     inputs[str((HERE/'prepare-winbuild.py').relative_to(CONFIG))] = sha(HERE/'prepare-winbuild.py')
     inputs[str((HERE/'verify-native-ass-paused-bitmap.py').relative_to(CONFIG))] = sha(HERE/'verify-native-ass-paused-bitmap.py')
     inputs[str((HERE/'verify-native-ass-prepass-display-budget.py').relative_to(CONFIG))] = sha(HERE/'verify-native-ass-prepass-display-budget.py')
+    observer=lock['native_ass_observer_recovery_fix']
+    require(observer['parent_commit']==lock['native_ass_prepass_fix']['source_commit'], 'Observer parent differs')
+    require(observer['before_source_sha256']==lock['native_ass_prepass_fix']['source_sha256'], 'Observer input differs')
+    require(len([name for name in lock['common_patches'] if name.startswith('build/bluray-menu/patches/0052-')])==1, 'Exactly one observer patch is required')
+    for key in ('cpu_tool_sha256','cpu_fixture_sha256'):
+        for name,digest in observer[key].items():
+            path=(HERE/name).resolve()
+            require(path.is_relative_to(HERE) and re.fullmatch('[0-9a-f]{64}',digest), 'Invalid observer CPU input')
+            require(sha(path)==digest, 'Observer CPU tool/fixture differs: '+name)
+            inputs[str(path.relative_to(CONFIG))]=digest
     return inputs
 
 

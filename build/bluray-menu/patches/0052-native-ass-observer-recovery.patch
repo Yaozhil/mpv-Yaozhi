@@ -1,0 +1,150 @@
+From ce7350420bfb982d3d991cf38d6596304b14bab5 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Mon, 12 Oct 2026 01:33:53 +0800
+Subject: [PATCH] vo: recover displaced ASS physical observations from checked
+ relative pairs
+
+---
+ test/secondary_ass_physical.c      | 46 ++++++++++++++++++++++++++----
+ video/out/secondary_ass_physical.h | 46 +++++++++++++++++++++++++++++-
+ 2 files changed, 86 insertions(+), 6 deletions(-)
+
+diff --git a/test/secondary_ass_physical.c b/test/secondary_ass_physical.c
+index a7491e1..c96ab05 100644
+--- a/test/secondary_ass_physical.c
++++ b/test/secondary_ass_physical.c
+@@ -275,13 +275,20 @@ static void test_cleared_phase_bootstrap(int64_t interval)
+     assert_false(bad(&p, 2, 102));
+     assert_false(bad(&p, 3, 103));
+     assert_int_equal(p.phase, 0);
+-    update(&p, 4, 103, 103, 11);
+-    update(&p, 5, 104, 104, 11);
+     assert_false(p.outlier_pending);
+     assert_int_equal(p.phase, 0); // Recovery itself remains history-isolated.
+-    update(&p, 6, 105, 105, 11);
+-    assert_int_equal(p.phase, origin + 6 * interval);
+-    assert_int_equal(p.phase_slot, 106);
++    assert_int_equal(p.history_floor_slot, 103);
++    assert_int_equal(p.historical_id, 10);
++    learner_kept(&p);
++    // The two displaced observations already establish the new segment. Its
++    // next exact Sync/Present pair, rather than a return to the old lattice,
++    // supplies the wall-clock phase without learning from the gap submission.
++    int64_t actual = origin + 4 * interval - interval * 2 / 5;
++    secondary_ass_physical_update_observed(&p, false, 0,
++        (struct secondary_ass_physical_point){0}, actual, actual,
++        104, 104, 11, interval);
++    assert_int_equal(p.phase, actual);
++    assert_int_equal(p.phase_slot, 104);
+     assert_int_equal(p.epoch, 7);
+     learner_kept(&p);
+     assert_true(secondary_ass_physical_sample_available(&p,
+@@ -354,6 +361,34 @@ static void test_planned_base_and_clock_domains(int64_t interval)
+     assert_false(p.submitted[0].gap_excluded);
+ }
+ 
++static void test_displaced_segment_returns(int64_t interval)
++{
++    struct secondary_ass_physical p = make_state(interval);
++    secondary_ass_physical_submit_point(&p, 11, point(interval, 102));
++    assert_false(bad(&p, 2, 102));
++    assert_false(bad(&p, 3, 103));
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.phase, 0);
++    // Returning to the original QPC lattice is another discontinuity. It
++    // needs its own independent relative pair, not the former anchor or a
++    // fabricated phase. The original lost-count sequence remains explicit.
++    update(&p, 4, 103, 103, 11);
++    update(&p, 5, 104, 104, 11);
++    assert_true(p.outlier_pending);
++    assert_int_equal(p.phase, 0);
++    update(&p, 6, 105, 105, 11);
++    assert_false(p.outlier_pending);
++    assert_int_equal(p.phase, 0);
++    assert_int_equal(p.historical_id, 10);
++    assert_int_equal(p.history_floor_slot, 105);
++    learner_kept(&p);
++    update(&p, 7, 106, 106, 11);
++    assert_int_equal(p.phase, origin + 7 * interval);
++    assert_int_equal(p.phase_slot, 106);
++    assert_int_equal(p.epoch, 7);
++    learner_kept(&p);
++}
++
+ int main(void)
+ {
+     const int rates[] = {60, 120, 144, 165, 240, 360, 480};
+@@ -365,6 +400,7 @@ int main(void)
+         test_gap_history(interval);
+         test_cleared_phase_bootstrap(interval);
+         test_planned_base_and_clock_domains(interval);
++        test_displaced_segment_returns(interval);
+     }
+     return 0;
+ }
+diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
+index d944199..554ed50 100644
+--- a/video/out/secondary_ass_physical.h
++++ b/video/out/secondary_ass_physical.h
+@@ -166,6 +166,50 @@ static inline void secondary_ass_physical_recover(
+     secondary_ass_physical_measure_anchor(p, qpc_ns, count);
+ }
+ 
++// A displaced old QPC anchor must not prevent the existing count/time recovery
++// test from running. These two observations identify a new count segment only;
++// neither is historical Present feedback or a delay-learning sample. Preserve
++// the old submission coordinates and require the new segment to follow them.
++static inline bool secondary_ass_physical_recover_displaced(
++    struct secondary_ass_physical *p, int64_t qpc_ns, uint32_t count)
++{
++    if (!p->outlier_pending || p->epoch_exhausted || p->sync_slot <= 0 ||
++        !secondary_ass_physical_interval_valid(p->interval))
++        return false;
++    if (p->recovery_qpc_ns && qpc_ns <= p->recovery_qpc_ns)
++        return false;
++    if (p->recovery_qpc_ns && qpc_ns > p->recovery_qpc_ns) {
++        int64_t delta = qpc_ns - p->recovery_qpc_ns;
++        uint32_t passed = count - p->recovery_count;
++        if (passed && passed < UINT32_C(0x80000000) &&
++            delta <= INT64_MAX - p->interval / 2) {
++            int64_t steps = (delta + p->interval / 2) / p->interval;
++            if (steps > 0 && steps <= INT64_MAX / p->interval &&
++                (uint64_t)steps == passed &&
++                p->recovery_slot <= INT64_MAX - steps) {
++                int64_t residual = delta - steps * p->interval;
++                int64_t slot = p->recovery_slot + steps;
++                if (residual <= p->interval / 4 &&
++                    residual >= -p->interval / 4 &&
++                    slot > p->last_base_slot && slot > p->sync_slot) {
++                    secondary_ass_physical_recover(p, qpc_ns, count, slot);
++                    return true;
++                }
++            }
++        }
++    }
++    uint32_t forward = count - p->sync_count;
++    if (forward && forward < UINT32_C(0x80000000) &&
++        p->sync_slot <= INT64_MAX - (int64_t)forward) {
++        p->recovery_qpc_ns = qpc_ns;
++        p->recovery_count = count;
++        p->recovery_slot = p->sync_slot + (int64_t)forward;
++    } else {
++        secondary_ass_physical_clear_recovery(p);
++    }
++    return false;
++}
++
+ // Display-sync submits one frame per refresh. Pending Present IDs therefore
+ // locate the next queued scanout from identified display history; they are not
+ // an elapsed wall oscillator or a guess about independent audio redraws.
+@@ -236,9 +280,9 @@ static inline bool secondary_ass_physical_observe(
+                 another < UINT32_C(0x80000000))
+                 p->phase = p->phase_slot = 0;
+         }
+-        secondary_ass_physical_clear_recovery(p);
+         p->sync_segment_consistent = false;
+         p->measure_qpc_ns = 0;
++        secondary_ass_physical_recover_displaced(p, qpc_ns, count);
+         return false;
+     }
+     uint32_t passed = count - p->sync_count;

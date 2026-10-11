@@ -55,25 +55,35 @@ def main():
     ap.add_argument('--apply-to-baseline',action='store_true')
     ap.add_argument('--after-prepass',action='store_true',
                     help='Validate the unchanged pause layer below the exact locked prepass delta')
+    ap.add_argument('--after-observer-recovery',action='store_true',
+                    help='Validate pause below the exact prepass/observer layers')
     a=ap.parse_args(); source=a.source.resolve()
     lock=json.loads((HERE/'source-lock.json').read_bytes()); fix=lock['native_ass_pause_fix']
     patch=CONFIG/fix['patch']
     assert sha(patch.read_bytes())==fix['patch_sha256']
     assert not git(source,'status','--porcelain').strip()
-    assert not (a.apply_to_baseline and a.after_prepass), 'Select one exact source stage'
+    assert sum((a.apply_to_baseline,a.after_prepass,a.after_observer_recovery))<=1, 'Select one exact source stage'
     if a.apply_to_baseline:
         assert sha((source/'sub/osd.c').read_bytes())==fix['before_osd_sha256']
         git(source,'am','--3way',str(patch))
     pause_ref='HEAD'
-    if a.after_prepass:
+    prepass_ref='HEAD'
+    if a.after_observer_recovery:
+        import sys
+        sys.dont_write_bytecode=True
+        sys.path.insert(0,str(HERE))
+        from native_ass_observer_source import verify_observer_source
+        verify_observer_source(source)
+        prepass_ref='HEAD^'
+    if a.after_prepass or a.after_observer_recovery:
         prepass=lock['native_ass_prepass_fix']
         assert sha((CONFIG/prepass['patch']).read_bytes())==prepass['patch_sha256']
-        assert git(source,'diff','--name-only','HEAD^','HEAD').decode().splitlines()==['video/out/vo.c']
+        assert git(source,'diff','--name-only',prepass_ref+'^',prepass_ref).decode().splitlines()==['video/out/vo.c']
         for name,digest in prepass['source_sha256'].items():
-            assert sha((source/name).read_bytes())==digest,name
+            assert sha(git(source,'show',prepass_ref+':'+name))==digest,name
         for name,digest in prepass['before_source_sha256'].items():
-            assert sha(git(source,'show','HEAD^:'+name))==digest,name
-        pause_ref='HEAD^'
+            assert sha(git(source,'show',prepass_ref+'^:'+name))==digest,name
+        pause_ref=prepass_ref+'^'
     assert git(source,'diff','--name-only',pause_ref+'^',pause_ref).decode().splitlines()==['sub/osd.c']
     before=git(source,'show',pause_ref+'^:sub/osd.c'); after=(source/'sub/osd.c').read_bytes()
     assert sha(before)==fix['before_osd_sha256'] and sha(after)==fix['after_osd_sha256']
@@ -110,6 +120,7 @@ def main():
         'source_tree':git(source,'rev-parse','HEAD^{tree}').decode().strip(),
         'patch_sha256':fix['patch_sha256'],'actual_osd_sha256':sha(after),'cases':rows,
         'validated_pause_ref':pause_ref,'after_prepass':a.after_prepass,
+        'after_observer_recovery':a.after_observer_recovery,
         'runtime_verified':False,'Display_accepted':False}
     out.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     print(json.dumps({k:report[k] for k in ('status','source_tree','actual_osd_sha256')}))

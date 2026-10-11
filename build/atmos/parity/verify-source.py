@@ -131,6 +131,19 @@ if not args.baseline_only:
     assert not git('status','--porcelain').strip()
     result['prepass_fix']=prepass
     result['actual_source_sha256']=actual_source_sha256
+    observer=lock['native_ass_observer_recovery_fix']
+    assert actual_source_sha256==observer['before_source_sha256']
+    patch=here.parents[2]/observer['patch']
+    assert hashlib.sha256(patch.read_bytes()).hexdigest()==observer['patch_sha256']
+    git('am','--3way',str(patch))
+    import sys
+    sys.dont_write_bytecode=True
+    sys.path.insert(0,str(here))
+    from native_ass_observer_source import verify_observer_source
+    verify_observer_source(source)
+    result['observer_recovery_fix']=observer
+    result['actual_source_sha256']=observer['source_sha256']
+    result['actual_test_sha256']=observer['test_sha256']
     result['baseline_only']=False
     (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 else:

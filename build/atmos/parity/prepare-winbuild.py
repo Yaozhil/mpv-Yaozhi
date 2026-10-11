@@ -101,6 +101,7 @@ shutil.copyfile(root/'build/bluray-menu/patches/0048-native-ass-cache-window-neu
 shutil.copyfile(root/'build/bluray-menu/patches/0049-native-ass-captured-submit-window.patch', packages/'mpv-9041-native-ass-captured-submit-window.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch', packages/'mpv-9200-native-ass-paused-bitmap.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch', packages/'mpv-9201-native-ass-prepass-display-budget.patch')
+shutil.copyfile(root/'build/bluray-menu/patches/0052-native-ass-observer-recovery.patch', packages/'mpv-9202-native-ass-observer-recovery.patch')
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.

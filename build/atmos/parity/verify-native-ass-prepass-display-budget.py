@@ -116,7 +116,10 @@ def main():
     ap.add_argument('--output',type=Path,required=True)
     ap.add_argument('--apply-to-pause',action='store_true',
                     help='Apply the exact locked delta to an already verified pause source')
+    ap.add_argument('--after-observer-recovery',action='store_true',
+                    help='Validate prepass below the exact observer-only layer')
     a=ap.parse_args();source=a.source.resolve();out=a.output.resolve()
+    assert not (a.apply_to_pause and a.after_observer_recovery), 'Select one exact source stage'
     lock=json.loads((HERE/'source-lock.json').read_bytes())
     fix=lock['native_ass_prepass_fix'];patch=CONFIG/fix['patch']
     assert sha(patch.read_bytes())==fix['patch_sha256']
@@ -125,11 +128,19 @@ def main():
         for name,digest in fix['before_source_sha256'].items():
             assert sha((source/name).read_bytes())==digest,name
         git(source,'am','--3way',str(patch))
-    assert git(source,'diff','--name-only','HEAD^','HEAD').decode().splitlines()==['video/out/vo.c']
+    prepass_ref='HEAD'
+    if a.after_observer_recovery:
+        import sys
+        sys.dont_write_bytecode=True
+        sys.path.insert(0,str(HERE))
+        from native_ass_observer_source import verify_observer_source
+        verify_observer_source(source)
+        prepass_ref='HEAD^'
+    assert git(source,'diff','--name-only',prepass_ref+'^',prepass_ref).decode().splitlines()==['video/out/vo.c']
     for name,digest in fix['before_source_sha256'].items():
-        assert sha(git(source,'show','HEAD^:'+name))==digest,name
+        assert sha(git(source,'show',prepass_ref+'^:'+name))==digest,name
     for name,digest in fix['source_sha256'].items():
-        assert sha((source/name).read_bytes())==digest,name
+        assert sha(git(source,'show',prepass_ref+':'+name))==digest,name
     text=(source/'video/out/vo.c').read_text()
     matches=re.findall(r'int64_t budget_slot = (.*?);',text,re.S);assert len(matches)==1
     slot=matches[0]
@@ -158,6 +169,7 @@ def main():
             'source_commit':git(source,'rev-parse','HEAD').decode().strip(),
             'source_tree':git(source,'rev-parse','HEAD^{tree}').decode().strip(),
             'patch_sha256':fix['patch_sha256'],
+            'validated_prepass_ref':prepass_ref,'after_observer_recovery':a.after_observer_recovery,
             'source_sha256':sha((source/'video/out/vo.c').read_bytes()),'cases':rows,
             'runtime_verified':False,'Display_accepted':False,'deployed':False}
     assert not git(source,'status','--porcelain').strip()

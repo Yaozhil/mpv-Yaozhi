@@ -99,6 +99,22 @@ jobs:
               --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" --variant "$variant" \
               --cc "$(command -v gcc)" --quiet \
               --output "$RUNNER_TEMP/native-ass-fast/checks/prepass-$variant/integration.json"
+            python3 build/atmos/parity/verify-native-ass-observer-recovery.py \
+              --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" \
+              --apply-to-prepass --cc "$(command -v gcc)" \
+              --output "$RUNNER_TEMP/native-ass-fast/checks/observer-$variant/report.json"
+            python3 build/atmos/parity/verify-native-ass-prepass-display-budget.py \
+              --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" \
+              --after-observer-recovery --cc "$(command -v gcc)" \
+              --output "$RUNNER_TEMP/native-ass-fast/checks/observer-$variant/prepass-preserved.json"
+            python3 build/atmos/parity/verify-native-ass-paused-bitmap.py \
+              --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" \
+              --after-observer-recovery --cc "$(command -v gcc)" \
+              --output "$RUNNER_TEMP/native-ass-fast/checks/observer-$variant/pause-preserved.json"
+            python3 build/atmos/parity/verify-native-ass-integration-v31.py \
+              --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" --variant "$variant" \
+              --cc "$(command -v gcc)" --quiet \
+              --output "$RUNNER_TEMP/native-ass-fast/checks/observer-$variant/integration.json"
           done
       - name: Preserve bounded preflight evidence
         if: always()
@@ -108,6 +124,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-ass-fast/checks/pause-*/**
             ${{ runner.temp }}/native-ass-fast/checks/prepass-*/**
+            ${{ runner.temp }}/native-ass-fast/checks/observer-*/**
             ${{ runner.temp }}/native-ass-fast/replay.log
             ${{ runner.temp }}/native-ass-fast/replay/verification.json
             ${{ runner.temp }}/native-ass-fast/checks/fast-preflight.json
