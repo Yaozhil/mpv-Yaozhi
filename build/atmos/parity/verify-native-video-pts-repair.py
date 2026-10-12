@@ -132,7 +132,30 @@ def main():
             'fault_no_codec_guard':positive.replace('strcmp(p->codec->codec, "hevc") == 0','true'),
             'fault_no_varying_duration':positive.replace('!(mpi->pkt_duration > 0 &&\n          fabs(mpi->pkt_duration - duration) > quantum)','true')}
         assert len(set(functions.values()))==len(functions)
-        for case,body in {'real_header':(HERE/'video-pts-repair-contract.c').read_text(),**functions}.items():
+        # Execute the actual header and mutations of it, rather than a Python
+        # approximation. Old source/caller cases remain present and unchanged.
+        header=(source/'filters/video_pts_repair.h').read_text(encoding='utf-8')
+        safety=(HERE/'video-pts-repair-safety-contract.c').read_text(encoding='utf-8')
+        mutations={
+            'fault_safety_no_terminal_guard':header.replace('    if (s->blocked)\n        return raw;',''),
+            'fault_safety_clear_on_ineligible':header.replace(
+                '*s = (struct mp_video_pts_repair){.blocked = was_active};',
+                '*s = (struct mp_video_pts_repair){0};'),
+            'fault_safety_clear_on_metadata_change':header.replace(
+                's->blocked = was_active;', 's->blocked = false;'),
+            'fault_safety_no_failed_prefix_latch':header.replace(
+                's->blocked = active;', 's->blocked = false;'),
+            'fault_safety_block_usable_anchor':header.replace(
+                'if (active && raw > previous && raw >= next - quantum)\n        return raw;',
+                'if (active && raw > previous && raw >= next - quantum) {\n        s->blocked = true;\n        return raw;\n    }'),
+        }
+        assert len(set(mutations.values()))==len(mutations) and all(x!=header for x in mutations.values())
+        include='#include "filters/video_pts_repair.h"'
+        assert safety.count(include)==1
+        safety_cases={'safety_latch':safety, **{name:safety.replace(include,value)
+            for name,value in mutations.items()}}
+        result['safety_scope']='positive-part interval excess per explicit reset with uncut finite deltas; first negative release and large-gap player cutoff limitation retained'
+        for case,body in {'real_header':(HERE/'video-pts-repair-contract.c').read_text(),**functions,**safety_cases}.items():
             c=out.parent/(case+'.c');c.write_text(body,encoding='utf-8',newline='\n')
             for mode,flags in (('normal',[]),('NDEBUG',['-DNDEBUG'])):
                 exe=out.parent/(case+'-'+mode+('.exe' if sys.platform=='win32' else ''))
@@ -141,7 +164,8 @@ def main():
                 comp=subprocess.run(command,capture_output=True,text=True,timeout=60)
                 assert comp.returncode==0,(case,mode,comp.stderr)
                 run=subprocess.run([str(exe)],capture_output=True,text=True,timeout=30)
-                negative=case.startswith('fault_');assert run.returncode==(7 if negative else 0),(case,mode,run.stdout,run.stderr)
+                expected=9 if case.startswith('fault_safety_') else 7 if case.startswith('fault_') else 0
+                assert run.returncode==expected,(case,mode,run.stdout,run.stderr)
                 result['cases'].append(dict(case=case,mode=mode,command=command,compile_exit=comp.returncode,
                     exit=run.returncode,stdout=run.stdout,translation_sha256=sha(c.read_bytes()),executable_sha256=sha(exe.read_bytes())))
         verify_source(source)

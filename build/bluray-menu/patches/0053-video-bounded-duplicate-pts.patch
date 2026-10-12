@@ -1,15 +1,15 @@
-From 2b8dc4ca231dad756a050b08b13129b68827ab72 Mon Sep 17 00:00:00 2001
+From da77d6af4e064cd6178a663c7f530c995288dd50 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@localhost>
 Date: Mon, 12 Oct 2026 13:34:52 +0800
-Subject: [PATCH] video: bound repair of duplicate PTS with explicit container
- timing
+Subject: [PATCH] Repair explicit duplicate video PTS with a fail-closed prefix
+ latch
 
 ---
- demux/demux_mkv.c           |  3 +++
+ demux/demux_mkv.c           |  3 ++
  demux/stheader.h            |  2 ++
- filters/f_decoder_wrapper.c | 19 ++++++++++++++
- filters/video_pts_repair.h  | 52 +++++++++++++++++++++++++++++++++++++
- 4 files changed, 76 insertions(+)
+ filters/f_decoder_wrapper.c | 19 +++++++++++
+ filters/video_pts_repair.h  | 64 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 88 insertions(+)
  create mode 100644 filters/video_pts_repair.h
 
 diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
@@ -92,10 +92,10 @@ index b0f0461..305fa37 100644
  
 diff --git a/filters/video_pts_repair.h b/filters/video_pts_repair.h
 new file mode 100644
-index 0000000..959a20b
+index 0000000..dace093
 --- /dev/null
 +++ b/filters/video_pts_repair.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,64 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_VIDEO_PTS_REPAIR_H
 +#define MP_VIDEO_PTS_REPAIR_H
@@ -106,18 +106,24 @@ index 0000000..959a20b
 +// Only for already proven reordered/broken packet PTS with an explicit
 +// container frame duration. This is not a nominal-FPS clock or a VFR detector.
 +struct mp_video_pts_repair {
-+    bool valid, active;
++    bool valid, active, blocked;
 +    double raw, duration, quantum;
 +};
 +
 +static inline double mp_video_pts_repair_apply(struct mp_video_pts_repair *s,
 +    bool eligible, double raw, double previous, double duration, double quantum)
 +{
++    // An abnormal prefix release may introduce one original negative step.
++    // Fail closed afterwards: only the caller's explicit decoder reset can
++    // re-arm repair, not eligibility or container-metadata transitions.
++    if (s->blocked)
++        return raw;
++    bool was_active = s->active;
 +    bool metadata = eligible && isfinite(raw) && isfinite(previous) &&
 +        isfinite(duration) && duration > 0 && isfinite(quantum) && quantum > 0 &&
 +        quantum <= duration / 4;
 +    if (!metadata) {
-+        *s = (struct mp_video_pts_repair){0};
++        *s = (struct mp_video_pts_repair){.blocked = was_active};
 +        return raw;
 +    }
 +    bool current = s->valid && s->duration == duration && s->quantum == quantum;
@@ -126,23 +132,29 @@ index 0000000..959a20b
 +    *s = (struct mp_video_pts_repair){
 +        .valid = true, .raw = raw, .duration = duration, .quantum = quantum,
 +    };
-+    if (!current || raw < last_raw)
++    if (!current || raw < last_raw) {
++        s->blocked = was_active;
 +        return raw;
++    }
 +    double next = previous + duration;
-+    if (!isfinite(next) || next <= previous)
++    if (!isfinite(next) || next <= previous) {
++        s->blocked = active;
 +        return raw;
++    }
 +    // Preserve the next usable original anchor, including one source timebase
-+    // quantum of container rounding. Never smooth valid positive VFR intervals.
++    // quantum of container rounding. Successful prefixes may be repaired again.
 +    if (active && raw > previous && raw >= next - quantum)
 +        return raw;
 +    if (!active && !(raw == last_raw && raw == previous))
 +        return raw;
 +    // A correction is at most one declared frame plus its encoded rounding.
-+    // Repeated duplicate runs, backwards timestamps and seeks cannot create
-+    // an unbounded synthetic timeline. No images are dropped or duplicated.
++    // No images are dropped or duplicated. A failed prefix cannot repeatedly
++    // restart and accumulate additional positive frame intervals.
 +    double correction = next - raw;
-+    if (!(correction > 0 && correction <= duration + quantum))
++    if (!(correction > 0 && correction <= duration + quantum)) {
++        s->blocked = active;
 +        return raw;
++    }
 +    s->active = true;
 +    return next;
 +}
