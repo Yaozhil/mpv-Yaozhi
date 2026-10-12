@@ -1,0 +1,157 @@
+From bf7d63b66dde11132f313db8a2f442c4d919a78f Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Mon, 12 Oct 2026 13:34:52 +0800
+Subject: [PATCH] video: bound repair of duplicate PTS with explicit container
+ timing
+
+---
+ demux/demux_mkv.c           |  3 +++
+ demux/stheader.h            |  2 ++
+ filters/f_decoder_wrapper.c | 19 ++++++++++++++
+ filters/video_pts_repair.h  | 52 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 76 insertions(+)
+ create mode 100644 filters/video_pts_repair.h
+
+diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
+index 63ecd81..3686a76 100644
+--- a/demux/demux_mkv.c
++++ b/demux/demux_mkv.c
+@@ -1653,6 +1653,7 @@ static void avcodec_par_destructor(void *p)
+ 
+ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx)
+ {
++    mkv_demuxer_t *mkv_d = demuxer->priv;
+     unsigned char *extradata = NULL;
+     unsigned int extradata_size = 0;
+     struct sh_stream *sh = demux_alloc_sh_stream(STREAM_VIDEO);
+@@ -1756,6 +1757,8 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx)
+                 track->codec_id, track->tnum);
+     }
+     sh_v->fps = track->v_frate;
++    sh_v->video_default_duration = track->default_duration;
++    sh_v->video_timestamp_quantum = mkv_d->tc_scale / 1e9;
+     sh_v->disp_w = track->v_width;
+     sh_v->disp_h = track->v_height;
+ 
+diff --git a/demux/stheader.h b/demux/stheader.h
+index fa83469..7edd08d 100644
+--- a/demux/stheader.h
++++ b/demux/stheader.h
+@@ -164,6 +164,8 @@ struct mp_codec_params {
+     bool avi_dts;         // use DTS timing; first frame and DTS is 0
+     double fps;           // frames per second (set only if constant fps)
+     bool reliable_fps;    // the fps field is definitely not broken
++    double video_default_duration; // explicit container duration, not guessed FPS
++    double video_timestamp_quantum; // container timestamp resolution in seconds
+     int par_w, par_h;     // pixel aspect ratio (0 if unknown/square)
+     int disp_w, disp_h;   // display size
+     int rotate;           // intended display rotation, in degrees, [0, 359]
+diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
+index b0f0461..305fa37 100644
+--- a/filters/f_decoder_wrapper.c
++++ b/filters/f_decoder_wrapper.c
+@@ -49,6 +49,7 @@
+ 
+ #include "f_async_queue.h"
+ #include "f_decoder_wrapper.h"
++#include "video_pts_repair.h"
+ #include "f_demux_in.h"
+ #include "f_lavfi.h"
+ #include "filter_internal.h"
+@@ -178,6 +179,7 @@ struct priv {
+     // Last packet DTS from decoder (passed through from source packets)
+     double codec_dts;
+     int num_codec_dts_problems;
++    struct mp_video_pts_repair video_pts_repair;
+ 
+     // PTS or DTS of packet first read
+     double first_packet_pdts;
+@@ -318,6 +320,7 @@ static void reset_decoder(struct priv *p)
+     p->codec_dts = MP_NOPTS_VALUE;
+     p->num_codec_pts_problems = 0;
+     p->num_codec_dts_problems = 0;
++    p->video_pts_repair = (struct mp_video_pts_repair){0};
+     p->has_broken_decoded_pts = 0;
+     p->packets_without_output = 0;
+     mp_frame_unref(&p->packet);
+@@ -852,6 +855,22 @@ static void correct_video_pts(struct priv *p, struct mp_image *mpi)
+         }
+     }
+ 
++    double duration = p->codec->video_default_duration;
++    double quantum = p->codec->video_timestamp_quantum;
++    bool repair = p->opts->correct_pts && p->play_dir > 0 &&
++        p->num_codec_pts_problems > 0 &&
++        !p->header->image && !p->header->still_image &&
++        p->codec->codec && strcmp(p->codec->codec, "hevc") == 0 &&
++        mpi->pts != MP_NOPTS_VALUE && p->pts != MP_NOPTS_VALUE &&
++        // An explicit varying block duration overrides the default. Keep the
++        // original timestamps for that frame and discard the repair prefix.
++        !(mpi->pkt_duration > 0 &&
++          fabs(mpi->pkt_duration - duration) > quantum);
++    double raw_pts = mpi->pts;
++    mpi->pts = mp_video_pts_repair_apply(&p->video_pts_repair, repair,
++        raw_pts, p->pts, duration, quantum);
++    if (mpi->pts != raw_pts)
++        MP_TRACE(p, "bounded video PTS repair: %.9f -> %.9f\n", raw_pts, mpi->pts);
+     p->pts = mpi->pts;
+ }
+ 
+diff --git a/filters/video_pts_repair.h b/filters/video_pts_repair.h
+new file mode 100644
+index 0000000..959a20b
+--- /dev/null
++++ b/filters/video_pts_repair.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_VIDEO_PTS_REPAIR_H
++#define MP_VIDEO_PTS_REPAIR_H
++
++#include <math.h>
++#include <stdbool.h>
++
++// Only for already proven reordered/broken packet PTS with an explicit
++// container frame duration. This is not a nominal-FPS clock or a VFR detector.
++struct mp_video_pts_repair {
++    bool valid, active;
++    double raw, duration, quantum;
++};
++
++static inline double mp_video_pts_repair_apply(struct mp_video_pts_repair *s,
++    bool eligible, double raw, double previous, double duration, double quantum)
++{
++    bool metadata = eligible && isfinite(raw) && isfinite(previous) &&
++        isfinite(duration) && duration > 0 && isfinite(quantum) && quantum > 0 &&
++        quantum <= duration / 4;
++    if (!metadata) {
++        *s = (struct mp_video_pts_repair){0};
++        return raw;
++    }
++    bool current = s->valid && s->duration == duration && s->quantum == quantum;
++    bool active = current && s->active;
++    double last_raw = s->raw;
++    *s = (struct mp_video_pts_repair){
++        .valid = true, .raw = raw, .duration = duration, .quantum = quantum,
++    };
++    if (!current || raw < last_raw)
++        return raw;
++    double next = previous + duration;
++    if (!isfinite(next) || next <= previous)
++        return raw;
++    // Preserve the next usable original anchor, including one source timebase
++    // quantum of container rounding. Never smooth valid positive VFR intervals.
++    if (active && raw > previous && raw >= next - quantum)
++        return raw;
++    if (!active && !(raw == last_raw && raw == previous))
++        return raw;
++    // A correction is at most one declared frame plus its encoded rounding.
++    // Repeated duplicate runs, backwards timestamps and seeks cannot create
++    // an unbounded synthetic timeline. No images are dropped or duplicated.
++    double correction = next - raw;
++    if (!(correction > 0 && correction <= duration + quantum))
++        return raw;
++    s->active = true;
++    return next;
++}
++
++#endif

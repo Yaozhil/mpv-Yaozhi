@@ -115,6 +115,10 @@ jobs:
               --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" --variant "$variant" \
               --cc "$(command -v gcc)" --quiet \
               --output "$RUNNER_TEMP/native-ass-fast/checks/observer-$variant/integration.json"
+            python3 build/atmos/parity/verify-native-video-pts-repair.py \
+              --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" --apply-to-observer \
+              --cc "$(command -v gcc)" \
+              --output "$RUNNER_TEMP/native-ass-fast/checks/pts-$variant/report.json"
           done
       - name: Preserve bounded preflight evidence
         if: always()
@@ -125,6 +129,7 @@ jobs:
             ${{ runner.temp }}/native-ass-fast/checks/pause-*/**
             ${{ runner.temp }}/native-ass-fast/checks/prepass-*/**
             ${{ runner.temp }}/native-ass-fast/checks/observer-*/**
+            ${{ runner.temp }}/native-ass-fast/checks/pts-*/**
             ${{ runner.temp }}/native-ass-fast/replay.log
             ${{ runner.temp }}/native-ass-fast/replay/verification.json
             ${{ runner.temp }}/native-ass-fast/checks/fast-preflight.json

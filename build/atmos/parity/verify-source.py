@@ -144,6 +144,16 @@ if not args.baseline_only:
     result['observer_recovery_fix']=observer
     result['actual_source_sha256']=observer['source_sha256']
     result['actual_test_sha256']=observer['test_sha256']
+    pts=lock['native_video_pts_repair']
+    patch=here.parents[2]/pts['patch']
+    assert hashlib.sha256(patch.read_bytes()).hexdigest()==pts['patch_sha256']
+    git('am','--3way',str(patch))
+    from importlib.util import spec_from_file_location,module_from_spec
+    spec=spec_from_file_location('pts_gate',here/'verify-native-video-pts-repair.py')
+    gate=module_from_spec(spec);spec.loader.exec_module(gate)
+    pts=gate.verify_source(source)
+    result['video_pts_repair']=pts
+    result['actual_video_pts_source_sha256']=pts['source_sha256']
     result['baseline_only']=False
     (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 else:

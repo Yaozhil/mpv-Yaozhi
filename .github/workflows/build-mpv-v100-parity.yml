@@ -730,6 +730,11 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-video-pts-repair.py" \
+            --source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-pts-${{ matrix.variant }}.json"
+          pts_final_commit="$(git rev-parse HEAD)"
+          git checkout --detach HEAD^
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-observer-recovery.py" \
             --source "$preflight_src" --cc /usr/bin/cc \
             --output "$GITHUB_WORKSPACE/native-ass-integration-observer-${{ matrix.variant }}.json"
@@ -747,6 +752,8 @@ jobs:
             --output "$GITHUB_WORKSPACE/native-ass-integration-${{ matrix.variant }}.json" \
             | python3 -c 'import json, sys; r = json.load(sys.stdin); print(json.dumps({k: r.get(k) for k in ("status", "error")} | {"meson": r.get("meson"), "compile_diagnostics": r.get("compile", {}).get("diagnostics"), "closure_errors": r.get("compile", {}).get("closure_errors")}, indent=2))'
 
+          git checkout --detach "$pts_final_commit"
+
       - name: Upload Native ASS integration preflight evidence
         if: always() && hashFiles('native-ass-integration-*.json') != ''
         uses: actions/upload-artifact@v6
@@ -757,6 +764,7 @@ jobs:
             native-ass-integration-pause-${{ matrix.variant }}.json
             native-ass-integration-prepass-${{ matrix.variant }}.json
             native-ass-integration-observer-${{ matrix.variant }}.json
+            native-ass-integration-pts-${{ matrix.variant }}.json
           if-no-files-found: error
           retention-days: 7
 

@@ -205,6 +205,14 @@ def lock_inputs():
             require(path.is_relative_to(HERE) and re.fullmatch('[0-9a-f]{64}',digest), 'Invalid observer CPU input')
             require(sha(path)==digest, 'Observer CPU tool/fixture differs: '+name)
             inputs[str(path.relative_to(CONFIG))]=digest
+    pts=lock['native_video_pts_repair']
+    require(pts['parent_commit']==observer['source_commit'], 'PTS parent differs')
+    for key in ('cpu_tool_sha256','cpu_fixture_sha256'):
+        for name,digest in pts[key].items():
+            path=(HERE/name).resolve()
+            require(path.is_relative_to(HERE) and re.fullmatch('[0-9a-f]{64}',digest), 'Invalid PTS CPU input')
+            require(sha(path)==digest, 'PTS CPU input differs: '+name)
+            inputs[str(path.relative_to(CONFIG))]=digest
     return inputs
 
 
