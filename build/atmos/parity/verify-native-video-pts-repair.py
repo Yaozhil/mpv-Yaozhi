@@ -106,6 +106,50 @@ def caller(source):
     assert 'p->video_pts_repair = (struct mp_video_pts_repair){0};' in reset[0]
     return STUB+m[0]+CASES
 
+
+def source730_contract():
+    fixture=json.loads((HERE/'video-pts-repair-730-fixture.json').read_bytes())
+    rows=fixture['frames']
+    assert len(rows)==508 and [r['n'] for r in rows]==list(range(508))
+    assert sum(a['pts_us']==b['pts_us'] for a,b in zip(rows,rows[1:]))==64
+    assert all(b['pts_us']>=a['pts_us'] for a,b in zip(rows,rows[1:]))
+    assert len({r['checksum'] for r in rows[392:396]})==4
+    assert {r['pts_us'] for r in rows[392:396]}=={734750000}
+    assert fixture['software_only'] and fixture['Display_accepted'] is False
+    values=','.join(format(r['pts_us']/1e6,'.6f') for r in rows)
+    return r"""
+#include <stdio.h>
+#include <math.h>
+#include "filters/video_pts_repair.h"
+#define C(x) do{if(!(x)){printf("FAIL line=%d\n",__LINE__);return 9;}}while(0)
+static const double raw[]={VALUES};
+int main(void){
+ struct mp_video_pts_repair s={0};double d=.016666666,q=.001,previous=raw[0];
+ double raw_positive=0,out_positive=0,raw_to_anchor=0,out_to_anchor=0;
+ int changes=0,negative=0,zeros=0,last_anchor=-1,later_changes=0;
+ for(int i=0;i<508;i++){
+  double x=mp_video_pts_repair_apply(&s,true,raw[i],previous,d,q);
+  if(i){
+   raw_positive+=fmax(raw[i]-raw[i-1],0);out_positive+=fmax(x-previous,0);
+   if(x<previous)negative++;
+   if(x==previous)zeros++;
+  }
+  C(!s.blocked&&x>=raw[i]&&x-raw[i]<=d+q+1e-8);
+  C(out_positive-raw_positive<=d+q+1e-8);
+  if(x!=raw[i]){changes++;if(i>395)later_changes++;}
+  if(x==raw[i]){last_anchor=i;raw_to_anchor=raw_positive;out_to_anchor=out_positive;}
+  if(i==394||i==395)C(s.recovering&&fabs(x-734.766666666)<1e-8);
+  if(i==396)C(x==raw[i]&&!s.active&&!s.recovering);
+  previous=x;
+ }
+ C(negative==0&&zeros==2&&changes>150&&later_changes>30);
+ C(last_anchor==504&&fabs(raw_to_anchor-out_to_anchor)<1e-8);
+ C(fabs(raw_to_anchor-8.467)<1e-8);
+ printf("PASS source730 frames=508 duplicate_pairs=64 repaired=%d later_repaired=%d negative=%d zero_hold=%d last_anchor=%d anchor_positive_us=8467000\n",changes,later_changes,negative,zeros,last_anchor);
+ return 0;
+}
+""".replace('VALUES',values)
+
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--source',type=Path,required=True)
     ap.add_argument('--output',type=Path,required=True);ap.add_argument('--cc',type=Path,required=True)
@@ -143,8 +187,15 @@ def main():
                 '*s = (struct mp_video_pts_repair){0};'),
             'fault_safety_clear_on_metadata_change':header.replace(
                 's->blocked = was_active;', 's->blocked = false;'),
-            'fault_safety_no_failed_prefix_latch':header.replace(
-                's->blocked = active;', 's->blocked = false;'),
+            'fault_safety_ignore_raw_backwards':header.replace(
+                'if (!current || raw < last_raw)', 'if (!current)'),
+            'fault_safety_release_monotonic_tail':header.replace(
+                'if (active && previous >= raw && previous - raw <= duration + quantum)', 'if (false)'),
+            'fault_safety_skip_recovery':header.replace('if (recovering)', 'if (recovering && false)'),
+            'fault_safety_delay_original_anchor':header.replace(
+                'if (raw >= previous)', 'if (raw >= previous + duration - quantum)'),
+            'fault_safety_relax_correction_bound':header.replace(
+                'correction <= duration + quantum', 'correction <= 2 * duration + quantum'),
             'fault_safety_block_usable_anchor':header.replace(
                 'if (active && raw > previous && raw >= next - quantum)\n        return raw;',
                 'if (active && raw > previous && raw >= next - quantum) {\n        s->blocked = true;\n        return raw;\n    }'),
@@ -152,10 +203,10 @@ def main():
         assert len(set(mutations.values()))==len(mutations) and all(x!=header for x in mutations.values())
         include='#include "filters/video_pts_repair.h"'
         assert safety.count(include)==1
-        safety_cases={'safety_latch':safety, **{name:safety.replace(include,value)
+        safety_cases={'safety_hold':safety, **{name:safety.replace(include,value)
             for name,value in mutations.items()}}
-        result['safety_scope']='positive-part interval excess per explicit reset with uncut finite deltas; first negative release and large-gap player cutoff limitation retained'
-        for case,body in {'real_header':(HERE/'video-pts-repair-contract.c').read_text(),**functions,**safety_cases}.items():
+        result['safety_scope']='monotonic bounded-prefix recovery with original anchors; finite uncut positive interval excess per explicit reset; actual backwards/metadata/eligibility fail closed; zero hold interval and large-gap player cutoff limitations retained'
+        for case,body in {'real_header':(HERE/'video-pts-repair-contract.c').read_text(),'real_header_730':source730_contract(),**functions,**safety_cases}.items():
             c=out.parent/(case+'.c');c.write_text(body,encoding='utf-8',newline='\n')
             for mode,flags in (('normal',[]),('NDEBUG',['-DNDEBUG'])):
                 exe=out.parent/(case+'-'+mode+('.exe' if sys.platform=='win32' else ''))

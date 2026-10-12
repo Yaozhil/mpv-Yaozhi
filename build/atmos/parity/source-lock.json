@@ -67,7 +67,7 @@
     "build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
     "build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
     "build/bluray-menu/patches/0052-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
-    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "ccd8e6b811049ff4aa351804cd8b184416914fd578712362a8971da8edef27a1"
+    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -166,11 +166,11 @@
     "scope": "Observed two-sample recovery only; recovery call quarantined; H and historical gap coordinates unchanged; no Display acceptance"
   },
   "native_video_pts_repair": {
-    "source_commit": "da77d6af4e064cd6178a663c7f530c995288dd50",
-    "source_tree": "12c7c062e9760be6e391ca01c3acf60027084755",
+    "source_commit": "86aec0a81ecb149fae92721bcc8733516e9ed776",
+    "source_tree": "048f70cee7e4a27977a976146141b9c71739a965",
     "parent_commit": "ce7350420bfb982d3d991cf38d6596304b14bab5",
     "patch": "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch",
-    "patch_sha256": "ccd8e6b811049ff4aa351804cd8b184416914fd578712362a8971da8edef27a1",
+    "patch_sha256": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
     "changed_files": [
       "demux/demux_mkv.c",
       "demux/stheader.h",
@@ -186,7 +186,7 @@
       "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
       "demux/stheader.h": "ddd745d6877decb4a9d82429481163082c85f8c3046f200f54f1d734074701a0",
       "filters/f_decoder_wrapper.c": "227f6a0fbf6326cc162ef8cf98d4bfd56493723645d93a8ef9965cd228441f56",
-      "filters/video_pts_repair.h": "4d4bddf1944028c3e5029c117158705e8d5fde35bf660294ea95edea29c6e6bf"
+      "filters/video_pts_repair.h": "e144fea761f636dd8b21c399c959d0cf7fb7cbcabd35492aa932ace7c349a174"
     },
     "preserved_ass_sha256": {
       "video/out/vo.c": "ba092466641c936cfbcee28aa8525bb1b7f395f27bc0295f9627498ecab82edc",
@@ -198,14 +198,15 @@
       "video/out/secondary_ass_present_plan.h": "3e70702f03bcc899ee21653b82b237b952fdbbd95fb8bc24b5b433d043e2a69d"
     },
     "cpu_fixture_sha256": {
-      "video-pts-repair-contract.c": "6b432f270011693fb600638412a2f9a87d2598fbb60e6df4fd1c20287fc1750a",
-      "video-pts-repair-safety-contract.c": "be9e37aa8f24d8316b580204cb616b719831c248e47e08b96dc62bb707bb3a15"
+      "video-pts-repair-contract.c": "8c6a6ab1af17a068e00430f83d6c33b64c1ff8f57d8a6b544a462b62dc23e350",
+      "video-pts-repair-safety-contract.c": "680136ccebc3d6f13382b22942fe0fe1557abce16a8be06903167443dcfe1667",
+      "video-pts-repair-730-fixture.json": "699d1c7b2d18c775c3bb0af0074a3894054b0bb1ff5d689067eedf5863c5d243"
     },
     "cpu_tool_sha256": {
-      "verify-native-video-pts-repair.py": "2684d4a2a769344b1ffb6b4c0e294a45576985c2ee29903088c7e80058b8fd14"
+      "verify-native-video-pts-repair.py": "2a12c14693e4d1da079e1046d9052c4405628efd3f2ab616decbe029ffee1e33"
     },
     "source_log_sha256": "1fe6ee865bddc379ab4d7c841f14d2deed5418c834e718ec9cf390103607517c",
-    "scope": "HEVC duplicate PTS with prior faults and explicit container timing; abnormal active release latches until explicit decoder reset; bounded positive-part interval excess per reset under uncut deltas, not universal player scheduling; original anchors/ASS/H unchanged; no Display acceptance",
+    "scope": "Explicit HEVC/MKV duplicate PTS after codec faults: monotonic anomalous prefix holds previous output until original raw anchor catches up; real raw backwards/eligibility/metadata invalidation fail closed until decoder reset; unchanged duration+quantum bound; finite uncut positive interval excess remains bounded; one zero hold interval and large-discontinuity player cutoff limitations retained; ASS/H unchanged; no Display acceptance",
     "variants": {
       "main": {
         "before_source_sha256": {
@@ -217,7 +218,7 @@
           "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
           "demux/stheader.h": "ddd745d6877decb4a9d82429481163082c85f8c3046f200f54f1d734074701a0",
           "filters/f_decoder_wrapper.c": "227f6a0fbf6326cc162ef8cf98d4bfd56493723645d93a8ef9965cd228441f56",
-          "filters/video_pts_repair.h": "4d4bddf1944028c3e5029c117158705e8d5fde35bf660294ea95edea29c6e6bf"
+          "filters/video_pts_repair.h": "e144fea761f636dd8b21c399c959d0cf7fb7cbcabd35492aa932ace7c349a174"
         }
       },
       "atmos": {
@@ -230,7 +231,7 @@
           "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
           "demux/stheader.h": "ddd745d6877decb4a9d82429481163082c85f8c3046f200f54f1d734074701a0",
           "filters/f_decoder_wrapper.c": "1f03d0bb7941b45b289f325a014455e3e640dee0f9e9fcaeb1f520a6ae8ba5c9",
-          "filters/video_pts_repair.h": "4d4bddf1944028c3e5029c117158705e8d5fde35bf660294ea95edea29c6e6bf"
+          "filters/video_pts_repair.h": "e144fea761f636dd8b21c399c959d0cf7fb7cbcabd35492aa932ace7c349a174"
         }
       }
     },

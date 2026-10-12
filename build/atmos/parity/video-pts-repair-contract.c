@@ -38,7 +38,14 @@ int main(void){
   C(kind>2?a>1:a==1);
   if(kind==3){C(mp_video_pts_repair_apply(&s,true,.5,a,d,q)==.5);C(!s.active);}
   if(kind==4){s=(struct mp_video_pts_repair){0};C(mp_video_pts_repair_apply(&s,true,1,1,d,q)==1);}
-  if(kind==5){C(mp_video_pts_repair_apply(&s,true,1,a,d,q)==1);C(!s.active);}
+  if(kind==5){
+   C(mp_video_pts_repair_apply(&s,true,1,a,d,q)==a);
+   C(s.active && s.recovering && !s.blocked);
+   double anchor=a+.0001;
+   C(mp_video_pts_repair_apply(&s,true,anchor,a,d,q)==anchor);
+   C(!s.active && !s.recovering && !s.blocked);
+   C(mp_video_pts_repair_apply(&s,true,anchor,anchor,d,q)>anchor);
+  }
  }
  // Fail-closed on invalid numeric metadata and on changing declared duration.
  s=(struct mp_video_pts_repair){0};

@@ -1,15 +1,15 @@
-From da77d6af4e064cd6178a663c7f530c995288dd50 Mon Sep 17 00:00:00 2001
+From 86aec0a81ecb149fae92721bcc8733516e9ed776 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@localhost>
 Date: Mon, 12 Oct 2026 13:34:52 +0800
-Subject: [PATCH] Repair explicit duplicate video PTS with a fail-closed prefix
- latch
+Subject: [PATCH] Repair bounded duplicate video PTS with monotonic prefix
+ recovery
 
 ---
  demux/demux_mkv.c           |  3 ++
  demux/stheader.h            |  2 ++
- filters/f_decoder_wrapper.c | 19 +++++++++++
- filters/video_pts_repair.h  | 64 +++++++++++++++++++++++++++++++++++++
- 4 files changed, 88 insertions(+)
+ filters/f_decoder_wrapper.c | 19 ++++++++++
+ filters/video_pts_repair.h  | 71 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 95 insertions(+)
  create mode 100644 filters/video_pts_repair.h
 
 diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
@@ -92,10 +92,10 @@ index b0f0461..305fa37 100644
  
 diff --git a/filters/video_pts_repair.h b/filters/video_pts_repair.h
 new file mode 100644
-index 0000000..dace093
+index 0000000..b190681
 --- /dev/null
 +++ b/filters/video_pts_repair.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,71 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#ifndef MP_VIDEO_PTS_REPAIR_H
 +#define MP_VIDEO_PTS_REPAIR_H
@@ -103,19 +103,16 @@ index 0000000..dace093
 +#include <math.h>
 +#include <stdbool.h>
 +
-+// Only for already proven reordered/broken packet PTS with an explicit
-+// container frame duration. This is not a nominal-FPS clock or a VFR detector.
++// Only proven reordered/broken packet PTS with explicit container duration.
++// Recover a bounded monotonic prefix without inventing a nominal-FPS clock.
 +struct mp_video_pts_repair {
-+    bool valid, active, blocked;
++    bool valid, active, blocked, recovering;
 +    double raw, duration, quantum;
 +};
 +
 +static inline double mp_video_pts_repair_apply(struct mp_video_pts_repair *s,
 +    bool eligible, double raw, double previous, double duration, double quantum)
 +{
-+    // An abnormal prefix release may introduce one original negative step.
-+    // Fail closed afterwards: only the caller's explicit decoder reset can
-+    // re-arm repair, not eligibility or container-metadata transitions.
 +    if (s->blocked)
 +        return raw;
 +    bool was_active = s->active;
@@ -128,6 +125,7 @@ index 0000000..dace093
 +    }
 +    bool current = s->valid && s->duration == duration && s->quantum == quantum;
 +    bool active = current && s->active;
++    bool recovering = current && s->recovering;
 +    double last_raw = s->raw;
 +    *s = (struct mp_video_pts_repair){
 +        .valid = true, .raw = raw, .duration = duration, .quantum = quantum,
@@ -136,22 +134,31 @@ index 0000000..dace093
 +        s->blocked = was_active;
 +        return raw;
 +    }
++    // A monotonic source tail can catch up without a backwards output step.
++    // Recovery does not invent another frame duration or extend the bound.
++    if (recovering) {
++        if (raw >= previous)
++            return raw;
++        s->active = s->recovering = true;
++        return previous;
++    }
 +    double next = previous + duration;
 +    if (!isfinite(next) || next <= previous) {
 +        s->blocked = active;
 +        return raw;
 +    }
-+    // Preserve the next usable original anchor, including one source timebase
-+    // quantum of container rounding. Successful prefixes may be repaired again.
 +    if (active && raw > previous && raw >= next - quantum)
 +        return raw;
 +    if (!active && !(raw == last_raw && raw == previous))
 +        return raw;
-+    // A correction is at most one declared frame plus its encoded rounding.
-+    // No images are dropped or duplicated. A failed prefix cannot repeatedly
-+    // restart and accumulate additional positive frame intervals.
 +    double correction = next - raw;
 +    if (!(correction > 0 && correction <= duration + quantum)) {
++        // Eligibility and metadata remain valid, and raw did not go backwards.
++        // The previous correction was bounded; holding it remains bounded.
++        if (active && previous >= raw && previous - raw <= duration + quantum) {
++            s->active = s->recovering = true;
++            return previous;
++        }
 +        s->blocked = active;
 +        return raw;
 +    }
