@@ -1,0 +1,53 @@
+From bb4159d26ea6e3b3c3991d8bf3a2e50626fd2b75 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Mon, 12 Oct 2026 23:41:28 +0800
+Subject: [PATCH] Add isolated neutral-present A/B control without changing
+ default phase or admission
+
+---
+ video/out/vo.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index b994099..f8a0521 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -191,6 +191,7 @@ struct vo_internal {
+     bool secondary_present_plan; // isolated planned-base consumption experiment
+     bool secondary_display_forecast; // opt-in separate eligibility/display slots
+     bool secondary_fixed_forecast; // opt-in stable pose offset, default off
++    bool secondary_neutral_disabled; // diagnostic A/B; default behavior unchanged
+     struct secondary_ass_present_fixed_offset secondary_fixed_offset; // VO only
+     bool secondary_split_budget; // opt-in measured submission envelope forecast
+     bool secondary_queue_lead; // opt-in coherent native queue admission
+@@ -2518,7 +2519,8 @@ static bool render_frame(struct vo *vo)
+             media_anchored = true;
+             physical_now = mp_time_ns();
+         }
+-        if (in->secondary_fixed_forecast && planned_audio && !frame->repeat &&
++        if (in->secondary_fixed_forecast && !in->secondary_neutral_disabled &&
++            planned_audio && !frame->repeat &&
+             !early_plan.valid && !in->secondary_queue_stage &&
+             !in->secondary_queue_lead && !in->paused && !in->send_reset &&
+             !in->dropped_frame && in->visible &&
+@@ -3389,6 +3391,11 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+     in->secondary_fixed_forecast = in->secondary_display_forecast &&
+         !in->secondary_queue_stage && !in->secondary_queue_lead &&
+         fixed_forecast && !strcmp(fixed_forecast, "1");
++    // Isolate intervening video-pose reuse without changing F, H or phase.
++    // A disabled lease falls through to the existing mandatory fresh plan.
++    const char *neutral = getenv("MPV_NATIVE_NEUTRAL_PRESENT");
++    in->secondary_neutral_disabled = diagnostic && in->secondary_fixed_forecast &&
++        neutral && !strcmp(neutral, "0");
+     const char *split_budget = getenv("MPV_NATIVE_SPLIT_BUDGET");
+     in->secondary_split_budget = diagnostic && in->secondary_present_plan &&
+         in->secondary_present_grid && split_budget && strcmp(split_budget, "1") == 0;
+@@ -3400,7 +3407,7 @@ static MP_THREAD_VOID vo_thread(void *ptr)
+                 in->secondary_present_plan, in->secondary_split_budget,
+                 vo->pacing_spans, in->secondary_queue_lead,
+                 in->secondary_queue_stage, in->secondary_display_forecast,
+-                in->secondary_fixed_forecast},
++                in->secondary_fixed_forecast, in->secondary_neutral_disabled},
+         };
+         mp_ass_pacing_record(vo->global, MP_ASS_PACING_CONFIG, &record);
+     }

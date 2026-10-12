@@ -213,6 +213,13 @@ def lock_inputs():
             require(path.is_relative_to(HERE) and re.fullmatch('[0-9a-f]{64}',digest), 'Invalid PTS CPU input')
             require(sha(path)==digest, 'PTS CPU input differs: '+name)
             inputs[str(path.relative_to(CONFIG))]=digest
+    neutral=lock['native_ass_neutral_ab']
+    require(neutral['parent_commit']==pts['source_commit'], 'Neutral A/B parent differs')
+    for name,digest in neutral['tools_sha256'].items():
+        path=(HERE/name).resolve()
+        require(path.is_relative_to(HERE) and re.fullmatch('[0-9a-f]{64}',digest), 'Invalid neutral A/B tool')
+        require(sha(path)==digest, 'Neutral A/B tool differs: '+name)
+        inputs[str(path.relative_to(CONFIG))]=digest
     return inputs
 
 

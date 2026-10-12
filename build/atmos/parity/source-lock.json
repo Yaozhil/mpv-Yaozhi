@@ -67,7 +67,8 @@
     "build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
     "build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
     "build/bluray-menu/patches/0052-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
-    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df"
+    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
+    "build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch": "0ed941b348ba37a3bda06687118d93b78a972b354cc8554459567fd5fa3db582"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -247,6 +248,31 @@
         "type": 1,
         "default_duration_ns": 16666666
       }
+    }
+  },
+  "native_ass_neutral_ab": {
+    "source_commit": "bb4159d26ea6e3b3c3991d8bf3a2e50626fd2b75",
+    "parent_commit": "86aec0a81ecb149fae92721bcc8733516e9ed776",
+    "source_tree": "2de8c3322f219cb6bdbc0b28859c40af5dadeb58",
+    "patch": "build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch",
+    "patch_sha256": "0ed941b348ba37a3bda06687118d93b78a972b354cc8554459567fd5fa3db582",
+    "vo_sha256": "ba21e1ecb9aea85e0ecec0d2191e3ba7a36a460d0f65016921ed25546e303b65",
+    "default_changed": false,
+    "scope": "Diagnostic one-variable neutral Present admission A/B, with mandatory fresh fallback and F/H/phase unchanged; no runtime or pacing acceptance.",
+    "variants": {
+      "main": {
+        "parent_tree": "048f70cee7e4a27977a976146141b9c71739a965",
+        "tree": "2de8c3322f219cb6bdbc0b28859c40af5dadeb58"
+      },
+      "atmos": {
+        "parent_tree": "6150adfebba17ffcfdda83f2f514cfc92d2f5c03",
+        "tree": "d5a7a6eba5a6c3d2a52f3706e60ee0472c22dd14"
+      }
+    },
+    "tools_sha256": {
+      "verify-native-ass-neutral-ab.py": "20abf50c3c6effffba18de8f3f892b1f311cca77795efc84eed3c4cbc54d8480",
+      "verify-neutral-ab-caller.py": "5cf2ae87d433cafc71a12b0ff444c69aedaeef6c77e11363a5a89d74f234809a",
+      "v30-neutral-pose-contract.c": "491bb901cc6f480948644cafab44ed56f64552f4b74b7b973fc4ab3e0311217a"
     }
   }
 }

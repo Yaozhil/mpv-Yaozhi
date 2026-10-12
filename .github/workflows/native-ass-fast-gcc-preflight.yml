@@ -119,6 +119,10 @@ jobs:
               --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" --apply-to-observer \
               --cc "$(command -v gcc)" \
               --output "$RUNNER_TEMP/native-ass-fast/checks/pts-$variant/report.json"
+            python3 build/atmos/parity/verify-native-ass-neutral-ab.py \
+              --source "$RUNNER_TEMP/native-ass-fast/checks/$variant" --apply-to-pts \
+              --cc "$(command -v gcc)" \
+              --output "$RUNNER_TEMP/native-ass-fast/checks/neutral-ab-$variant/report.json"
           done
       - name: Preserve bounded preflight evidence
         if: always()
@@ -130,6 +134,7 @@ jobs:
             ${{ runner.temp }}/native-ass-fast/checks/prepass-*/**
             ${{ runner.temp }}/native-ass-fast/checks/observer-*/**
             ${{ runner.temp }}/native-ass-fast/checks/pts-*/**
+            ${{ runner.temp }}/native-ass-fast/checks/neutral-ab-*/**
             ${{ runner.temp }}/native-ass-fast/replay.log
             ${{ runner.temp }}/native-ass-fast/replay/verification.json
             ${{ runner.temp }}/native-ass-fast/checks/fast-preflight.json
