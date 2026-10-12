@@ -1,4 +1,4 @@
-From bf7d63b66dde11132f313db8a2f442c4d919a78f Mon Sep 17 00:00:00 2001
+From 2b8dc4ca231dad756a050b08b13129b68827ab72 Mon Sep 17 00:00:00 2001
 From: mpv-Yaozhi <yaozhi@localhost>
 Date: Mon, 12 Oct 2026 13:34:52 +0800
 Subject: [PATCH] video: bound repair of duplicate PTS with explicit container
@@ -13,26 +13,19 @@ Subject: [PATCH] video: bound repair of duplicate PTS with explicit container
  create mode 100644 filters/video_pts_repair.h
 
 diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
-index 63ecd81..3686a76 100644
+index 63ecd81..0ee83a0 100644
 --- a/demux/demux_mkv.c
 +++ b/demux/demux_mkv.c
-@@ -1653,6 +1653,7 @@ static void avcodec_par_destructor(void *p)
+@@ -1775,6 +1775,9 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx)
  
- static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx)
- {
-+    mkv_demuxer_t *mkv_d = demuxer->priv;
-     unsigned char *extradata = NULL;
-     unsigned int extradata_size = 0;
-     struct sh_stream *sh = demux_alloc_sh_stream(STREAM_VIDEO);
-@@ -1756,6 +1757,8 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track, int idx)
-                 track->codec_id, track->tnum);
-     }
-     sh_v->fps = track->v_frate;
+     mkv_demuxer_t *mkv_d = demuxer->priv;
+ 
 +    sh_v->video_default_duration = track->default_duration;
 +    sh_v->video_timestamp_quantum = mkv_d->tc_scale / 1e9;
-     sh_v->disp_w = track->v_width;
-     sh_v->disp_h = track->v_height;
- 
++
+     // The Matroska specification mandates that the PAR is calculated after
+     // cropping. However, most files on the internet do not follow this, as it
+     // would make them incompatible with crop-unaware players. Additionally,
 diff --git a/demux/stheader.h b/demux/stheader.h
 index fa83469..7edd08d 100644
 --- a/demux/stheader.h

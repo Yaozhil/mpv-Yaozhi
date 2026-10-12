@@ -67,7 +67,7 @@
     "build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
     "build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
     "build/bluray-menu/patches/0052-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
-    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "940e766c1429783a18ca4c36e27b165f1a120672f1529c4d2ac2440a47118d6a"
+    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "4f8d769208fb159ee968434eab52f303c6db718b3b66a74941f7bbd23b29fb73"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -166,11 +166,11 @@
     "scope": "Observed two-sample recovery only; recovery call quarantined; H and historical gap coordinates unchanged; no Display acceptance"
   },
   "native_video_pts_repair": {
-    "source_commit": "bf7d63b66dde11132f313db8a2f442c4d919a78f",
-    "source_tree": "f8a67e519e7a52aeda3ed2258dfa411da9f26a2f",
+    "source_commit": "2b8dc4ca231dad756a050b08b13129b68827ab72",
+    "source_tree": "6796401d25d5a9de5f5d201a67baf7211f667002",
     "parent_commit": "ce7350420bfb982d3d991cf38d6596304b14bab5",
     "patch": "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch",
-    "patch_sha256": "940e766c1429783a18ca4c36e27b165f1a120672f1529c4d2ac2440a47118d6a",
+    "patch_sha256": "4f8d769208fb159ee968434eab52f303c6db718b3b66a74941f7bbd23b29fb73",
     "changed_files": [
       "demux/demux_mkv.c",
       "demux/stheader.h",
@@ -183,7 +183,7 @@
       "filters/f_decoder_wrapper.c": "f333a1730570d3a343b94654da4566b1e1cc7de44a537bcb1f7f3f328667ccce"
     },
     "source_sha256": {
-      "demux/demux_mkv.c": "8dc2edd53707ca8d2a30d1b0900eae23c0a7cd0a8a3f15353bc54ab847ac238f",
+      "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
       "demux/stheader.h": "ddd745d6877decb4a9d82429481163082c85f8c3046f200f54f1d734074701a0",
       "filters/f_decoder_wrapper.c": "227f6a0fbf6326cc162ef8cf98d4bfd56493723645d93a8ef9965cd228441f56",
       "filters/video_pts_repair.h": "be42f67c2caf9bf733f1bd2a6f68b2f48899161b10ff8290ebe5dba60419ac7f"
@@ -201,7 +201,7 @@
       "video-pts-repair-contract.c": "6b432f270011693fb600638412a2f9a87d2598fbb60e6df4fd1c20287fc1750a"
     },
     "cpu_tool_sha256": {
-      "verify-native-video-pts-repair.py": "985e56e62060da61ffbfb62a37f7cdb5cd08c4a8cf1470c4f8c0d1e372988b68"
+      "verify-native-video-pts-repair.py": "a86e2b9b367c8a0a6901720f254cc81d8287c3edf38b7f477f5127aef06fef69"
     },
     "source_log_sha256": "1fe6ee865bddc379ab4d7c841f14d2deed5418c834e718ec9cf390103607517c",
     "scope": "HEVC duplicate PTS only with prior decoded PTS faults and explicit container timing; bounded original-anchor repair; ASS/H unchanged; no Display acceptance",
@@ -213,7 +213,7 @@
           "filters/f_decoder_wrapper.c": "f333a1730570d3a343b94654da4566b1e1cc7de44a537bcb1f7f3f328667ccce"
         },
         "source_sha256": {
-          "demux/demux_mkv.c": "8dc2edd53707ca8d2a30d1b0900eae23c0a7cd0a8a3f15353bc54ab847ac238f",
+          "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
           "demux/stheader.h": "ddd745d6877decb4a9d82429481163082c85f8c3046f200f54f1d734074701a0",
           "filters/f_decoder_wrapper.c": "227f6a0fbf6326cc162ef8cf98d4bfd56493723645d93a8ef9965cd228441f56",
           "filters/video_pts_repair.h": "be42f67c2caf9bf733f1bd2a6f68b2f48899161b10ff8290ebe5dba60419ac7f"
@@ -226,7 +226,7 @@
           "filters/f_decoder_wrapper.c": "dadc66b250c2368e655bafb905ea23a89eaf64c1632561119fd28ae4458e8c91"
         },
         "source_sha256": {
-          "demux/demux_mkv.c": "8dc2edd53707ca8d2a30d1b0900eae23c0a7cd0a8a3f15353bc54ab847ac238f",
+          "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
           "demux/stheader.h": "ddd745d6877decb4a9d82429481163082c85f8c3046f200f54f1d734074701a0",
           "filters/f_decoder_wrapper.c": "1f03d0bb7941b45b289f325a014455e3e640dee0f9e9fcaeb1f520a6ae8ba5c9",
           "filters/video_pts_repair.h": "be42f67c2caf9bf733f1bd2a6f68b2f48899161b10ff8290ebe5dba60419ac7f"

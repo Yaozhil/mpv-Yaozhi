@@ -28,6 +28,13 @@ def verify_source(source):
         assert sha((source/name).read_bytes())==digest,name
     for name,digest in fix['preserved_ass_sha256'].items():
         assert sha(git(source,'show','HEAD^:'+name))==digest,name
+    mkv=(source/'demux/demux_mkv.c').read_text(encoding='utf-8')
+    constructor=re.search(r'static int demux_mkv_open_video\([^;]*?\)\s*\{.*?\n\}\n',mkv,re.S)
+    assert constructor
+    constructor=constructor[0]
+    declaration='mkv_demuxer_t *mkv_d = demuxer->priv;'
+    assert constructor.count(declaration)==1, 'Existing MKV context declaration must be reused'
+    assert constructor.index(declaration)<constructor.index('sh_v->video_timestamp_quantum = mkv_d->tc_scale / 1e9;')
     assert (source/'common/version.c').read_bytes()==git(source,'show','HEAD^:common/version.c')
     assert b'(mpv-Yaozhi)' in (source/'common/version.c').read_bytes()
     for key in ('cpu_tool_sha256','cpu_fixture_sha256'):
