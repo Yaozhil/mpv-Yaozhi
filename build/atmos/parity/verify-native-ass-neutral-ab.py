@@ -12,7 +12,8 @@ def verify_source(source):
     assert not git(source,'status','--porcelain').strip()
     tree=git(source,'rev-parse','HEAD^{tree}').decode().strip()
     parent=git(source,'rev-parse','HEAD^'+'^{tree}').decode().strip()
-    variants=[v for v,s in fix['variants'].items() if s['parent_tree']==parent and s['tree']==tree]
+    variants=[v for v,s in fix['variants'].items()
+              if any(s[p+'parent_tree']==parent and s[p+'tree']==tree for p in ('','linux_'))]
     assert len(variants)==1,('Source tree not reviewed',parent,tree)
     assert git(source,'diff','--name-only','HEAD^','HEAD').decode().splitlines()==['video/out/vo.c']
     assert sha(source/'video/out/vo.c')==fix['vo_sha256']
@@ -32,7 +33,7 @@ def main():
     try:
         if a.apply_to_pts:
             fix=json.loads((HERE/'source-lock.json').read_bytes())['native_ass_neutral_ab']
-            assert git(source,'rev-parse','HEAD^{tree}').decode().strip() in [v['parent_tree'] for v in fix['variants'].values()]
+            assert git(source,'rev-parse','HEAD^{tree}').decode().strip() in [v[p+'parent_tree'] for v in fix['variants'].values() for p in ('','linux_')]
             assert sha(CONFIG/fix['patch'])==fix['patch_sha256']
             git(source,'am','--3way',str(CONFIG/fix['patch']))
         fix=verify_source(source)
