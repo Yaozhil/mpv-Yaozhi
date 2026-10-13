@@ -1,0 +1,32 @@
+From 7f8eca4903a3dd4e9d3879506e7b8dc6a5999135 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Tue, 13 Oct 2026 14:44:17 +0800
+Subject: [PATCH] vo: evaluate uncaptured fixed fresh video boundary at
+ submission
+
+---
+ video/out/vo.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/video/out/vo.c b/video/out/vo.c
+index f8a0521..7400b8b 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -2599,7 +2599,13 @@ static bool render_frame(struct vo *vo)
+                 bool fresh_clock_retry = false;
+                 if (present_plan.display_forecast && present_plan.valid &&
+                     !present_plan.fresh_clock_only &&
+-                    present_plan.base.wall < original_video_target) {
++                    present_plan.base.wall < original_video_target &&
++                    (!uncaptured_fixed_fresh ||
++                     present_plan.submit < original_video_target)) {
++                    // Fixed forecasts submit in D's window, while base G keeps
++                    // its original feedback identity. Only a new uncaptured
++                    // proposal may use that actual window to satisfy video F.
++                    // Captured/legacy tasks retain the original rejection.
+                     secondary_trace_plan_missed(vo, "before_video_due", "before-draw",
+                                                 &present_plan);
+                     fresh_clock_retry = uncaptured_fixed_fresh;
+-- 
+2.54.0.windows.1
+

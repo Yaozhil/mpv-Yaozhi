@@ -68,7 +68,8 @@
     "build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
     "build/bluray-menu/patches/0052-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
     "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
-    "build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch": "0ed941b348ba37a3bda06687118d93b78a972b354cc8554459567fd5fa3db582"
+    "build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch": "0ed941b348ba37a3bda06687118d93b78a972b354cc8554459567fd5fa3db582",
+    "build/bluray-menu/patches/0055-native-ass-fresh-submit-window.patch": "a74d3df426d9a240ce166ed4d703a14f1e2fff1dd449e0f31e0de046cd60c215"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -278,5 +279,36 @@
       "verify-neutral-ab-caller.py": "5cf2ae87d433cafc71a12b0ff444c69aedaeef6c77e11363a5a89d74f234809a",
       "v30-neutral-pose-contract.c": "491bb901cc6f480948644cafab44ed56f64552f4b74b7b973fc4ab3e0311217a"
     }
+  },
+  "native_ass_fresh_window_fix": {
+    "source_commit": "7f8eca4903a3dd4e9d3879506e7b8dc6a5999135",
+    "parent_commit": "bb4159d26ea6e3b3c3991d8bf3a2e50626fd2b75",
+    "source_tree": "245d24e719fcdb203f2bcea7e610020b9143cdea",
+    "patch": "build/bluray-menu/patches/0055-native-ass-fresh-submit-window.patch",
+    "patch_sha256": "a74d3df426d9a240ce166ed4d703a14f1e2fff1dd449e0f31e0de046cd60c215",
+    "vo_sha256": "24e50faf1259a7992dbce83a21bde13dc0a92abc6bcf72609708a10a1a3b3b52",
+    "variants": {
+      "main": {
+        "parent_tree": "2de8c3322f219cb6bdbc0b28859c40af5dadeb58",
+        "linux_parent_tree": "1bf29d17cc662b2f884425d854905d7bcaf02eba",
+        "tree": "245d24e719fcdb203f2bcea7e610020b9143cdea",
+        "linux_tree": "f61c767ef3b22cab0792351ecc8d688b3f82548d"
+      },
+      "atmos": {
+        "parent_tree": "d5a7a6eba5a6c3d2a52f3706e60ee0472c22dd14",
+        "linux_parent_tree": "5927b34005f8cb5c987df742833de99377a42f07",
+        "tree": "3da286a7e8eb42040b9414fc549a925070c279c5",
+        "linux_tree": "7b35c76d17f8d1fdd0b9314b1cb1e44d35d7fddd"
+      }
+    },
+    "tools_sha256": {
+      "verify-native-ass-fresh-window.py": "8dce681f538d207628ddfed6ae57dd96eff010edb47f73d579f96b176f570ce1",
+      "fresh-window-actual-selection.c": "e0c562937c41f1e2027440b2c4daefff338b3398a6d91adf7f1661154014cd60",
+      "fresh-window-predicate-candidate.c": "cd6d783a73bacab4ec6f01128c5e96e0f0229b9e3ab94834c1d7cc5eec82d50c",
+      "fresh-window-predicate-original_counterexample.c": "527311927582ee075ad70ff58d95f95de6db18f689453b1bdcbdc0a2cabc9b78",
+      "fresh-window-predicate-mutation_scope_lost.c": "3bc658e138b3695b953b8c360ebc8ea39bf13fa93d574526c8a83edc6efb3091",
+      "fresh-window-predicate-mutation_submit_equality_rejected.c": "cc48624cbedcca64f6f18fdad4f3a7a74e6393c695108bc1bc14f58c6687209a"
+    },
+    "scope": "Only new uncaptured fixed fresh proposals with S>=F may retain original G/D; captured, legacy, queue, phase, H and late guards unchanged; no Display acceptance."
   }
 }

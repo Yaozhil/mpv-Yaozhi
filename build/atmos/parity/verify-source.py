@@ -162,6 +162,14 @@ if not args.baseline_only:
     gate=module_from_spec(spec);spec.loader.exec_module(gate)
     result['neutral_ab']=gate.verify_source(source)
     result['actual_source_sha256']['video/out/vo.c']=neutral['vo_sha256']
+    fresh=lock['native_ass_fresh_window_fix']
+    patch=here.parents[2]/fresh['patch']
+    assert hashlib.sha256(patch.read_bytes()).hexdigest()==fresh['patch_sha256']
+    git('am','--3way',str(patch))
+    spec=spec_from_file_location('fresh_gate',here/'verify-native-ass-fresh-window.py')
+    gate=module_from_spec(spec);spec.loader.exec_module(gate)
+    result['fresh_window_fix']=gate.verify_source(source)
+    result['actual_source_sha256']['video/out/vo.c']=fresh['vo_sha256']
     result['baseline_only']=False
     (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 else:
