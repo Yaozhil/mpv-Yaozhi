@@ -1,8 +1,8 @@
-name: Build Atmos 0.6.0 viewport candidate
+name: Build Atmos 0.7.0 viewport candidate
 on:
   workflow_dispatch:
   push:
-    branches: [codex/v100-core-parity-20260907]
+    branches: [codex/omniphony-070-20261014]
     paths:
       - .github/workflows/build-orender-viewport.yml
       - build/feedback/patches/orender-viewport-safe-area.patch
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: mgth/Omniphony
-          ref: dd5546bbc64e60719dfa367bea0534dc8a3ab34b
+          ref: 353e135fa01e181bea36d83099a5951fd5c34180
       - uses: actions/checkout@v6
         with:
           path: ci-config
@@ -55,7 +55,7 @@ jobs:
             Select-Object Hash,Path | ConvertTo-Json | Set-Content out/SHA256.json
       - uses: actions/upload-artifact@v6
         with:
-          name: orender-v0.6.0-viewport-windows-x86_64
+          name: orender-v0.7.0-viewport-windows-x86_64
           path: out/*
           if-no-files-found: error
           retention-days: 7
