@@ -1,10 +1,14 @@
 {
   "base_commit": "d27d899c6afa21cb41dcea0e818d86fff1328b51",
   "base_tree": "048f70cee7e4a27977a976146141b9c71739a965",
-  "archive_sha256": "ee80867abe46e49bbb39c5cfb23eb71cff70992008e52b8f635424586b340093",
+  "archive_sha256": "313cf82076035b9145f9c26d67efaaa2bb1a63c140a61131be64b194a1299aff",
   "modified": [
     "video/out/vo.c",
-    "common/ass_pacing_record.h"
+    "common/ass_pacing_record.h",
+    "video/out/secondary_ass_present_plan.h"
   ],
-  "policy_changes": false
+  "policy_changes": true,
+  "candidate_rule": "Refuse first latch while FIFO inflates forecast above existing historical H; use unchanged existing bootstrap selector",
+  "not_forced_zero": true,
+  "parent_observer_sha256": "3f242e7b20737a121275591b797cc8a69372b5cac8287660a117fa25eea876a3"
 }
