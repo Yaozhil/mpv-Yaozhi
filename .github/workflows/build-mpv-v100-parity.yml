@@ -4,9 +4,9 @@ on:
 permissions:
   contents: read
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,30 +18,18 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-v100-atmos-ubuntu-gcc64-129b1c81a8d4264a70a90922aaabea3ad37dcdb7aa24fae1ce1faa
-          restore-keys: mpv-v100-atmos-ubuntu-gcc64-
-      - name: Inspect existing build metadata only
+          key: mpv-v100-atmos-ubuntu-gcc64-129b1c81a8d4264a70a90922aaabea3ad37dcdb7aa24fae998bf9daef1ce1faa
+          fail-on-cache-miss: true
+      - name: Install native build commands
         run: |
-          python3 - <<'PY'
-          import pathlib, json, shutil
-          root=pathlib.Path('winbuild/mpv-winbuild-cmake/build64')
-          out=pathlib.Path('cache-inspect');out.mkdir()
-          inventory=[]
-          for p in root.rglob('*'):
-            relative=str(p.relative_to(root))
-            if p.is_dir() and (len(p.relative_to(root).parts)<=3 or 'mpv' in p.name):
-              inventory.append(relative+'/')
-            if p.is_file() and (p.name in ['intro-buildoptions.json','intro-machines.json','intro-buildsystem_files.json','meson-log.txt','meson.cross','crossfile','cross.txt'] or ('mpv' in relative and p.suffix in ['.cmake','.sh'])):
-              if p.stat().st_size < 400000:
-                dst=out/relative;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,dst)
-            if p.is_file() and any(s in p.name for s in ['x86_64-w64-mingw32-gcc','cross','toolchain','mpv.exe']):
-              inventory.append(relative)
-          (out/'inventory.json').write_text(json.dumps(inventory,indent=2))
-          print(json.dumps(inventory[:200],indent=2))
-          PY
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build pkg-config ccache python3-pip python3-cairo
+          python3 -m pip install --break-system-packages meson mako jsonschema roman rst2pdf
+      - name: Compile exact HOLD with bounded observation only
+        run: python3 bootstrap-input/build.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fixed-bootstrap-cache-inspect
-          path: cache-inspect
-          retention-days: 7
+          name: fixed-bootstrap-diagnostic
+          path: bootstrap-artifact
+          retention-days: 14
