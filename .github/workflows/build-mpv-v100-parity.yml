@@ -745,7 +745,9 @@ jobs:
             --source "$preflight_src" --compiler /usr/bin/gcc \
             --output "$GITHUB_WORKSPACE/demux-cache-contract-${{ matrix.variant }}"
           pts_final_commit="$(git rev-parse HEAD)"
-          git checkout --detach HEAD^
+          # Historical ASS gates inspect the observer commit's own parent.
+          # Skip both the common EOF fix and the final PTS layer here.
+          git checkout --detach HEAD~2
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-observer-recovery.py" \
             --source "$preflight_src" --cc /usr/bin/cc \
             --output "$GITHUB_WORKSPACE/native-ass-integration-observer-${{ matrix.variant }}.json"
