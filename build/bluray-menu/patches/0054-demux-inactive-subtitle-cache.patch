@@ -1,0 +1,256 @@
+From 56a41e900008f057c81495ef34a7634ef2679d5a Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Sat, 17 Oct 2026 19:36:06 +0800
+Subject: [PATCH] Bound inactive subtitle caches and refresh discarded subtitle
+ ranges
+
+---
+ demux/demux.c | 126 +++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 119 insertions(+), 7 deletions(-)
+
+diff --git a/demux/demux.c b/demux/demux.c
+index 4da4769..f05435f 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -384,6 +384,10 @@ struct demux_queue {
+     bool is_bof;            // started demuxing at beginning of file
+     bool is_eof;            // received true EOF here
+ 
++    // Packets were discarded while this subtitle stream was unselected. The
++    // A/V range can no longer prove subtitle coverage; re-read on selection.
++    bool inactive_cache_discarded;
++
+     // Complete index, though it may skip some entries to reduce density.
+     struct index_entry *index;  // ring buffer
+     size_t index_size;          // size of index[] (0 or a power of 2)
+@@ -636,6 +640,9 @@ static void update_seek_ranges(struct demux_cached_range *range)
+     for (int n = 0; n < range->num_streams; n++) {
+         struct demux_queue *queue = range->streams[n];
+ 
++        if (queue->ds->selected && queue->inactive_cache_discarded)
++            goto broken;
++
+         if (queue->ds->selected && queue->ds->eager) {
+             if (queue->is_bof) {
+                 min_start_pts = MP_PTS_MIN(min_start_pts, queue->seek_start);
+@@ -776,6 +783,7 @@ static void clear_queue(struct demux_queue *queue)
+ 
+     queue->is_eof = false;
+     queue->is_bof = false;
++    queue->inactive_cache_discarded = false;
+ }
+ 
+ static void clear_cached_range(struct demux_internal *in,
+@@ -866,6 +874,75 @@ static void ds_clear_reader_state(struct demux_stream *ds,
+     }
+ }
+ 
++static bool is_inactive_subtitle(struct demux_stream *ds)
++{
++    return ds->type == STREAM_SUB && ds->cache_inactive && !ds->selected;
++}
++
++static uint64_t queue_cached_bytes(struct demux_queue *queue)
++{
++    uint64_t bytes = queue->index_size * sizeof(queue->index[0]);
++    if (queue->head)
++        bytes += queue->tail_cum_pos - queue->head->cum_pos;
++    return bytes;
++}
++
++// Inactive subtitle packets have no decoder consuming their reader_head. They
++// must not grow until they starve eager A/V streams. Keep only complete,
++// continuous caches: arbitrary PGS packet/PTS groups can depend on earlier
++// palette and object state, so discard the whole queue and refresh on reuse.
++// Once discarded, this range stops collecting that inactive stream entirely.
++static uint64_t prune_inactive_subtitle_cache(struct demux_internal *in,
++                                             bool force)
++{
++    uint64_t budget = MPMIN(in->max_bytes / 8, 32 * 1024 * 1024);
++    uint64_t queue_budget = MPMIN(budget / 4, 4 * 1024 * 1024);
++    uint64_t total = 0;
++    uint64_t freed = 0;
++
++    for (int r = 0; r < in->num_ranges; r++) {
++        struct demux_cached_range *range = in->ranges[r];
++        for (int n = 0; n < range->num_streams; n++) {
++            struct demux_queue *queue = range->streams[n];
++            if (is_inactive_subtitle(queue->ds))
++                total += queue_cached_bytes(queue);
++        }
++    }
++
++    // Older ranges are least valuable. Account all ranges, not just forward
++    // packets in the current range; packet indexes consume the same budget.
++    for (int r = 0; r < in->num_ranges; r++) {
++        struct demux_cached_range *range = in->ranges[r];
++        bool changed = false;
++        for (int n = 0; n < range->num_streams; n++) {
++            struct demux_queue *queue = range->streams[n];
++            struct demux_stream *ds = queue->ds;
++            if (!is_inactive_subtitle(ds))
++                continue;
++            uint64_t bytes = queue_cached_bytes(queue);
++            if (!bytes || (!force && bytes <= queue_budget && total <= budget))
++                continue;
++
++            if (ds->queue == queue)
++                ds_clear_reader_queue_state(ds);
++            clear_queue(queue);
++            queue->inactive_cache_discarded = true;
++            total -= bytes;
++            freed += bytes;
++            changed = true;
++        }
++        if (changed)
++            update_seek_ranges(range);
++    }
++
++    if (freed) {
++        MP_VERBOSE(in, "Inactive subtitle cache reclaimed: %"PRIu64
++                   " bytes, retained=%"PRIu64" limit=%"PRIu64"%s\n",
++                   freed, total, budget, force ? " (forward pressure)" : "");
++    }
++    return freed;
++}
++
+ // called locked, from user thread only
+ static void clear_reader_state(struct demux_internal *in,
+                                bool clear_back_state)
+@@ -976,6 +1053,7 @@ static void update_stream_selection_state(struct demux_internal *in,
+         update_seek_ranges(range);
+     }
+ 
++    prune_inactive_subtitle_cache(in, false);
+     free_empty_cached_ranges(in);
+ 
+     wakeup_ds(ds);
+@@ -1923,6 +2001,7 @@ static void attempt_range_joining(struct demux_internal *in)
+         q1->last_ts = q2->last_ts;
+         q1->keyframe_latest = q2->keyframe_latest;
+         q1->is_eof = q2->is_eof;
++        q1->inactive_cache_discarded |= q2->inactive_cache_discarded;
+ 
+         q1->last_pos_fixup = -1;
+ 
+@@ -2185,7 +2264,8 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+ 
+     struct demux_queue *queue = ds->queue;
+ 
+-    bool drop = (!ds->selected && !ds->cache_inactive) || in->seeking ||
++    bool drop = (!ds->selected && (!ds->cache_inactive ||
++                 queue->inactive_cache_discarded)) || in->seeking ||
+                 ds->sh->attached_picture;
+ 
+     if (!drop) {
+@@ -2301,6 +2381,11 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+ 
+     // Don't process the packet further if it's skipped by the previous seek
+     // (see reader_head check/assignment above).
++    if (is_inactive_subtitle(ds)) {
++        // This can release dp, so do not use it after enforcing the budget.
++        prune_inactive_subtitle_cache(in, false);
++        return;
++    }
+     if (!ds->reader_head)
+         return;
+ 
+@@ -2347,6 +2432,8 @@ static bool read_packet(struct demux_internal *in)
+     if (!was_reading || in->blocked || demux_cancel_test(in->d_thread))
+         return false;
+ 
++    prune_inactive_subtitle_cache(in, false);
++
+     // Check if we need to read a new packet. We do this if all queues are below
+     // the minimum, or if a stream explicitly needs new packets. Also includes
+     // safe-guards against packet queue overflow.
+@@ -2405,6 +2492,15 @@ static bool read_packet(struct demux_internal *in)
+ 
+     MP_TRACE(in, "bytes=%zd, read_more=%d prefetch_more=%d, refresh_more=%d\n",
+              (size_t)total_fw_bytes, read_more, prefetch_more, refresh_more);
++    if (total_fw_bytes >= in->max_bytes) {
++        // Optional subtitle caches must give way before the generic overflow
++        // safeguard is allowed to end a starved eager stream.
++        if (prune_inactive_subtitle_cache(in, true)) {
++            total_fw_bytes = 0;
++            for (int n = 0; n < in->num_streams; n++)
++                total_fw_bytes += get_forward_buffered_bytes(in->streams[n]->ds);
++        }
++    }
+     if (total_fw_bytes >= in->max_bytes) {
+         // if we hit the limit just by prefetching, simply stop prefetching
+         if (!read_more) {
+@@ -2414,19 +2510,25 @@ static bool read_packet(struct demux_internal *in)
+         if (!in->warned_queue_overflow) {
+             in->warned_queue_overflow = true;
+             MP_WARN(in, "Too many packets in the demuxer packet queues:\n");
++            MP_WARN(in, "  forward=%"PRIu64" limit=%"PRIu64
++                    " cached=%zu\n", total_fw_bytes,
++                    (uint64_t)in->max_bytes, in->total_bytes);
+             for (int n = 0; n < in->num_streams; n++) {
+                 struct demux_stream *ds = in->streams[n]->ds;
+-                if (ds->selected) {
++                if (ds->selected || ds->cache_inactive) {
+                     size_t num_pkts = 0;
+                     for (struct demux_packet *dp = ds->reader_head;
+                          dp; dp = dp->next)
+                         num_pkts++;
+                     uint64_t fw_bytes = get_forward_buffered_bytes(ds);
+-                    MP_WARN(in, "  %s/%d: %zd packets, %zd bytes%s%s\n",
++                    MP_WARN(in, "  %s/%d: %zd packets, %zd bytes%s%s"
++                            " selected=%d cache_inactive=%d cached=%"PRIu64"\n",
+                             stream_type_name(ds->type), n,
+                             num_pkts, (size_t)fw_bytes,
+                             ds->eager ? "" : " (lazy)",
+-                            ds->refreshing ? " (refreshing)" : "");
++                            ds->refreshing ? " (refreshing)" : "",
++                            ds->selected, ds->cache_inactive,
++                            queue_cached_bytes(ds->queue));
+                 }
+             }
+             if (in->back_demuxing)
+@@ -2552,6 +2654,9 @@ static void prune_old_packets(struct demux_internal *in)
+         bool non_kf_prune = queue->head && !queue->head->keyframe;
+         bool kf_was_pruned = false;
+ 
++        if (is_inactive_subtitle(ds))
++            queue->inactive_cache_discarded = true;
++
+         while (queue->head && queue->head != ds->reader_head) {
+             if (queue->head->keyframe) {
+                 // If the cache is seekable, only delete until up the next
+@@ -3850,8 +3955,11 @@ static void switch_current_range(struct demux_internal *in,
+             struct demux_queue *queue = old->streams[n];
+ 
+             // Remove all packets which cannot be involved in seeking.
+-            while (queue->head && !queue->head->keyframe)
++            while (queue->head && !queue->head->keyframe) {
++                if (is_inactive_subtitle(queue->ds))
++                    queue->inactive_cache_discarded = true;
+                 remove_head_packet(queue);
++            }
+         }
+ 
+         // Exclude weird corner cases that break resuming.
+@@ -4281,7 +4389,9 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+     if (ds->type == STREAM_SUB)
+         cache_ref_pts = MP_ADD_PTS(cache_ref_pts, 10.0);
+     struct demux_cached_range *range = in->current_range;
+-    bool cache_covers_ref = range && ds->queue == range->streams[ds->index];
++    bool cache_lost = ds->queue->inactive_cache_discarded;
++    bool cache_covers_ref = range && ds->queue == range->streams[ds->index] &&
++                            !cache_lost;
+     if (cache_covers_ref) {
+         double cache_start = range->seek_start != MP_NOPTS_VALUE
+             ? range->seek_start : ds->queue->seek_start;
+@@ -4342,7 +4452,9 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+     // - If cache is enabled and a seek causes some new data to be cached, the demuxer
+     //   is sought to the end of cache after cache joining. Switching track immediately
+     //   after this also causes the same problem.
+-    if (!in->after_seek || (ds->type != STREAM_VIDEO && !avoid_refresh)) {
++    if (cache_lost || !in->after_seek ||
++        (ds->type != STREAM_VIDEO && !avoid_refresh))
++    {
+         MP_VERBOSE(in, "refresh track %d (%s)\n", stream->index,
+                    stream_type_name(ds->type));
+         initiate_refresh_seek(in, ds, ref_pts);

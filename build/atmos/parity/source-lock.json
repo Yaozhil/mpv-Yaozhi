@@ -67,7 +67,8 @@
     "build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
     "build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
     "build/bluray-menu/patches/0052-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
-    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df"
+    "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
+    "build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -248,5 +249,34 @@
         "default_duration_ns": 16666666
       }
     }
+  },
+  "demux_inactive_subtitle_cache_fix": {
+    "patch": "build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch",
+    "patch_sha256": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd",
+    "source_commit": "56a41e900008f057c81495ef34a7634ef2679d5a",
+    "source_parent_commit": "25d1988c3b4ec7f392953d0af01416a128efdd6e",
+    "changed_files": [
+      "demux/demux.c"
+    ],
+    "before_source_sha256": {
+      "demux/demux.c": "95643a35b1383dc2af3061a0bf42702b10eef2ce508e63c1682bea96ef546147"
+    },
+    "source_sha256": {
+      "demux/demux.c": "67f55daa88f493b05ffba902c82f351d6da93dd3819d56419b7baef8e6dc5060"
+    },
+    "preserved_source_sha256": {
+      "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
+      "filters/f_enhancement_pair.c": "89224f86acf3b40b6c7137e170610b4a2ec0262faec136be7a20ceedb703d929",
+      "filters/f_demux_in.c": "b7f90aae2415838fb2ef59f973bd91e92f180420211b4171ca804b3ba5d58b04",
+      "player/playloop.c": "ccec9f4ba50bfbecfd05aee24926e820f25b32db676cf1590106181dac86fa92"
+    },
+    "test_sha256": {
+      "build/atmos/parity/verify-inactive-subtitle-cache-contract.py": "630d4184033de96e6606344b4789c8f742e50ebfde5905a981fbdbe5c77e4b95",
+      "build/atmos/parity/verify-eof-cache-source.py": "84d502d1a49cf532c090fd44cadc327397340e480dce1641a301692acf26d8a8",
+      "build/atmos/parity/replay-eof-cache.py": "f306770bf79856d7b868d16e7537fda7592cb7f23edc026c155d6485205fdb13",
+      "build/feedback/tests/verify-inactive-subtitle-cache.py": "3d3ee9d6171e0275b3afc3548760ac86544a50994cfad2bb6eb45cabc179e44c"
+    },
+    "scope": "Bound optional inactive embedded subtitle queues across ranges; invalidate discarded subtitle coverage and refresh on reuse; preserve selected streams and the generic overflow safeguard.",
+    "runtime_verified": false
   }
 }

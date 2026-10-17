@@ -26,7 +26,7 @@ on:
         type: string
         required: false
   pull_request:
-    branches: [codex/v100-core-parity-20260907]
+    branches: [codex/v100-core-parity-20260907, codex/danmaku-batch-v9-20261005]
     paths:
       - .github/workflows/build-mpv-v100-parity.yml
       - build/atmos/**
@@ -128,6 +128,11 @@ jobs:
 
       - name: Check out configuration and patch
         uses: actions/checkout@v6
+        with:
+          # The PR base is used only for its dependency cache. Build the
+          # reviewed HOLD-derived head, never the base branch's merge tree.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Verify Lua subtitle and danmaku policies
         shell: bash
@@ -733,6 +738,12 @@ jobs:
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-video-pts-repair.py" \
             --source "$preflight_src" --cc /usr/bin/cc \
             --output "$GITHUB_WORKSPACE/native-ass-integration-pts-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-eof-cache-source.py" \
+            --source "$preflight_src" \
+            --output "$GITHUB_WORKSPACE/demux-cache-source-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-inactive-subtitle-cache-contract.py" \
+            --source "$preflight_src" --compiler /usr/bin/gcc \
+            --output "$GITHUB_WORKSPACE/demux-cache-contract-${{ matrix.variant }}"
           pts_final_commit="$(git rev-parse HEAD)"
           git checkout --detach HEAD^
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-observer-recovery.py" \
@@ -765,6 +776,8 @@ jobs:
             native-ass-integration-prepass-${{ matrix.variant }}.json
             native-ass-integration-observer-${{ matrix.variant }}.json
             native-ass-integration-pts-${{ matrix.variant }}.json
+            demux-cache-source-${{ matrix.variant }}.json
+            demux-cache-contract-${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 7
 
@@ -1248,6 +1261,7 @@ jobs:
           cp build/dolby-vision/tests/verify-dovi-rpu.py artifact/
           cp -a build/dolby-vision/tests/fixtures artifact/dovi-rpu-fixtures
           cp build/bluray-menu/tests/verify-hdmv-context.py artifact/
+          cp build/feedback/tests/verify-inactive-subtitle-cache.py artifact/
           cp artifacts/secondary-ass-clock.json artifact/
           cp artifacts/secondary-ass-presentation.txt artifact/
           cp \
@@ -1286,6 +1300,7 @@ jobs:
               verify-dovi-rpu.py \
               dovi-rpu-fixtures/* \
               verify-hdmv-context.py \
+              verify-inactive-subtitle-cache.py \
               secondary-ass-clock.json \
               secondary-ass-presentation.txt \
               > SHA256SUMS.txt
@@ -1360,6 +1375,22 @@ jobs:
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $mpv) {
             throw "mpv.com not found in release archive"
+          }
+          python (Join-Path $artifact "verify-inactive-subtitle-cache.py") `
+            --core $mpv `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --output (Join-Path $artifact "inactive-subtitle-cache-validation") `
+            --expect complete
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inactive subtitle cache playback regression failed"
+          }
+          python (Join-Path $artifact "verify-inactive-subtitle-cache.py") `
+            --core $mpv `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --output (Join-Path $artifact "inactive-subtitle-cache-validation-60") `
+            --tracks 60 --expect complete
+          if ($LASTEXITCODE -ne 0) {
+            throw "Sixty-track inactive subtitle cache playback regression failed"
           }
           $aoHelp = & $mpv --no-config --ao=help 2>&1
           if ($LASTEXITCODE -ne 0) {
@@ -1615,6 +1646,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: ci-config
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build renderer
