@@ -102,9 +102,9 @@ shutil.copyfile(root/'build/bluray-menu/patches/0049-native-ass-captured-submit-
 shutil.copyfile(root/'build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch', packages/'mpv-9200-native-ass-paused-bitmap.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch', packages/'mpv-9201-native-ass-prepass-display-budget.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0052-native-ass-observer-recovery.patch', packages/'mpv-9202-native-ass-observer-recovery.patch')
+# Keep the bounded PTS patch last: its existing identity gate inspects HEAD^.
+shutil.copyfile(root/'build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch', packages/'mpv-9202a-demux-inactive-subtitle-cache.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch', packages/'mpv-9203-video-bounded-duplicate-pts.patch')
-shutil.copyfile(root/'build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch', packages/'mpv-9204-native-ass-neutral-present-ab.patch')
-shutil.copyfile(root/'build/bluray-menu/patches/0055-native-ass-fresh-submit-window.patch', packages/'mpv-9205-native-ass-fresh-submit-window.patch')
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.
