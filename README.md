@@ -2,11 +2,11 @@
 
 <h1>mpv-Yaozhi</h1>
 
-### 让每一次播放，都值得期待。
+### 让每一次播放，都值得期待
 
 **Dolby Vision / HDR · 蓝光原盘菜单 · 沉浸声 · AI 超分补帧**
 
-从蓝光原盘到在线追剧，将画面增强、沉浸声与顺手的中文操作融于一体，打造开箱即用的 Windows 观影体验。
+从蓝光原盘到在线追剧，将画面增强、沉浸声与顺手的中文操作融于一体，打造开箱即用的 Windows 观影体验
 
 <a href="https://github.com/Yaozhil/mpv-Yaozhi/releases/latest"><img src="docs/images/download-player.svg" alt="下载播放器" width="200"></a> &nbsp; <a href="https://github.com/Yaozhil/mpv-Yaozhi/releases/tag/mpv-Yaozhi-%E8%B6%85%E5%88%86%E8%A1%A5%E5%B8%A7%E5%AE%8C%E6%95%B4%E4%BE%9D%E8%B5%96%E5%8C%85"><img src="docs/images/download-visionpack.svg" alt="下载超分补帧完整依赖包" width="280"></a>
 
