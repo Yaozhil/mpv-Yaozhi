@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="48" viewBox="0 0 200 48" role="img" aria-label="下载播放器">
+  <title>下载播放器</title>
+  <rect x="0.5" y="0.5" width="199" height="47" rx="7" fill="#c2dfa7" stroke="#c2dfa7"/>
+  <g fill="none" stroke="#162419" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M26 14v14m-5-5 5 5 5-5M18 30v4h16v-4"/>
+  </g>
+  <text x="118.0" y="30" text-anchor="middle" fill="#162419" font-family="system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="600">下载播放器</text>
+</svg>
