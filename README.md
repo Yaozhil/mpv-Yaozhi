@@ -2,16 +2,17 @@
 
 <h1>mpv-Yaozhi</h1>
 
-**面向 Windows 的高画质播放器，让原盘、在线观影与中文操作更省心。**
+### 让电脑成为你的高画质影音中心。
+
+**Dolby Vision / HDR · 蓝光原盘菜单 · 沉浸声 · AI 超分补帧**
+
+从蓝光原盘到在线追剧，将画面增强、沉浸声与顺手的中文操作融于一体，打造开箱即用的 Windows 观影体验。
 
 <a href="https://github.com/Yaozhil/mpv-Yaozhi/releases/latest"><img src="docs/images/download-player.svg" alt="下载播放器" width="200"></a> &nbsp; <a href="https://github.com/Yaozhil/mpv-Yaozhi/releases/tag/mpv-Yaozhi-%E8%B6%85%E5%88%86%E8%A1%A5%E5%B8%A7%E5%AE%8C%E6%95%B4%E4%BE%9D%E8%B5%96%E5%8C%85"><img src="docs/images/download-visionpack.svg" alt="下载超分补帧完整依赖包" width="280"></a>
 
 </div>
 
 ![mpv-Yaozhi 主界面](docs/images/ui-annotated.png)
-
-<details>
-<summary>查看更多播放界面与配置助手</summary>
 
 ### 播放界面
 
@@ -21,9 +22,10 @@
 
 ![杳知功能菜单](docs/images/功能界面展示111.png)
 
-### 杳知配置助手
+<details>
+<summary>查看杳知配置助手 7.1</summary>
 
-![杳知配置助手](docs/images/杳知配置助手3.0截图.png)
+![杳知 MPV 配置助手 7.1：基础设置、账号与 Cookie、弹幕源及旧配置迁移](docs/images/config-assistant-7.1.png)
 
 </details>
 
@@ -31,35 +33,10 @@
 
 > 以下包含近期内测功能展示；公开下载版本所含功能以对应发行说明为准。
 
-- **手机家庭影院（内测）**：用手机浏览本地与网盘影片、遥控播放，或把支持的视频链接发给电脑，坐在沙发上也能轻松选片。
 - **AI 补帧更省心**：开启后按当前片源检测，满足条件再自动接入；实际后端与帧率清晰可见，持续过载时安全回退。
 - **三源在线字幕**：Assrt、迅雷、字幕猫统一搜索，可编辑关键词，换源时保留搜索内容。
 - **在线追剧更顺手**：优化 YouTube 高清档位与清晰度切换；B站番剧支持在当前季列表按集号或标题查找。
-
-## 手机家庭影院（内测）
-
-手机与电脑在同一局域网内，即可浏览影片、控制播放和发送链接。把选片与操作留在手边，让大屏专心播放。
-
-<p align="center"><strong>影片在大屏，操作在手边。</strong></p>
-
-<p align="center">
-  <a href="docs/images/cinema-remote-library.png"><img src="docs/images/cinema-remote-library.png" alt="手机选片：浏览本地目录与剧集" width="240"></a>
-  <a href="docs/images/cinema-remote-controls.png"><img src="docs/images/cinema-remote-controls.png" alt="播放遥控：暂停、进度、音量、字幕与音轨" width="240"></a>
-  <a href="docs/images/cinema-remote-link.png"><img src="docs/images/cinema-remote-link.png" alt="链接播放：识别分享内容并在电脑播放" width="240"></a>
-</p>
-
-<p align="center">手机选片 · 播放遥控 · 链接播放<br><sub>真实手机截图，点击可放大查看。</sub></p>
-
-浏览本地与网盘目录，暂停或跳转当前影片，调整音量、字幕与音轨；也可以粘贴支持的视频分享链接，让电脑继续播放。
-
-<details>
-<summary>查看更多遥控界面：弹幕、搜索与选集</summary>
-
-- [弹幕搜索与加载](docs/images/cinema-remote-danmaku.png)
-- [目录搜索与剧集浏览](docs/images/cinema-remote-search.png)
-- [播放列表与选集](docs/images/cinema-remote-playlist.png)
-
-</details>
+- **手机家庭影院（内测）**：用手机浏览本地与网盘影片、遥控播放，或把支持的视频链接发给电脑，坐在沙发上也能轻松选片。
 
 ## AI 超分与补帧
 
@@ -202,6 +179,35 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 - 可定位的网络视频与 AList/OpenList/WebDAV 文件支持进度条画面预览。
 - 近期内测将 Assrt、迅雷、字幕猫整合到在线字幕入口，支持编辑关键词、换源继续搜索；字幕猫仅查找已有字幕，服务额度以站点为准。
 - 近期内测优化 YouTube 高清档位与清晰度切换；B站番剧可在当前季的集数列表中按集号或标题搜索。
+
+## 手机家庭影院（内测）
+
+手机与电脑在同一局域网内，即可浏览影片、控制播放和发送链接。把选片与操作留在手边，让大屏专心播放。
+
+<p align="center"><strong>影片在大屏，操作在手边。</strong></p>
+
+<p align="center">
+  <a href="docs/images/cinema-remote-library.png"><img src="docs/images/cinema-remote-library.png" alt="手机选片：浏览本地目录与剧集" width="240"></a>
+  <a href="docs/images/cinema-remote-controls.png"><img src="docs/images/cinema-remote-controls.png" alt="播放遥控：暂停、进度、音量、字幕与音轨" width="240"></a>
+  <a href="docs/images/cinema-remote-link.png"><img src="docs/images/cinema-remote-link.png" alt="链接播放：识别分享内容并在电脑播放" width="240"></a>
+</p>
+
+<p align="center">手机选片 · 播放遥控 · 链接播放<br><sub>真实手机截图，点击可放大查看。</sub></p>
+
+浏览本地与网盘目录，暂停或跳转当前影片，调整音量、字幕与音轨；也可以粘贴支持的视频分享链接，让电脑继续播放。
+
+<details>
+<summary>查看更多遥控界面：弹幕、搜索与选集</summary>
+
+<p align="center">
+  <a href="docs/images/cinema-remote-danmaku.png"><img src="docs/images/cinema-remote-danmaku.png" alt="弹幕搜索与加载：在手机上查找并控制大屏弹幕" width="240"></a>
+  <a href="docs/images/cinema-remote-search.png"><img src="docs/images/cinema-remote-search.png" alt="目录搜索与剧集浏览：按关键词查找影片" width="240"></a>
+  <a href="docs/images/cinema-remote-playlist.png"><img src="docs/images/cinema-remote-playlist.png" alt="播放列表与选集：查看剧集并选择播放" width="240"></a>
+</p>
+
+<p align="center">弹幕搜索与加载 · 目录搜索与剧集浏览 · 播放列表与选集<br><sub>展开即可查看，点击图片可放大。</sub></p>
+
+</details>
 
 ## 快速开始
 
