@@ -1,0 +1,83 @@
+From ea4acd7aa2b7c84b145c00910aee337e8f63eca6 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 22 Oct 2026 16:36:27 +0800
+Subject: [PATCH] win32: retain MTA for SMTC and WASAPI hotplug lifetime
+
+---
+ audio/out/ao_wasapi.c |  9 ++++++---
+ audio/out/ao_wasapi.h |  1 +
+ osdep/win32/smtc.cpp  | 10 ++++++++++
+ 3 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/audio/out/ao_wasapi.c b/audio/out/ao_wasapi.c
+index 7ad1e64..27138a6 100644
+--- a/audio/out/ao_wasapi.c
++++ b/audio/out/ao_wasapi.c
+@@ -502,8 +502,10 @@ static bool audio_set_pause(struct ao *ao, bool paused)
+ static void hotplug_uninit(struct ao *ao)
+ {
+     MP_DBG(ao, "Hotplug uninit\n");
++    struct wasapi_state *state = ao->priv;
+     wasapi_change_uninit(ao);
+-    CoUninitialize();
++    if (state->hotplug_mta)
++        CoDecrementMTAUsage(state->hotplug_mta);
+ }
+ 
+ static int hotplug_init(struct ao *ao)
+@@ -511,8 +513,9 @@ static int hotplug_init(struct ao *ao)
+     MP_DBG(ao, "Hotplug init\n");
+     struct wasapi_state *state = ao->priv;
+     state->log = ao->log;
+-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+-    HRESULT hr = wasapi_change_init(ao, true);
++    HRESULT hr = CoIncrementMTAUsage(&state->hotplug_mta);
++    EXIT_ON_ERROR(hr);
++    hr = wasapi_change_init(ao, true);
+     EXIT_ON_ERROR(hr);
+ 
+     return 0;
+diff --git a/audio/out/ao_wasapi.h b/audio/out/ao_wasapi.h
+index cbd4a3f..79392eb 100644
+--- a/audio/out/ao_wasapi.h
++++ b/audio/out/ao_wasapi.h
+@@ -100,6 +100,7 @@ typedef struct wasapi_state {
+     struct ao_convert_fmt convert_format;
+ 
+     change_notify change;
++    CO_MTA_USAGE_COOKIE hotplug_mta; // the hotplug instance keeps the MTA alive
+ } wasapi_state;
+ 
+ char *mp_PKEY_to_str_buf(char *buf, size_t buf_size, const PROPERTYKEY *pkey);
+diff --git a/osdep/win32/smtc.cpp b/osdep/win32/smtc.cpp
+index 2074f85..756b7e9 100644
+--- a/osdep/win32/smtc.cpp
++++ b/osdep/win32/smtc.cpp
+@@ -112,10 +112,18 @@ static inline int mp_set_property(mpv_handle *mpv, const char *name, T &&val)
+ struct smtc_ctx {
+     mp_log *log;
+     mpv_handle *mpv;
++    CO_MTA_USAGE_COOKIE mta{ nullptr };
+     SystemMediaTransportControls smtc{ nullptr };
+     IAsyncOperation<FileProperties::StorageItemThumbnail> thumb_async{ nullptr };
+     std::atomic_bool close{ false };
+     std::atomic<HWND> hwnd{ nullptr };
++
++    ~smtc_ctx() {
++        thumb_async = nullptr;
++        smtc = nullptr;
++        if (mta)
++            CoDecrementMTAUsage(mta);
++    }
+ };
+ 
+ static void update_state(SystemMediaTransportControls &smtc, mpv_handle *mpv)
+@@ -384,6 +392,8 @@ static MP_THREAD_VOID win_event_loop_fn(void *arg)
+         if (!ctx.hwnd)
+             winrt::throw_last_error();
+ 
++        winrt::check_hresult(CoIncrementMTAUsage(&ctx.mta));
++
+         SystemMediaTransportControls &smtc = ctx.smtc;
+         auto interop = winrt::get_activation_factory<SystemMediaTransportControls,
+                                                      ISystemMediaTransportControlsInterop>();

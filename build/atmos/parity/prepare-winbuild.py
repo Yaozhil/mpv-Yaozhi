@@ -105,6 +105,16 @@ shutil.copyfile(root/'build/bluray-menu/patches/0052-native-ass-observer-recover
 # Keep the bounded PTS patch last: its existing identity gate inspects HEAD^.
 shutil.copyfile(root/'build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch', packages/'mpv-9202a-demux-inactive-subtitle-cache.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch', packages/'mpv-9203-video-bounded-duplicate-pts.patch')
+# Round-one groups follow the exact legacy HOLD/EOF/PTS baseline. Historical
+# gates check their original layer; the new exact gate checks the five additions.
+for source_name, package_name in [
+    ('0055-vc1-bounded-decoder-fallback.patch', 'mpv-9300-vc1-bounded-decoder-fallback.patch'),
+    ('0056-vc1-disc-parameter-probe.patch', 'mpv-9301-vc1-disc-parameter-probe.patch'),
+    ('0057-script-property-lookup.patch', 'mpv-9302-script-property-lookup.patch'),
+    ('0058-lua-native-api-efficiency.patch', 'mpv-9303-lua-native-api-efficiency.patch'),
+    ('0059-windows-com-lifetime.patch', 'mpv-9304-windows-com-lifetime.patch'),
+]:
+    shutil.copyfile(root/'build/bluray-menu/patches'/source_name, packages/package_name)
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.

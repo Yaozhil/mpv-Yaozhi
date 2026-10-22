@@ -1,0 +1,299 @@
+From 90d452bb8108be91f6be0814ed6a44cfef932f09 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 22 Oct 2026 16:36:27 +0800
+Subject: [PATCH] demux_lavf: bound missing Blu-ray VC-1 parameter probing
+
+---
+ demux/demux_lavf.c | 228 +++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 221 insertions(+), 7 deletions(-)
+
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index b9483c7..8d843ee 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -47,6 +47,7 @@
+ #include "misc/bstr.h"
+ #include "misc/charset_conv.h"
+ #include "misc/thread_tools.h"
++#include "osdep/timer.h"
+ 
+ #include "stream/stream.h"
+ #include "stream/stream_curl.h"
+@@ -67,6 +68,9 @@
+ // libavformat (almost) always reads data in blocks of this size.
+ #define BIO_BUFFER_SIZE 32768
+ 
++#define DISC_VC1_PROBE_BYTES (8 * 1024 * 1024)
++#define DISC_VC1_PROBE_SECONDS 5
++
+ static void avcodec_par_destructor(void *p)
+ {
+     avcodec_parameters_free(p);
+@@ -261,6 +265,12 @@ typedef struct lavf_priv {
+ 
+     int retry_counter;
+ 
++    bool disc_vc1_probing;
++    bool disc_vc1_probe_limited;
++    bool disc_vc1_probe_read_eof;
++    int64_t disc_vc1_probe_bytes_left;
++    int64_t disc_vc1_probe_deadline;
++
+     struct demux_packet *pending_pkt;
+ 
+     AVDictionary *av_opts;
+@@ -312,7 +322,23 @@ static int mp_read(void *opaque, uint8_t *buf, int size)
+     if (!stream)
+         return 0;
+ 
++    if (priv->disc_vc1_probing) {
++        if (demux_read_interrupted(demuxer))
++            return AVERROR_EXIT;
++        if (priv->disc_vc1_probe_bytes_left <= 0 ||
++            mp_time_ns() >= priv->disc_vc1_probe_deadline)
++        {
++            priv->disc_vc1_probe_limited = true;
++            return AVERROR_EOF;
++        }
++        size = MPMIN(size, priv->disc_vc1_probe_bytes_left);
++    }
++
+     int ret = stream_read_partial(stream, buf, size);
++    if (priv->disc_vc1_probing && ret > 0)
++        priv->disc_vc1_probe_bytes_left -= ret;
++    else if (priv->disc_vc1_probing && !ret)
++        priv->disc_vc1_probe_read_eof = true;
+ 
+     MP_TRACE(demuxer, "%d=mp_read(%p, %p, %d), pos: %"PRId64", eof:%d\n",
+              ret, stream, buf, size, stream_tell(stream), stream->eof);
+@@ -965,7 +991,18 @@ static void update_metadata(demuxer_t *demuxer)
+ 
+ static int interrupt_cb(void *ctx)
+ {
+-    return demux_read_interrupted(ctx);
++    struct demuxer *demuxer = ctx;
++    lavf_priv_t *priv = demuxer->priv;
++    if (demux_read_interrupted(demuxer))
++        return 1;
++    if (priv->disc_vc1_probing &&
++        (priv->disc_vc1_probe_bytes_left <= 0 ||
++         mp_time_ns() >= priv->disc_vc1_probe_deadline))
++    {
++        priv->disc_vc1_probe_limited = true;
++        return 1;
++    }
++    return 0;
+ }
+ 
+ static int block_io_open(struct AVFormatContext *s, AVIOContext **pb,
+@@ -1436,6 +1473,182 @@ static void detect_dovi_split_streams(demuxer_t *demuxer)
+     }
+ }
+ 
++static bool is_bluray_stream(struct stream *stream)
++{
++    if (!stream || !stream->info)
++        return false;
++    const char *name = stream->info->name;
++    return strcmp(name, "bd") == 0 || strcmp(name, "bdnav") == 0 ||
++           strcmp(name, "bdmv/bluray") == 0;
++}
++
++static bool vc1_has_headers(const AVCodecParameters *par, bool *seq, bool *entry)
++{
++    *seq = *entry = false;
++    if (!par->extradata || par->extradata_size < 16)
++        return false;
++    // Blu-ray VC-1 uses Advanced Profile. The native decoder requires both
++    // sequence and entry-point headers, each with a nonempty payload.
++    for (int n = 0; n < par->extradata_size - 4; n++) {
++        const uint8_t *p = par->extradata + n;
++        if (!p[0] && !p[1] && p[2] == 1) {
++            *seq |= p[3] == 0x0f;
++            *entry |= p[3] == 0x0e;
++        }
++    }
++    return *seq && *entry;
++}
++
++static bool disc_vc1_needs_probe(struct demuxer *demuxer)
++{
++    lavf_priv_t *priv = demuxer->priv;
++    if (priv->opts->probeinfo != -2 || !is_bluray_stream(priv->stream) ||
++        !matches_avinputformat_name(priv, "mpegts") ||
++        (demuxer->params && demuxer->params->skip_lavf_probing))
++    {
++        return false;
++    }
++    for (unsigned n = 0; n < priv->avfc->nb_streams; n++) {
++        const AVCodecParameters *par = priv->avfc->streams[n]->codecpar;
++        bool seq, entry;
++        if (par->codec_type == AVMEDIA_TYPE_VIDEO &&
++            par->codec_id == AV_CODEC_ID_VC1 &&
++            (par->width <= 0 || par->height <= 0 ||
++             !vc1_has_headers(par, &seq, &entry)))
++        {
++            return true;
++        }
++    }
++    return false;
++}
++
++static void log_disc_vc1_params(struct demuxer *demuxer, const char *phase)
++{
++    lavf_priv_t *priv = demuxer->priv;
++    struct stream_nav_state nav = {0};
++    stream_control(priv->stream, STREAM_CTRL_GET_NAV_STATE, &nav);
++    for (unsigned n = 0; n < priv->avfc->nb_streams; n++) {
++        AVStream *st = priv->avfc->streams[n];
++        const AVCodecParameters *par = st->codecpar;
++        if (par->codec_type != AVMEDIA_TYPE_VIDEO ||
++            par->codec_id != AV_CODEC_ID_VC1)
++            continue;
++        bool seq, entry;
++        vc1_has_headers(par, &seq, &entry);
++        MP_VERBOSE(demuxer, "Blu-ray VC-1 %s probe: playlist=%d pid=0x%x "
++                   "codec=%d profile=%d level=%d size=%dx%d format=%d "
++                   "extradata=%d seq=%d entry=%d.\n", phase, nav.playlist,
++                   st->id, par->codec_id, par->profile, par->level,
++                   par->width, par->height, par->format, par->extradata_size,
++                   seq, entry);
++    }
++}
++
++static bool probe_disc_vc1(struct demuxer *demuxer)
++{
++    lavf_priv_t *priv = demuxer->priv;
++    AVFormatContext *avfc = priv->avfc;
++    unsigned num_streams = avfc->nb_streams;
++    struct saved_stream {
++        AVCodecParameters *params;
++        int disposition;
++        enum AVDiscard discard;
++    } *saved = talloc_zero_array(NULL, struct saved_stream, num_streams);
++    MP_HANDLE_OOM(saved);
++    bool ok = false;
++
++    // Keep known audio/subtitle packets buffered. Unknown/private data PIDs
++    // must be discarded before probing: restoring codecpar afterwards would
++    // leave FFmpeg's parser and internal codec context at their guessed codec.
++    // MPEG-TS skips discarded PES streams before attempting codec detection.
++    for (unsigned n = 0; n < num_streams; n++) {
++        AVStream *st = avfc->streams[n];
++        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
++            st->codecpar->codec_id == AV_CODEC_ID_VC1)
++            continue;
++        saved[n].params = avcodec_parameters_alloc();
++        if (!saved[n].params ||
++            avcodec_parameters_copy(saved[n].params, st->codecpar) < 0)
++        {
++            avcodec_parameters_free(&saved[n].params);
++            goto done;
++        }
++        saved[n].disposition = st->disposition;
++        saved[n].discard = st->discard;
++        if (st->codecpar->codec_type == AVMEDIA_TYPE_UNKNOWN ||
++            st->codecpar->codec_type == AVMEDIA_TYPE_DATA ||
++            st->codecpar->codec_id == AV_CODEC_ID_NONE)
++        {
++            st->discard = AVDISCARD_ALL;
++        }
++    }
++
++    log_disc_vc1_params(demuxer, "before");
++    int64_t probesize = avfc->probesize;
++    int64_t analyze_duration = avfc->max_analyze_duration;
++    int skip_duration = avfc->skip_estimate_duration_from_pts;
++    int flags = avfc->flags;
++    int io_error = priv->pb ? priv->pb->error : 0;
++    int io_eof = priv->pb ? priv->pb->eof_reached : 0;
++    avfc->probesize = MPMIN(avfc->probesize, DISC_VC1_PROBE_BYTES);
++    avfc->max_analyze_duration = analyze_duration > 0
++        ? MPMIN(analyze_duration, DISC_VC1_PROBE_SECONDS * AV_TIME_BASE)
++        : DISC_VC1_PROBE_SECONDS * AV_TIME_BASE;
++    avfc->skip_estimate_duration_from_pts = 1;
++    avfc->flags &= ~AVFMT_FLAG_NOBUFFER;
++    priv->disc_vc1_probe_limited = false;
++    priv->disc_vc1_probe_read_eof = false;
++    priv->disc_vc1_probe_bytes_left = DISC_VC1_PROBE_BYTES;
++    priv->disc_vc1_probe_deadline = mp_time_ns_add(mp_time_ns(), DISC_VC1_PROBE_SECONDS);
++    priv->disc_vc1_probing = true;
++    int ret = avformat_find_stream_info(avfc, NULL);
++    priv->disc_vc1_probing = false;
++    avfc->probesize = probesize;
++    avfc->max_analyze_duration = analyze_duration;
++    avfc->skip_estimate_duration_from_pts = skip_duration;
++    avfc->flags = flags;
++
++    log_disc_vc1_params(demuxer, "after");
++    MP_VERBOSE(demuxer, "Blu-ray VC-1 bounded probe read %"PRId64
++               " bytes (limited=%d, result=%d).\n",
++               DISC_VC1_PROBE_BYTES - priv->disc_vc1_probe_bytes_left,
++               priv->disc_vc1_probe_limited, ret);
++    if (demux_read_interrupted(demuxer))
++        goto done;
++    if (priv->disc_vc1_probe_limited && !priv->disc_vc1_probe_read_eof &&
++        !io_error && !io_eof && priv->pb)
++    {
++        // A budget boundary is temporary, unlike a real media EOF/error.
++        priv->pb->eof_reached = 0;
++        priv->pb->error = 0;
++    }
++    if (num_streams != avfc->nb_streams) {
++        MP_ERR(demuxer, "Blu-ray stream layout changed during VC-1 probing.\n");
++        goto done;
++    }
++    ok = (ret >= 0 || (priv->disc_vc1_probe_limited &&
++                      (ret == AVERROR_EXIT || ret == AVERROR_EOF))) &&
++         !disc_vc1_needs_probe(demuxer);
++
++done:
++    for (unsigned n = 0; n < num_streams; n++) {
++        if (saved[n].params) {
++            AVStream *st = avfc->streams[n];
++            AVCodecParameters *probed = st->codecpar;
++            st->codecpar = saved[n].params;
++            saved[n].params = probed;
++            st->disposition = saved[n].disposition;
++            st->discard = saved[n].discard;
++            avcodec_parameters_free(&saved[n].params);
++        }
++    }
++    talloc_free(saved);
++    if (!ok)
++        MP_ERR(demuxer, "Could not complete Blu-ray VC-1 parameters within "
++               "bounded probing.\n");
++    return ok;
++}
++
+ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
+ {
+     AVFormatContext *avfc = NULL;
+@@ -1528,13 +1741,12 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
+     // their PMT. Probing cannot infer private LPCM/PGS stream types reliably.
+     // Only a Blu-ray stream backend can supply this missing format context;
+     // leave ordinary files, network TS, DVD and explicit PMT registrations alone.
+-    if (priv->stream && matches_avinputformat_name(priv, "mpegts")) {
+-        const char *name = priv->stream->info->name;
+-        bool bluray = strcmp(name, "bd") == 0 || strcmp(name, "bdnav") == 0 ||
+-                      strcmp(name, "bdmv/bluray") == 0;
++    if (is_bluray_stream(priv->stream) &&
++        matches_avinputformat_name(priv, "mpegts"))
++    {
+         const AVClass *cls = priv->avif->priv_class;
+-        if (bluray && cls && av_opt_find(&cls, "force_hdmv", NULL, 0,
+-                                        AV_OPT_SEARCH_FAKE_OBJ))
++        if (cls && av_opt_find(&cls, "force_hdmv", NULL, 0,
++                               AV_OPT_SEARCH_FAKE_OBJ))
+         {
+             av_dict_set(&dopts, "force_hdmv", "1", 0);
+             MP_VERBOSE(demuxer, "Using Blu-ray context for unregistered HDMV streams\n");
+@@ -1620,6 +1832,8 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
+ 
+         MP_VERBOSE(demuxer, "avformat_find_stream_info() finished after %"PRId64
+                    " bytes.\n", stream_tell(priv->stream));
++    } else if (disc_vc1_needs_probe(demuxer) && !probe_disc_vc1(demuxer)) {
++        goto fail;
+     }
+ 
+     for (int i = 0; i < avfc->nb_chapters; i++) {
