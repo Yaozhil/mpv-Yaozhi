@@ -332,7 +332,7 @@
     ],
     "variants": {
       "main": {
-        "baseline_tree": "d33bd1e8142199a4c90cb18c7f1f4f3b9eef808d",
+        "baseline_tree": "44921051a784569f12306df20884103d86dc95b4",
         "before_source_sha256": {
           "DOCS/interface-changes/property-list-sorted.txt": null,
           "audio/out/ao_wasapi.c": "2064029a592e7c600c34d58f1a58b013ae6ecbc3b66a49479a424f551ef4b4d1",
@@ -360,10 +360,12 @@
           "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07",
           "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
           "video/decode/vd_lavc.c": "c711cce9062633940da1a2a024beedaee3b91d37e242ef468bcbeba5a2185e3f"
-        }
+        },
+        "archive_baseline_tree": "d33bd1e8142199a4c90cb18c7f1f4f3b9eef808d",
+        "archive_mode_note": "Same blobs; Windows archive source lost 23 executable bits from the exact upstream Git tree. CI requires canonical modes."
       },
       "atmos": {
-        "baseline_tree": "de8a5e9af53fca0a052450ce4ceb3133fe31d6c4",
+        "baseline_tree": "08caeecaac1fb19ca222d2055a88421e5fa647a2",
         "before_source_sha256": {
           "DOCS/interface-changes/property-list-sorted.txt": null,
           "audio/out/ao_wasapi.c": "2064029a592e7c600c34d58f1a58b013ae6ecbc3b66a49479a424f551ef4b4d1",
@@ -391,11 +393,13 @@
           "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07",
           "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
           "video/decode/vd_lavc.c": "c711cce9062633940da1a2a024beedaee3b91d37e242ef468bcbeba5a2185e3f"
-        }
+        },
+        "archive_baseline_tree": "de8a5e9af53fca0a052450ce4ceb3133fe31d6c4",
+        "archive_mode_note": "Same blobs; Windows archive source lost 23 executable bits from the exact upstream Git tree. CI requires canonical modes."
       }
     },
     "tools_sha256": {
-      "build/atmos/parity/verify-round1-source.py": "59c5becee04719c75e920c92e2e88140151770a9dd71c7063e6bc52cffe5f892",
+      "build/atmos/parity/verify-round1-source.py": "851dfcea59a515640ac1f45653c2e725a502e605e3f9d9258d6c008e1156576b",
       "build/atmos/parity/verify-vc1-round1.py": "bceb73a5e1a5091e21e5aba7f0e4d6a8dffa01db13ac83d0db16c24b97dabc4a"
     },
     "runtime_and_performance_validation": "Required separately on Windows before deployment."

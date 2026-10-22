@@ -27,7 +27,7 @@ def git(source, *args):
     )
 
 
-def verify(source, variant):
+def verify(source, variant, archive_source=False):
     source = source.resolve()
     lock = json.loads((HERE / 'source-lock.json').read_bytes())['round1_vc1_and_script_api']
     layers = lock['patches']
@@ -35,7 +35,10 @@ def verify(source, variant):
     assert not git(source, 'status', '--porcelain').strip(), 'Source must be clean'
     final = git(source, 'rev-parse', 'HEAD').decode().strip()
     baseline = git(source, 'rev-parse', f'HEAD~{len(layers)}').decode().strip()
-    assert git(source, 'rev-parse', baseline + '^{tree}').decode().strip() == lock['variants'][variant]['baseline_tree']
+    actual_tree = git(source, 'rev-parse', baseline + '^{tree}').decode().strip()
+    tree_key = 'archive_baseline_tree' if archive_source else 'baseline_tree'
+    expected_tree = lock['variants'][variant][tree_key]
+    assert actual_tree == expected_tree, ('Unexpected complete baseline tree', actual_tree, expected_tree, tree_key)
     allowed = sorted({name for layer in layers for name in layer['changed_files']})
     changed = sorted(git(source, 'diff', '--name-only', baseline, final).decode().splitlines())
     assert changed == allowed, ('Unexpected source scope', changed, allowed)
@@ -58,7 +61,8 @@ def verify(source, variant):
     return {
         'status': 'EXACT_ROUND1_SOURCE_AND_SCOPE_PASS', 'variant': variant,
         'source_commit': final, 'source_tree': git(source, 'rev-parse', 'HEAD^{tree}').decode().strip(),
-        'baseline_commit': baseline, 'baseline_tree': expected['baseline_tree'],
+        'baseline_commit': baseline, 'baseline_tree': actual_tree,
+        'source_mode': 'windows-archive' if archive_source else 'canonical-git-checkout',
         'changed_files': allowed, 'source_sha256': expected['source_sha256'],
         'all_other_tracked_source_unchanged': True,
         'compiled': False, 'runtime_verified': False, 'performance_verified': False,
@@ -70,9 +74,11 @@ def main():
     parser.add_argument('--source', required=True, type=Path)
     parser.add_argument('--variant', required=True, choices=['main', 'atmos'])
     parser.add_argument('--cc', required=True)
+    parser.add_argument('--archive-source', action='store_true',
+                        help='Explicit local archive mode; CI requires canonical Git file modes')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
-    result = verify(args.source, args.variant)
+    result = verify(args.source, args.variant, args.archive_source)
     cpu_output = args.output.with_suffix('')
     cpu_output.mkdir(parents=True, exist_ok=False)
     command = [sys.executable, str(HERE / 'verify-vc1-round1.py'),
