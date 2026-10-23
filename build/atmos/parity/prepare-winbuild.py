@@ -15,6 +15,27 @@ root=Path(__file__).resolve().parents[3]
 here=Path(__file__).resolve().parent
 lock=json.loads((here/'source-lock.json').read_text(encoding='utf-8'))
 packages=args.winbuild.resolve()/'packages'
+# Keep the exact patched inputs available for the post-build identity gate.
+# The pinned helper otherwise restores HEAD and deletes untracked patch files
+# after install, before the gate can inspect the sources used by the compiler.
+# Retain its explicit fullclean/liteclean targets and every other package's
+# normal cleanup behavior.
+cleanup_helper=args.winbuild.resolve()/'cmake/custom_steps.cmake'
+cleanup_text=cleanup_helper.read_text()
+postremove=(
+    '    ExternalProject_Add_Step(${_name} postremovebuild\n'
+    '        DEPENDEES ${_last_step}\n'
+    '        COMMAND ${EXEC} ${remove_cmd}\n'
+    '        ${COMMAND_FORCE_UPDATE}\n'
+    '        LOG 1\n'
+    '        COMMENT "Deleting build directory of ${_name} package after install"\n'
+    '    )\n'
+)
+assert cleanup_text.count(postremove)==1, 'Review pinned post-install cleanup helper'
+cleanup_text=cleanup_text.replace(postremove,
+    '    if(NOT "${_name}" MATCHES "^(avs3-audiodec|ffmpeg)$")\n'+
+    postremove+'    endif()\n',1)
+cleanup_helper.write_text(cleanup_text)
 for name,digest in lock['patches'].items():
     assert hashlib.sha256((here/name).read_bytes()).hexdigest()==digest, name
 for name,digest in lock['common_patches'].items():

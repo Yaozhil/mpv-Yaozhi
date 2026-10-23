@@ -204,8 +204,11 @@ def verify_dependency(source, kind, lock):
         require(incremental == allowed, f'Unexpected {kind} incremental scope')
     with temporary_index(source) as index:
         observed_tree, observed_edits = observe_worktree(source, index)
-    require(observed_tree == final_tree,
-            f'{kind} complete observed source differs from exact locked patch replay: {observed_tree} != {final_tree}')
+    if observed_tree != final_tree:
+        differences = git(source, 'diff-tree', '--no-commit-id', '--name-status',
+                          '-r', final_tree, observed_tree).decode()
+        require(False, f'{kind} complete observed source differs from exact locked patch replay: '
+                f'{observed_tree} != {final_tree}; differences:\n{differences[:12000]}')
     for relative, value in expected['source_sha256'].items():
         path = source / relative
         content = path.read_bytes() if path.is_file() else None

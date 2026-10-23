@@ -592,8 +592,8 @@
       }
     },
     "tools_sha256": {
-      "build/atmos/parity/verify-preselections-source.py": "76f7110a11ac2f2a69c1e4c68d74c0c29d26649f3d506cd4b83be03860bb5c08",
-      "build/atmos/parity/prepare-winbuild.py": "fecde2cdb4ca13f0f14f2f77118a5afc5368d4bd8925d97b9c4bbd3ed12cc994",
+      "build/atmos/parity/verify-preselections-source.py": "85000c9026bce2895c902af93349d36e047a4057bcef4e1c39842704c2293fea",
+      "build/atmos/parity/prepare-winbuild.py": "3f71d20eeae2511b41f0980489961ba5b7a737710bc0eac7d9ad5afbf84d7360",
       "build/av3a/avs3-audiodec.cmake": "c5f51ef48d4d46bbf48e18ffb6f67a6c6880aef7b666a1eab003dfd7ef749383",
       "build/av3a/normalize-source-eol.py": "4d2f84425950ce9df898926f69ab0c2b68db32ca5963c0f8c21e17f232c43980",
       "build/av3a/tests/verify-preselections-contract.py": "dd93892c85606a05dcd83894cd679a56c7b0d4c516ba732beef2b79a075d6f70",
