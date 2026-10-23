@@ -51,7 +51,10 @@ header = r'''
 #define mp_assert assert
 enum dec_ctrl { ADCTRL_GET_AV3A_CONTENT_INFO, VDCTRL_GET_HWDEC, OTHER_COMMAND };
 typedef struct { int type, flags; } AVOption;
-typedef struct { void *priv_data; } AVCodecContext;
+typedef struct { int marker; } AVClass;
+typedef struct { const AVClass *priv_class; } AVCodec;
+typedef struct { const AVCodec *codec; void *priv_data; } AVCodecContext;
+struct option_object { const AVClass *av_class; };
 struct mp_filter { void *priv; };
 struct mp_decoder { struct mp_filter *f; int (*control)(struct mp_filter *, enum dec_ctrl, void *); };
 struct mp_decoder_wrapper { struct mp_filter *f; };
@@ -69,6 +72,7 @@ struct track { struct mp_decoder_wrapper *dec; struct sh_stream *stream; };
 typedef struct MPContext { struct track *current_track[1][1]; } MPContext;
 struct m_property {};
 static int locked, allocated, get_calls, finds;
+static const AVClass option_class = { 123 };
 static AVOption option = {AV_OPT_TYPE_STRING, 3};
 static bool missing, fail_get;
 static char *exported;
@@ -78,6 +82,9 @@ static char *copy(const char *source, size_t n) {
 }
 static const AVOption *av_opt_find(void *obj, const char *name, const char *unit, int flags, int search) {
     assert(locked && obj && !strcmp(name, "av3a_contents") && !unit);
+    /* FFmpeg AVOptions reads the AVClass pointer at the object's start.
+     * Plain codec private data is not necessarily an AVOptions object. */
+    assert(((struct option_object *)obj)->av_class == &option_class);
     assert(flags == 3 && search == 0); finds++;
     return missing ? NULL : &option;
 }
@@ -105,8 +112,9 @@ tests = r'''
 static int count;
 static void expect(bool value) { count++; assert(value); }
 int main(void) {
-    int fake_private;
-    AVCodecContext avctx = { &fake_private };
+    struct option_object fake_private = { &option_class };
+    AVCodec codec = { &option_class };
+    AVCodecContext avctx = { .codec=&codec, .priv_data=&fake_private };
     struct priv inner = {.avctx=&avctx};
     struct mp_filter decoder_filter = { &inner };
     struct mp_decoder decoder = { &decoder_filter, control };
@@ -151,6 +159,21 @@ int main(void) {
     avctx.priv_data = &fake_private; inner.avctx = NULL;
     expect(mp_property_audio_av3a_content_info(&context,NULL,M_PROPERTY_GET,&value) == -2);
     inner.avctx = &avctx;
+    /* PCM may allocate private fields without an AVClass. Even a non-NULL
+     * private pointer must never be passed to av_opt_find in this case. */
+    uintptr_t non_option_private = UINTPTR_MAX;
+    AVCodec plain_codec = { .priv_class=NULL };
+    int no_option_finds = finds;
+    avctx.codec = &plain_codec; avctx.priv_data = &non_option_private;
+    expect(mp_property_audio_av3a_content_info(&context,NULL,M_PROPERTY_GET,&value) == -2);
+    expect(finds == no_option_finds && value == NULL && !locked);
+    avctx.priv_data = &fake_private;
+    expect(mp_property_audio_av3a_content_info(&context,NULL,M_PROPERTY_GET,&value) == -2);
+    expect(finds == no_option_finds);
+    avctx.codec = NULL;
+    expect(mp_property_audio_av3a_content_info(&context,NULL,M_PROPERTY_GET,&value) == -2);
+    expect(finds == no_option_finds);
+    avctx.codec = &codec;
     stream.group = &fake_private; int old_finds = finds;
     expect(mp_property_audio_av3a_content_info(&context,NULL,M_PROPERTY_GET,&value) == -2);
     expect(finds == old_finds); stream.group = NULL;

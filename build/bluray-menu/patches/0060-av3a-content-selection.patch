@@ -1,17 +1,17 @@
-From 1603ab174342ca3afca16b7f093e5a727db00168 Mon Sep 17 00:00:00 2001
+From 31933935edc356899a02931e71a555abffb04c9e Mon Sep 17 00:00:00 2001
 From: Codex <codex@local.invalid>
-Date: Fri, 23 Oct 2026 12:02:49 +0800
+Date: Fri, 23 Oct 2026 17:23:03 +0800
 Subject: [PATCH] audio: expose validated AV3A content selection metadata
 
 ---
  DOCS/man/input.rst          |  7 +++++++
- audio/decode/ad_lavc.c      | 36 ++++++++++++++++++++++++++++++++++++
+ audio/decode/ad_lavc.c      | 39 +++++++++++++++++++++++++++++++++++++
  filters/f_decoder_wrapper.h |  2 ++
- player/command.c            | 26 ++++++++++++++++++++++++--
- 4 files changed, 69 insertions(+), 2 deletions(-)
+ player/command.c            | 26 +++++++++++++++++++++++--
+ 4 files changed, 72 insertions(+), 2 deletions(-)
 
 diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
-index 8c8ccd3..7421cb2 100644
+index 8c8ccd362d808d1cb203e232ddc7bd426440aa40..7421cb2be59bcd227d4c331242f627259016b694 100644
 --- a/DOCS/man/input.rst
 +++ b/DOCS/man/input.rst
 @@ -2775,6 +2775,13 @@ Property list
@@ -29,7 +29,7 @@ index 8c8ccd3..7421cb2 100644
      Audio format as output by the audio decoder.
      This has a number of sub-properties:
 diff --git a/audio/decode/ad_lavc.c b/audio/decode/ad_lavc.c
-index 9c83892..68279ef 100644
+index 9c83892afddd8e001395b84ca60a493d6b62dd25..d7fdff8d13079d6dba3efe71e66807ed2e1037c2 100644
 --- a/audio/decode/ad_lavc.c
 +++ b/audio/decode/ad_lavc.c
 @@ -24,6 +24,7 @@
@@ -40,7 +40,7 @@ index 9c83892..68279ef 100644
  
  #include "config.h"
  
-@@ -281,6 +282,40 @@ static void ad_lavc_process(struct mp_filter *ad)
+@@ -281,6 +282,43 @@ static void ad_lavc_process(struct mp_filter *ad)
      lavc_process(ad, &priv->state, send_packet, receive_frame);
  }
  
@@ -52,9 +52,12 @@ index 9c83892..68279ef 100644
 +
 +    char **result = arg;
 +    *result = NULL;
-+    void *options = priv->avctx ? priv->avctx->priv_data : NULL;
-+    if (!options)
++    AVCodecContext *avctx = priv->avctx;
++    // Codec private data is an AVOptions object only with a private class.
++    // PCM and other decoders can have plain fields at priv_data instead.
++    if (!avctx || !avctx->codec || !avctx->codec->priv_class || !avctx->priv_data)
 +        return CONTROL_FALSE;
++    void *options = avctx->priv_data;
 +
 +    // Query the decoder's own read-only export, never a similarly named
 +    // writable option or a child of a different codec context.
@@ -81,7 +84,7 @@ index 9c83892..68279ef 100644
  static const struct mp_filter_info ad_lavc_filter = {
      .name = "ad_lavc",
      .priv_size = sizeof(struct priv),
-@@ -305,6 +340,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
+@@ -305,6 +343,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
      struct priv *priv = da->priv;
      priv->codec = codec;
      priv->public.f = da;
@@ -90,7 +93,7 @@ index 9c83892..68279ef 100644
      if (!init(da, codec, decoder)) {
          talloc_free(da);
 diff --git a/filters/f_decoder_wrapper.h b/filters/f_decoder_wrapper.h
-index c2ad95a..bf1abb5 100644
+index c2ad95a642fc9753abb8ff42e8b6cb96231a9c4b..bf1abb55d07f1681776926c4acd8f841db8d92c3 100644
 --- a/filters/f_decoder_wrapper.h
 +++ b/filters/f_decoder_wrapper.h
 @@ -81,6 +81,8 @@ enum dec_ctrl {
@@ -103,7 +106,7 @@ index c2ad95a..bf1abb5 100644
  
  int mp_decoder_wrapper_control(struct mp_decoder_wrapper *d,
 diff --git a/player/command.c b/player/command.c
-index 80b30fc..0b3414b 100644
+index 80b30fcab59c6472a2b926e2e3a777d20aeedea1..0b3414b2ec0efd8083b2cf35b09eea29dd1e485c 100644
 --- a/player/command.c
 +++ b/player/command.c
 @@ -1983,6 +1983,25 @@ static int mp_property_audio_params(void *ctx, struct m_property *prop,

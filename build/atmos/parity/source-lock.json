@@ -74,7 +74,7 @@
     "build/bluray-menu/patches/0057-script-property-lookup.patch": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
     "build/bluray-menu/patches/0058-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
     "build/bluray-menu/patches/0059-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
-    "build/bluray-menu/patches/0060-av3a-content-selection.patch": "5e850585683d2ae6c84c5dc3f436b0e6ec3ad56063142b48f5e5173cfb5f062b"
+    "build/bluray-menu/patches/0060-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -410,7 +410,7 @@
     "patches": {
       "mpv": {
         "path": "build/bluray-menu/patches/0060-av3a-content-selection.patch",
-        "sha256": "5e850585683d2ae6c84c5dc3f436b0e6ec3ad56063142b48f5e5173cfb5f062b",
+        "sha256": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
         "changed_files": [
           "DOCS/man/input.rst",
           "audio/decode/ad_lavc.c",
@@ -439,9 +439,9 @@
     "variants": {
       "main": {
         "baseline_tree": "9dead13eeb817c8a702f0f8dcbb4ac53804fd670",
-        "source_tree": "324d20728da06b753e4303f09a21f577b1a5d4dd",
+        "source_tree": "728832ffd74cc309654ff7836841f5182db558c7",
         "archive_baseline_tree": "42642711cc1a29e4fbdef0ee9108d27619d12763",
-        "archive_source_tree": "a84916498b744b63a2f5e858f38b0e3a254394cf",
+        "archive_source_tree": "dda7f82785d980551524606ae033e92a3024fb7b",
         "before_source_sha256": {
           "DOCS/man/input.rst": "179bcfacd1cfcf4b30295a321fe8dbcf411d000f60e16c267888d972e8e0a186",
           "audio/decode/ad_lavc.c": "d2662c390407d9a89b08faf1413ef9695db55496d4e755ae95cab21a9edabf25",
@@ -450,16 +450,16 @@
         },
         "source_sha256": {
           "DOCS/man/input.rst": "43d1701aa50d4bfbb46ffbdedc75d5ab9b329ed3dee730f647940427aec33fc7",
-          "audio/decode/ad_lavc.c": "a55f85a82e35e9383f31797ba2986fa1303c86a2a64cdb093dd1ccec37e6af78",
+          "audio/decode/ad_lavc.c": "77bd9945dae2b1cd4ee801d4ddaf06a37d29889aaaae6b1847ae9369037c1285",
           "filters/f_decoder_wrapper.h": "65545d9113bf07387983b8249b7a55ce4ab9e2f90191d15f40c8f455672c8fa0",
           "player/command.c": "2c623b19e1fba2542966dd88422e17ed50de52ec5e077f4481937276a19c3c37"
         }
       },
       "atmos": {
         "baseline_tree": "608e2c603be798c37cabdb089679b3a7b4185093",
-        "source_tree": "7fc1af8f2c7569366f1775d4dc4ddef09e18c4fd",
+        "source_tree": "302a28d143ddfafce744f9db0e91e034a775d055",
         "archive_baseline_tree": "7edd7a654881300c3e0bfca55b3f57b6033f230f",
-        "archive_source_tree": "6b26dd1ff15dc5d2c2be3f9629c2de4396db6b1c",
+        "archive_source_tree": "ee3066266e5db01cd4e47381e0b72ada4a23c795",
         "before_source_sha256": {
           "DOCS/man/input.rst": "179bcfacd1cfcf4b30295a321fe8dbcf411d000f60e16c267888d972e8e0a186",
           "audio/decode/ad_lavc.c": "d2662c390407d9a89b08faf1413ef9695db55496d4e755ae95cab21a9edabf25",
@@ -468,7 +468,7 @@
         },
         "source_sha256": {
           "DOCS/man/input.rst": "43d1701aa50d4bfbb46ffbdedc75d5ab9b329ed3dee730f647940427aec33fc7",
-          "audio/decode/ad_lavc.c": "a55f85a82e35e9383f31797ba2986fa1303c86a2a64cdb093dd1ccec37e6af78",
+          "audio/decode/ad_lavc.c": "77bd9945dae2b1cd4ee801d4ddaf06a37d29889aaaae6b1847ae9369037c1285",
           "filters/f_decoder_wrapper.h": "88b9c287bfa65c5873df524e7c8cfa0fc826cef828f2b780beacca3fa4d4aa29",
           "player/command.c": "2c623b19e1fba2542966dd88422e17ed50de52ec5e077f4481937276a19c3c37"
         }
@@ -601,7 +601,7 @@
       "build/av3a/tests/content-graph-cases.c": "81e8c44bf85d87abae55963eee909b227d69a8e90d4ca12df3f1cd269e209679",
       "build/av3a/tests/sample_fixture.inc": "2feb505565b2183083090ef989b355130fd4fa4e9d8029658f16e63d009867c7",
       "build/av3a/tests/content-graph-fixture.json": "9cd3214c2b3da843ee5a161611a3bc198200300e2b1060b23b618e0a64dc2ad1",
-      "build/av3a/tests/verify-mpv-content-property.py": "dac4f6d9ab392e41777e32242a1bbe26ff182c59a5bce0abd506ab89f3ebe8ff",
+      "build/av3a/tests/verify-mpv-content-property.py": "2e57b5ad782d8ccc58edc03cdc3ae0daf2dd48c716de168eb0252c5df19095fd",
       "build/av3a/tests/verify-content-output-graph.py": "7c86b561a56e8b013debc1ba3328751d69bff9495e05f92d2bce8fc83b32d931"
     },
     "contracts": [
