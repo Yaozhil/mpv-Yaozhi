@@ -86,10 +86,10 @@ index 0000000000000000000000000000000000000000..df22ecfa4fa3cdfbcbcf09ccab1a67af
 +#endif
 diff --git a/av3adecoder/avs3Decoder/src/avs3_spatial_contents.c b/av3adecoder/avs3Decoder/src/avs3_spatial_contents.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e37d2dfd461ef7f7d4a130a9756aa96630c4d558
+index 0000000000000000000000000000000000000000..87e859b49274809dd6ef64ce76f89e5a8efdf35d
 --- /dev/null
 +++ b/av3adecoder/avs3Decoder/src/avs3_spatial_contents.c
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,285 @@
 +#include <stddef.h>
 +#include <stdint.h>
 +#include <string.h>
@@ -192,10 +192,12 @@ index 0000000000000000000000000000000000000000..e37d2dfd461ef7f7d4a130a9756aa966
 +        !content_count_valid(basic->numOfPacks, 8) ||
 +        !content_count_valid(basic->numOfChannels, AVS3_CONTENT_MAX_CHANNELS))
 +        return content_reject(out, AVS3_CONTENTS_INVALID);
-+    /* Only MIX object/bed-object output reaches the selectable renderer path.
-+     * Channel-only and HOA streams intentionally retain their existing output. */
-+    if (decoder->avs3CodecFormat != AVS3_MIX_FORMAT ||
-+        !decoder->isMixedContent || !decoder->numObjsOutput ||
++    /* parse_header uses MONO/STEREO/MC for mixed-content transport too.
++     * isMixedContent distinguishes objects from plain speaker channels. */
++    if (!decoder->isMixedContent || !decoder->numObjsOutput ||
++        (decoder->avs3CodecFormat != AVS3_MONO_FORMAT &&
++         decoder->avs3CodecFormat != AVS3_STEREO_FORMAT &&
++         decoder->avs3CodecFormat != AVS3_MC_FORMAT) ||
 +        (decoder->soundBedType != 0 && decoder->soundBedType != 1))
 +        return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
 +    if ((!decoder->soundBedType && decoder->numObjsOutput != total_channels) ||

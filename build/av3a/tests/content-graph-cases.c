@@ -20,7 +20,8 @@ static Avs3BasicL1 *reset(void)
     decoder.hMetadataDec = &metadata;
     decoder.numChansOutput = 16;
     decoder.numObjsOutput = 4;
-    decoder.avs3CodecFormat = AVS3_MIX_FORMAT;
+    /* parse_header stores bed+objects in the MC transport decoder. */
+    decoder.avs3CodecFormat = AVS3_MC_FORMAT;
     decoder.isMixedContent = 1;
     decoder.soundBedType = 1;
     sample_fixture(&metadata.avs3MetaData.avs3MetaDataStatic.avs3BasicL1);
@@ -99,8 +100,10 @@ int main(void)
     BAD("channel total too large", decoder.numChansOutput=33, AVS3_CONTENTS_INVALID);
     BAD("negative dynamic object count", decoder.numObjsOutput=-1, AVS3_CONTENTS_INVALID);
     BAD("object count beyond transport", decoder.numObjsOutput=17, AVS3_CONTENTS_INVALID);
-    BAD("channel-only header unsupported", decoder.avs3CodecFormat=AVS3_MC_FORMAT, AVS3_CONTENTS_UNSUPPORTED);
+    BAD("channel-only header unsupported", decoder.isMixedContent=0; decoder.numObjsOutput=0, AVS3_CONTENTS_UNSUPPORTED);
     BAD("HOA header with stale objects unsupported", decoder.avs3CodecFormat=AVS3_HOA_FORMAT, AVS3_CONTENTS_UNSUPPORTED);
+    BAD("unused MIX enum is not parsed transport", decoder.avs3CodecFormat=AVS3_MIX_FORMAT, AVS3_CONTENTS_UNSUPPORTED);
+    BAD("unknown transport enum unsupported", decoder.avs3CodecFormat=-1, AVS3_CONTENTS_UNSUPPORTED);
     BAD("non-mixed header unsupported", decoder.isMixedContent=0, AVS3_CONTENTS_UNSUPPORTED);
     BAD("no object header unsupported", decoder.numObjsOutput=0, AVS3_CONTENTS_UNSUPPORTED);
     BAD("unknown soundbed type unsupported", decoder.soundBedType=2, AVS3_CONTENTS_UNSUPPORTED);
@@ -215,19 +218,24 @@ int main(void)
         expect(1,AVS3_CONTENTS_OK); assert(!memcmp(&prior,&result,sizeof(prior)));
         memset(&metadata,0,sizeof(metadata)); expect(0,AVS3_CONTENTS_NO_METADATA);
     }
-    {
+    for (int channels=1;channels<=3;channels++) {
         Avs3BasicL1 *b=reset(); memset(b,0,sizeof(*b));
-        decoder.numChansOutput=1; decoder.numObjsOutput=1; decoder.soundBedType=0;
+        decoder.numChansOutput=channels; decoder.numObjsOutput=channels; decoder.soundBedType=0;
+        decoder.avs3CodecFormat=channels==1 ? AVS3_MONO_FORMAT : channels==2 ? AVS3_STEREO_FORMAT : AVS3_MC_FORMAT;
         b->audioProgrammeMeta.numContents=1; b->audioProgrammeMeta.refContentIdx[0]=3;
         b->numOfContents=1; b->audioContentData[0].contentIdx=3;
         b->audioContentData[0].numObjects=1; b->audioContentData[0].refObjectIdx[0]=7;
         b->numOfObjects=1; b->audioObjectData[0].objectIdx=7;
         b->audioObjectData[0].numPacks=1; b->audioObjectData[0].refPackFormatIdx[0]=7;
         b->numOfPacks=1; b->audioPackFormatData[0].packFormatIdx=7;
-        b->audioPackFormatData[0].typeLabel=3; b->audioPackFormatData[0].numChannels=1;
-        b->audioPackFormatData[0].refChannelIdx[0]=0; b->audioPackFormatData[0].packFormatStartIdx=0;
-        b->numOfChannels=1; b->audioChannelFormatData[0].channelFormatIdx=0;
-        expect(1,AVS3_CONTENTS_OK); assert(result.contents[0].pcm_channel_mask==1);
+        b->audioPackFormatData[0].typeLabel=3; b->audioPackFormatData[0].numChannels=channels;
+        b->audioPackFormatData[0].packFormatStartIdx=0;
+        b->numOfChannels=channels;
+        for (int i=0;i<channels;i++) {
+            b->audioPackFormatData[0].refChannelIdx[i]=i;
+            b->audioChannelFormatData[i].channelFormatIdx=i;
+        }
+        expect(1,AVS3_CONTENTS_OK); assert(result.contents[0].pcm_channel_mask==((1U<<channels)-1));
     }
     printf("{\"cases\":%d,\"passed\":true,\"scope\":\"real getter + real SDK headers, sample-derived fixture and invalid graphs; no media/NN/AO/GPU\"}\n",cases);
     return 0;

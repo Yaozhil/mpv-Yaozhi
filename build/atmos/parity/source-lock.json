@@ -420,7 +420,7 @@
       },
       "sdk": {
         "path": "build/av3a/avs3-audiodecoder-preselections.patch",
-        "sha256": "5315222b8b67f7ad748f19e2ba6bbfcc529f2fa01ef2f531166cc3fbefd6ce22",
+        "sha256": "493f18cc19dbc019f2fc47eca2e2b9fc2516c4b0eb3d44f138d674127d2a8a40",
         "changed_files": [
           "av3adecoder/CMakeLists.txt",
           "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h",
@@ -515,7 +515,7 @@
           "av3adecoder/CMakeLists.txt": "55800fd3f883e76fafc85c7a9a653b902149af46736ebf422fec6cda2ca2c818",
           "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h": "d95ff557fa34c38d2efe55bf4a5a5bb009a4a558a0dd7574eee02fe416f81191",
           "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h": "0791293a2e08c92e751eb2e81d55191a45bd9a1537044886bd6d9bf06e0d11ff",
-          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c": "6f87c72eb4824308a7c030d46b7c5fb6de1e73be746ac10ca84806313c0c42aa"
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c": "0fbc54dd3cba9d4a206c1f977b9ae6a4b2abb170f0311e32caff5a1bc097a7df"
         }
       },
       "ffmpeg": {
@@ -597,8 +597,8 @@
       "build/av3a/avs3-audiodec.cmake": "c5f51ef48d4d46bbf48e18ffb6f67a6c6880aef7b666a1eab003dfd7ef749383",
       "build/av3a/normalize-source-eol.py": "4d2f84425950ce9df898926f69ab0c2b68db32ca5963c0f8c21e17f232c43980",
       "build/av3a/tests/verify-preselections-contract.py": "dd93892c85606a05dcd83894cd679a56c7b0d4c516ba732beef2b79a075d6f70",
-      "build/av3a/tests/verify-content-graph.py": "b0249259abc68e917a37f125a5e333849dc7f1706817db1fbda2596e7a1519a9",
-      "build/av3a/tests/content-graph-cases.c": "b881011cb86879df4df2d60a25417b1ba9094342ced0e6da8d26b55a1cad2a33",
+      "build/av3a/tests/verify-content-graph.py": "8c50ed8a214d1269fa68185a684702386bffb8afb1124c69d9424b12d437394d",
+      "build/av3a/tests/content-graph-cases.c": "81e8c44bf85d87abae55963eee909b227d69a8e90d4ca12df3f1cd269e209679",
       "build/av3a/tests/sample_fixture.inc": "2feb505565b2183083090ef989b355130fd4fa4e9d8029658f16e63d009867c7",
       "build/av3a/tests/content-graph-fixture.json": "9cd3214c2b3da843ee5a161611a3bc198200300e2b1060b23b618e0a64dc2ad1",
       "build/av3a/tests/verify-mpv-content-property.py": "dac4f6d9ab392e41777e32242a1bbe26ff182c59a5bce0abd506ab89f3ebe8ff",
@@ -607,7 +607,7 @@
     "contracts": [
       {
         "path": "build/av3a/tests/verify-content-graph.py",
-        "sha256": "b0249259abc68e917a37f125a5e333849dc7f1706817db1fbda2596e7a1519a9",
+        "sha256": "8c50ed8a214d1269fa68185a684702386bffb8afb1124c69d9424b12d437394d",
         "args": [
           "--sdk-source",
           "{sdk_source}",

@@ -59,7 +59,7 @@ def main():
         raise SystemExit(f'Content graph contracts failed: {result.returncode}; '
                          f'see {args.output / "stderr.log"}')
     report = json.loads(result.stdout.decode('utf-8').splitlines()[-1])
-    if not report.get('passed') or report.get('cases') != 77:
+    if not report.get('passed') or report.get('cases') != 81:
         raise SystemExit('Unexpected graph contract receipt')
     report.update(wall_seconds=elapsed, compiler=args.cc,
                   compile_command=command,
