@@ -1076,7 +1076,11 @@ jobs:
 
           # Reapply the current package patch chain without invoking the
           # winbuild helper's unconditional `ninja update` remote fetch.
-          for package in avs3-audiodec davs2 ffmpeg libpsl libsdl2 mpv; do
+          # AV3A was freshly rebuilt and verified in the preceding step.
+          # Preserve those exact patched sources and stamps for the identity
+          # gate; fullclean would restore tracked files but retain the new
+          # untracked CMakeLists, causing a second patch application to fail.
+          for package in davs2 ffmpeg libpsl libsdl2 mpv; do
             stamp_dir="build64/packages/${package}-prefix/src/${package}-stamp"
             if [ -d "$stamp_dir" ]; then
               ninja -C build64 "${package}-fullclean"
