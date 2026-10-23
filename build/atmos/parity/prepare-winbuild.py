@@ -115,6 +115,10 @@ for source_name, package_name in [
     ('0059-windows-com-lifetime.patch', 'mpv-9304-windows-com-lifetime.patch'),
 ]:
     shutil.copyfile(root/'build/bluray-menu/patches'/source_name, packages/package_name)
+# The content-selection layer is checked at its own HEAD; all older identity
+# gates still run on the exact original round-one/HOLD/EOF/PTS checkouts.
+shutil.copyfile(root/'build/bluray-menu/patches/0060-av3a-content-selection.patch',
+                packages/'mpv-9305-av3a-content-selection.patch')
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.

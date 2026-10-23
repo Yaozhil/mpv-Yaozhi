@@ -73,7 +73,8 @@
     "build/bluray-menu/patches/0056-vc1-disc-parameter-probe.patch": "f47be59435bf0df6b92ca46ec006f5ab1b7bbf068a4cb301e83a0c6a6b3224fd",
     "build/bluray-menu/patches/0057-script-property-lookup.patch": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
     "build/bluray-menu/patches/0058-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
-    "build/bluray-menu/patches/0059-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb"
+    "build/bluray-menu/patches/0059-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
+    "build/bluray-menu/patches/0060-av3a-content-selection.patch": "5e850585683d2ae6c84c5dc3f436b0e6ec3ad56063142b48f5e5173cfb5f062b"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -403,5 +404,252 @@
       "build/atmos/parity/verify-vc1-round1.py": "bceb73a5e1a5091e21e5aba7f0e4d6a8dffa01db13ac83d0db16c24b97dabc4a"
     },
     "runtime_and_performance_validation": "Required separately on Windows before deployment."
+  },
+  "av3a_preselections": {
+    "version": 1,
+    "patches": {
+      "mpv": {
+        "path": "build/bluray-menu/patches/0060-av3a-content-selection.patch",
+        "sha256": "5e850585683d2ae6c84c5dc3f436b0e6ec3ad56063142b48f5e5173cfb5f062b",
+        "changed_files": [
+          "DOCS/man/input.rst",
+          "audio/decode/ad_lavc.c",
+          "filters/f_decoder_wrapper.h",
+          "player/command.c"
+        ]
+      },
+      "sdk": {
+        "path": "build/av3a/avs3-audiodecoder-preselections.patch",
+        "sha256": "5315222b8b67f7ad748f19e2ba6bbfcc529f2fa01ef2f531166cc3fbefd6ce22",
+        "changed_files": [
+          "av3adecoder/CMakeLists.txt",
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h",
+          "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h",
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c"
+        ]
+      },
+      "ffmpeg": {
+        "path": "build/av3a/ffmpeg-libarcdav3a-preselections.patch",
+        "sha256": "dbff4be3c0d58b0b7012ee62476ad21fd860c7fc9db7c7c450d532d77515cbb3",
+        "changed_files": [
+          "libavcodec/libarcdav3a.c"
+        ]
+      }
+    },
+    "variants": {
+      "main": {
+        "baseline_tree": "9dead13eeb817c8a702f0f8dcbb4ac53804fd670",
+        "source_tree": "324d20728da06b753e4303f09a21f577b1a5d4dd",
+        "archive_baseline_tree": "42642711cc1a29e4fbdef0ee9108d27619d12763",
+        "archive_source_tree": "a84916498b744b63a2f5e858f38b0e3a254394cf",
+        "before_source_sha256": {
+          "DOCS/man/input.rst": "179bcfacd1cfcf4b30295a321fe8dbcf411d000f60e16c267888d972e8e0a186",
+          "audio/decode/ad_lavc.c": "d2662c390407d9a89b08faf1413ef9695db55496d4e755ae95cab21a9edabf25",
+          "filters/f_decoder_wrapper.h": "2d133e104dac514e7f05beeeb78713755019a65c24bc984e2596559a124565dc",
+          "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07"
+        },
+        "source_sha256": {
+          "DOCS/man/input.rst": "43d1701aa50d4bfbb46ffbdedc75d5ab9b329ed3dee730f647940427aec33fc7",
+          "audio/decode/ad_lavc.c": "a55f85a82e35e9383f31797ba2986fa1303c86a2a64cdb093dd1ccec37e6af78",
+          "filters/f_decoder_wrapper.h": "65545d9113bf07387983b8249b7a55ce4ab9e2f90191d15f40c8f455672c8fa0",
+          "player/command.c": "2c623b19e1fba2542966dd88422e17ed50de52ec5e077f4481937276a19c3c37"
+        }
+      },
+      "atmos": {
+        "baseline_tree": "608e2c603be798c37cabdb089679b3a7b4185093",
+        "source_tree": "7fc1af8f2c7569366f1775d4dc4ddef09e18c4fd",
+        "archive_baseline_tree": "7edd7a654881300c3e0bfca55b3f57b6033f230f",
+        "archive_source_tree": "6b26dd1ff15dc5d2c2be3f9629c2de4396db6b1c",
+        "before_source_sha256": {
+          "DOCS/man/input.rst": "179bcfacd1cfcf4b30295a321fe8dbcf411d000f60e16c267888d972e8e0a186",
+          "audio/decode/ad_lavc.c": "d2662c390407d9a89b08faf1413ef9695db55496d4e755ae95cab21a9edabf25",
+          "filters/f_decoder_wrapper.h": "9e2ee13c6283b7a655524ac15971b778db58dea46264856f1b4435dedde9f666",
+          "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07"
+        },
+        "source_sha256": {
+          "DOCS/man/input.rst": "43d1701aa50d4bfbb46ffbdedc75d5ab9b329ed3dee730f647940427aec33fc7",
+          "audio/decode/ad_lavc.c": "a55f85a82e35e9383f31797ba2986fa1303c86a2a64cdb093dd1ccec37e6af78",
+          "filters/f_decoder_wrapper.h": "88b9c287bfa65c5873df524e7c8cfa0fc826cef828f2b780beacca3fa4d4aa29",
+          "player/command.c": "2c623b19e1fba2542966dd88422e17ed50de52ec5e077f4481937276a19c3c37"
+        }
+      }
+    },
+    "dependencies": {
+      "sdk": {
+        "base_commit": "e7d244d29454eb04c968cd98a30587303a9c15f8",
+        "normalize_lf_files": [
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h",
+          "av3adecoder/avs3Decoder/src/avs3_init_dec.c",
+          "av3adecoder/avs3Decoder/src/decoder.c",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.cpp",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.h",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio_types.h",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/core/ambisonic_rotator.cpp"
+        ],
+        "seed_files": [],
+        "baseline_patches": [
+          {
+            "path": "build/av3a/avs3-audiodec-static-library.patch",
+            "sha256": "108a81592ed3ccfd93f0fc0f04b0b76c124e7680bbd69ebfa5e81788f848fcad"
+          },
+          {
+            "path": "build/av3a/avs3-audiodecoder-stage2.patch",
+            "sha256": "cd337dda983d1e8717b2d776b06d6eee609dd58bbae113be0100c70569d53c37"
+          },
+          {
+            "path": "build/av3a/avs3-renderer-build.patch",
+            "sha256": "19e3b4e6fd0cfd0e3397efd6ee91caf52f1d42e3eb07ce338ec568ee73ebcb73"
+          },
+          {
+            "path": "build/av3a/avs3-renderer-hardening.patch",
+            "sha256": "3b914f652d4ca8ec8e6ed7bd4eeab89c437d993c4cf81ea4b61136f2d7bde95f"
+          }
+        ],
+        "before_source_sha256": {
+          "av3adecoder/CMakeLists.txt": "bf339b3861497a3e784e5535b5505dede58fc3389c500ee8774f8aebf61d9542",
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h": "53f12049d11d3054c3c313781a9e43eb28ae01047f903481c7eb5135a4a840af",
+          "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h": null,
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c": null
+        },
+        "source_sha256": {
+          "av3adecoder/CMakeLists.txt": "55800fd3f883e76fafc85c7a9a653b902149af46736ebf422fec6cda2ca2c818",
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h": "d95ff557fa34c38d2efe55bf4a5a5bb009a4a558a0dd7574eee02fe416f81191",
+          "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h": "0791293a2e08c92e751eb2e81d55191a45bd9a1537044886bd6d9bf06e0d11ff",
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c": "6f87c72eb4824308a7c030d46b7c5fb6de1e73be746ac10ca84806313c0c42aa"
+        }
+      },
+      "ffmpeg": {
+        "base_commit": "18c01ad424ca7712ef9a9d46953308efc75c4776",
+        "normalize_lf_files": [],
+        "seed_files": [
+          {
+            "path": "libavcodec/bsf/dovi_split.c",
+            "source": "build/dolby-vision/ffmpeg-dovi-split.c",
+            "sha256": "9f9e666bae767964dc4cfad8d2247e869148071ce9cc35318090779d37ec0cf9",
+            "mode": "100644"
+          }
+        ],
+        "baseline_patches": [
+          {
+            "path": "build/dolby-vision/ffmpeg-hevc-missing-ref-foll.patch",
+            "sha256": "f28425c9b3bc201e1252a4efcb6783b60b53cab58beb30dcb320fb9cb9d1b4af"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-hevc-dovi-rpu-scan.patch",
+            "sha256": "81f8bd9e0e1e38d4f0ec6228f02e8a39b38b5eb00b0b11a11b9392a39c50b17f"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch",
+            "sha256": "43730be42a490ddbc918bc4810f8aa7737f98eb4d065abcdfffa32ca61b6e0b0"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-dovi-split-registration.patch",
+            "sha256": "699aa735f6f8e5cde7643eaabfacfff52b21161c6deeb0af631a2bec98f7fa01"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-dovi-dual-track-stream-group.patch",
+            "sha256": "ccbe3aa0e9ba4b32a9ddef525fe67793bfb3e8205d44bcf33e94c8e0b9a0bbb9"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-mpegts-dovi-stream-group.patch",
+            "sha256": "c1627ed5856da6f27f0560736a826a6b837b7e640abe46fe301778840bef2c01"
+          },
+          {
+            "path": "build/av3a/ffmpeg-libarcdav3a-hardening.patch",
+            "sha256": "a1ce37c8bf39be65f31da2107356299b8fbdab197759d0b4601a69398174fe58"
+          },
+          {
+            "path": "build/av3a/ffmpeg-libarcdav3a-spatial.patch",
+            "sha256": "28c48464bea4ace76b460d23aa7172d3e82be3aa37d45bd53a32eedc83a48f53"
+          },
+          {
+            "path": "build/av3a/ffmpeg-av3a-multiframe-probe.patch",
+            "sha256": "39d53b20c9c226a19e8e8971a0d35b65165a1f793112b85ac7fc006e5964dac1"
+          },
+          {
+            "path": "build/av3a/ffmpeg-av3a-frame-parser.patch",
+            "sha256": "9db2ae7d3bcae4c31cdb296f169f45b8d5a23c234ae06102269c14a9d87dd1a2"
+          },
+          {
+            "path": "build/av3a/ffmpeg-nvenc-sdk-13.1.patch",
+            "sha256": "7288c3011bfcb54310649e9c0b7e620107f57bac68f841ebe28bdf8e1ff92eef"
+          },
+          {
+            "path": "build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch",
+            "sha256": "26969d733227e55c2f8385958e17ef99227609270246832ba2f66c57c2303aa1"
+          },
+          {
+            "path": "build/core-candidate/ffmpeg-8800-truehd-mat-padding.patch",
+            "sha256": "50c591ad133ea531223c6ce8f8963759dbe2a62f171fa859716557ecbf398d45"
+          }
+        ],
+        "before_source_sha256": {
+          "libavcodec/libarcdav3a.c": "e1a5ad8955c77c59d7886f6d59bb25acb6e4828e51e02ad01c675b95685a1d14"
+        },
+        "source_sha256": {
+          "libavcodec/libarcdav3a.c": "86c7044a0038d461d24ad2bff72a90773f70a18f2ad127af62764a3e436a2536"
+        }
+      }
+    },
+    "tools_sha256": {
+      "build/atmos/parity/verify-preselections-source.py": "76f7110a11ac2f2a69c1e4c68d74c0c29d26649f3d506cd4b83be03860bb5c08",
+      "build/atmos/parity/prepare-winbuild.py": "fecde2cdb4ca13f0f14f2f77118a5afc5368d4bd8925d97b9c4bbd3ed12cc994",
+      "build/av3a/avs3-audiodec.cmake": "c5f51ef48d4d46bbf48e18ffb6f67a6c6880aef7b666a1eab003dfd7ef749383",
+      "build/av3a/normalize-source-eol.py": "4d2f84425950ce9df898926f69ab0c2b68db32ca5963c0f8c21e17f232c43980",
+      "build/av3a/tests/verify-preselections-contract.py": "dd93892c85606a05dcd83894cd679a56c7b0d4c516ba732beef2b79a075d6f70",
+      "build/av3a/tests/verify-content-graph.py": "b0249259abc68e917a37f125a5e333849dc7f1706817db1fbda2596e7a1519a9",
+      "build/av3a/tests/content-graph-cases.c": "b881011cb86879df4df2d60a25417b1ba9094342ced0e6da8d26b55a1cad2a33",
+      "build/av3a/tests/sample_fixture.inc": "2feb505565b2183083090ef989b355130fd4fa4e9d8029658f16e63d009867c7",
+      "build/av3a/tests/content-graph-fixture.json": "9cd3214c2b3da843ee5a161611a3bc198200300e2b1060b23b618e0a64dc2ad1",
+      "build/av3a/tests/verify-mpv-content-property.py": "dac4f6d9ab392e41777e32242a1bbe26ff182c59a5bce0abd506ab89f3ebe8ff",
+      "build/av3a/tests/verify-content-output-graph.py": "7c86b561a56e8b013debc1ba3328751d69bff9495e05f92d2bce8fc83b32d931"
+    },
+    "contracts": [
+      {
+        "path": "build/av3a/tests/verify-content-graph.py",
+        "sha256": "b0249259abc68e917a37f125a5e333849dc7f1706817db1fbda2596e7a1519a9",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--output",
+          "{output_dir}/sdk",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "path": "build/av3a/tests/verify-preselections-contract.py",
+        "sha256": "dd93892c85606a05dcd83894cd679a56c7b0d4c516ba732beef2b79a075d6f70",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--ffmpeg-source",
+          "{ffmpeg_source}",
+          "--output",
+          "{output_dir}/ffmpeg",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "path": "build/av3a/tests/verify-content-output-graph.py",
+        "sha256": "7c86b561a56e8b013debc1ba3328751d69bff9495e05f92d2bce8fc83b32d931",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--ffmpeg-source",
+          "{ffmpeg_source}",
+          "--output",
+          "{output_dir}/output-graph",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      }
+    ],
+    "scope": "Validated programme/content IDs mapped to per-block PCM masks in binaural output; native and default all preserved.",
+    "runtime_verified": false
   }
 }

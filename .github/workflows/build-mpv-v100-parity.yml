@@ -321,6 +321,8 @@ jobs:
             packages/avs3-audiodec-9000-static-library.patch
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-stage2.patch" \
             packages/avs3-audiodec-9001-spatial-metadata.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-preselections.patch" \
+            packages/avs3-audiodec-9002-preselections.patch
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-build.patch" \
             packages/avs3-renderer-build.patch
           cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-hardening.patch" \
@@ -329,6 +331,8 @@ jobs:
             packages/ffmpeg-9000-libarcdav3a-hardening.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-spatial.patch" \
             packages/ffmpeg-9004-libarcdav3a-spatial.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-preselections.patch" \
+            packages/ffmpeg-9006-libarcdav3a-preselections.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-multiframe-probe.patch" \
             packages/ffmpeg-9001-av3a-multiframe-probe.patch
           cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-frame-parser.patch" \
@@ -400,6 +404,7 @@ jobs:
               "ffmpeg-8999a-mpegts-dovi-stream-group.patch",
               "ffmpeg-9000-libarcdav3a-hardening.patch",
               "ffmpeg-9004-libarcdav3a-spatial.patch",
+              "ffmpeg-9006-libarcdav3a-preselections.patch",
               "ffmpeg-9001-av3a-multiframe-probe.patch",
               "ffmpeg-9002-av3a-frame-parser.patch",
               "ffmpeg-9003-nvenc-sdk-13.1.patch",
@@ -628,6 +633,7 @@ jobs:
           grep -Fq 'ffmpeg-9002-av3a-frame-parser.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9003-nvenc-sdk-13.1.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9006-libarcdav3a-preselections.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
           grep -Fq 'ffmpeg-8997-dovi-split-prerequisites.patch' packages/ffmpeg.cmake
           grep -Fq 'AV_PKT_DATA_HEVC_CONF' \
@@ -735,7 +741,15 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
-          round1_final_commit="$(git rev-parse HEAD)"
+          preselections_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-preselections-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/preselections-source-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/av3a/tests/verify-mpv-content-property.py" \
+            --mpv-source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/preselections-property-${{ matrix.variant }}"
+          round1_final_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/preselections-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$round1_final_commit"
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round1-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' --cc /usr/bin/cc \
             --output "$GITHUB_WORKSPACE/round1-source-${{ matrix.variant }}.json"
@@ -773,9 +787,10 @@ jobs:
 
           git checkout --detach "$pts_final_commit"
           git checkout --detach "$round1_final_commit"
+          git checkout --detach "$preselections_final_commit"
 
       - name: Upload Native ASS integration preflight evidence
-        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '')
+        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '')
         uses: actions/upload-artifact@v6
         with:
           name: mpv-native-ass-integration-${{ matrix.variant }}
@@ -789,6 +804,8 @@ jobs:
             demux-cache-contract-${{ matrix.variant }}/
             round1-source-${{ matrix.variant }}.json
             round1-source-${{ matrix.variant }}/
+            preselections-source-${{ matrix.variant }}.json
+            preselections-property-${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 7
 
@@ -1092,6 +1109,28 @@ jobs:
           fi
           cp -a "$built_dir" release/
           7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
+
+      - name: Verify AV3A preselections dependency sources and actual C contracts
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 build/atmos/parity/verify-preselections-source.py \
+            --sdk-source winbuild/mpv-winbuild-cmake/src_packages/avs3-audiodec \
+            --ffmpeg-source winbuild/mpv-winbuild-cmake/src_packages/ffmpeg \
+            --cc /usr/bin/cc \
+            --output "preselections-dependencies-${{ matrix.variant }}.json"
+
+      - name: Upload AV3A preselections dependency evidence
+        if: always() && hashFiles('preselections-dependencies-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-preselections-dependencies-${{ matrix.variant }}
+          path: |
+            preselections-dependencies-${{ matrix.variant }}.json
+            preselections-dependencies-${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Verify menu command termination and late enhancement selection
         if: steps.build.outcome == 'success'
