@@ -1,0 +1,288 @@
+From 3021bdff0d1934f621bf957dd97da7321bd2a0c5 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Sat, 24 Oct 2026 00:01:47 +0800
+Subject: [PATCH] Fix subtitle deduplication, Matroska padding and numeric
+ boundaries
+
+
+diff --git a/demux/demux_mkv.c b/demux/demux_mkv.c
+index 0ee83a0720a4d5fa1c3a76a46778688f989d2c84..cd8e0e204c538d7c0d273d1238baf9d6a75b4f95 100644
+--- a/demux/demux_mkv.c
++++ b/demux/demux_mkv.c
+@@ -31,6 +31,7 @@
+ #include <libavutil/common.h>
+ #include <libavutil/dovi_meta.h>
+ #include <libavutil/lzo.h>
++#include <libavutil/mathematics.h>
+ #include <libavutil/intreadwrite.h>
+ #include <libavutil/avstring.h>
+ 
+@@ -178,9 +179,9 @@ typedef struct mkv_index {
+ } mkv_index_t;
+ 
+ struct block_info {
+-    uint64_t duration, discardpadding;
++    uint64_t duration;
+     bool simple, keyframe, duration_known;
+-    int64_t timecode;
++    int64_t timecode, discardpadding;
+     mkv_track_t *track;
+     // Actual packet data.
+     AVBufferRef *laces[MAX_NUM_LACES];
+@@ -203,6 +204,7 @@ typedef struct mkv_demuxer {
+ 
+     int64_t tc_scale, cluster_tc;
+ 
++    uint64_t first_cluster;
+     uint64_t cluster_start;
+     uint64_t cluster_end;
+ 
+@@ -228,6 +230,7 @@ typedef struct mkv_demuxer {
+     bool index_has_durations;
+ 
+     bool eof_warning, keyframe_warning;
++    bool discardpadding_warning;
+ 
+     // Small queue of read but not yet returned packets. This is mostly
+     // temporary data, and not normally larger than 0 or 1 elements.
+@@ -1100,9 +1103,8 @@ static int demux_mkv_read_cues(demuxer_t *demuxer)
+     if (cues.n_cue_point <= 3) // probably too sparse and will just break seeking
+         goto done;
+ 
+-    // Discard incremental index. (Keep the first entry, which must be the
+-    // start of the file - helps with files that miss the first index entry.)
+-    mkv_d->num_indexes = MPMIN(1, mkv_d->num_indexes);
++    // Discard incremental index.
++    mkv_d->num_indexes = 0;
+     mkv_d->index_has_durations = false;
+ 
+     for (int i = 0; i < cues.n_cue_point; i++) {
+@@ -2572,6 +2574,7 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
+         }
+         if (id == MATROSKA_ID_CLUSTER) {
+             MP_DBG(demuxer, "|+ found cluster\n");
++            mkv_d->first_cluster = start_pos;
+             mkv_d->cluster_start = start_pos;
+             break;
+         }
+@@ -3253,9 +3256,26 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
+             if (i == 0 && block_info->duration_known)
+                 dp->duration = block_duration / 1e9;
+             if (stream->type == STREAM_AUDIO) {
+-                unsigned int srate = stream->codec->samplerate;
+-                demux_packet_set_padding(dp, 0,
+-                    block_info->discardpadding / 1e9 * srate);
++                int64_t padding = stream->codec->samplerate > 0
++                    ? av_rescale(block_info->discardpadding,
++                                 stream->codec->samplerate, 1000000000)
++                    : 0;
++                // Packet padding is represented as int samples. Check before
++                // negation or narrowing, including av_rescale overflow.
++                if (padding < -INT_MAX || padding > INT_MAX) {
++                    if (!mkv_d->discardpadding_warning) {
++                        MP_WARN(demuxer, "DiscardPadding exceeds supported sample "
++                                "range; ignoring.\n");
++                        mkv_d->discardpadding_warning = true;
++                    }
++                    padding = 0;
++                }
++                int start = 0, end = 0;
++                if (padding < 0 && i == 0)
++                    start = -padding;
++                if (padding > 0 && i == block_info->num_laces - 1)
++                    end = padding;
++                demux_packet_set_padding(dp, start, end);
+                 mkv_d->a_skip_preroll = 0;
+             }
+             if (block_info->additions) {
+@@ -3305,8 +3325,8 @@ static int read_block_group(demuxer_t *demuxer, int64_t end,
+             break;
+ 
+         case MATROSKA_ID_DISCARDPADDING:
+-            block->discardpadding = ebml_read_uint(s);
+-            if (block->discardpadding == EBML_UINT_INVALID)
++            block->discardpadding = ebml_read_int(s);
++            if (block->discardpadding == EBML_INT_INVALID)
+                 goto error;
+             break;
+ 
+@@ -3551,12 +3571,15 @@ static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
+ {
+     struct mkv_demuxer *mkv_d = demuxer->priv;
+     struct mkv_index *index = NULL;
++    bool covered = false;
+ 
+     int64_t min_diff = INT64_MIN;
+     for (size_t i = 0; i < mkv_d->num_indexes; i++) {
+         if (seek_id < 0 || mkv_d->indexes[i].tnum == seek_id) {
+             int64_t diff =
+                 mkv_d->indexes[i].timecode * mkv_d->tc_scale - target_timecode;
++            if (diff <= 0)
++                covered = true;
+             if (flags & SEEK_FORWARD)
+                 diff = -diff;
+             if (min_diff != INT64_MIN) {
+@@ -3573,7 +3596,13 @@ static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
+ 
+     if (index) {        /* We've found an entry. */
+         uint64_t seek_pos = index->filepos;
+-        if (flags & SEEK_HR) {
++        mkv_d->skip_to_timecode = index->timecode * mkv_d->tc_scale;
++        if (!covered) {
++            // No entry is at or before the target, the start of the file
++            // is the only position that is.
++            seek_pos = mkv_d->first_cluster;
++            mkv_d->skip_to_timecode = INT64_MIN;
++        } else if (flags & SEEK_HR) {
+             // Find the cluster with the highest filepos, that has a timestamp
+             // still lower than min_tc.
+             double secs = mkv_d->opts->subtitle_preroll_secs;
+@@ -3582,7 +3611,7 @@ static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
+             double pre_f = secs * 1e9 / mkv_d->tc_scale;
+             int64_t pre = pre_f >= (double)INT64_MAX ? INT64_MAX : (int64_t)pre_f;
+             int64_t min_tc = pre < index->timecode ? index->timecode - pre : 0;
+-            uint64_t prev_target = 0;
++            uint64_t prev_target = mkv_d->first_cluster;
+             int64_t prev_tc = 0;
+             for (size_t i = 0; i < mkv_d->num_indexes; i++) {
+                 if (seek_id < 0 || mkv_d->indexes[i].tnum == seek_id) {
+@@ -3610,8 +3639,7 @@ static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
+                 }
+                 prev_target = target;
+             }
+-            if (prev_target)
+-                seek_pos = prev_target;
++            seek_pos = prev_target;
+         }
+ 
+         mkv_d->cluster_end = 0;
+@@ -3666,12 +3694,8 @@ static void demux_mkv_seek(demuxer_t *demuxer, double seek_pts, int flags)
+         if (!index)
+             stream_seek(demuxer->stream, old_pos);
+ 
+-        if (flags & SEEK_FORWARD) {
++        if (flags & SEEK_FORWARD)
+             mkv_d->skip_to_timecode = target_timecode;
+-        } else {
+-            mkv_d->skip_to_timecode = index ? index->timecode * mkv_d->tc_scale
+-                                            : INT64_MIN;
+-        }
+     } else {
+         stream_t *s = demuxer->stream;
+ 
+diff --git a/player/javascript.c b/player/javascript.c
+index c22a3dbfc8ff8c32ee1ccda0a2acbf014de0b7c6..c9753e5ded4bc2a79e361413344c462234adc010 100644
+--- a/player/javascript.c
++++ b/player/javascript.c
+@@ -706,7 +706,7 @@ static void script_get_property_bool(js_State *J)
+ static bool same_as_int64(double d)
+ {
+     // The range checks also validly filter inf and nan, so behavior is defined
+-    return d >= INT64_MIN && d <= (double) INT64_MAX && d == (int64_t)d;
++    return d >= -0x1p63 && d < 0x1p63 && d == (int64_t)d;
+ }
+ 
+ // args: name, number
+@@ -1089,7 +1089,7 @@ static int jsL_checkint(js_State *J, int idx)
+ static uint64_t jsL_checkuint64(js_State *J, int idx)
+ {
+     double d = js_tonumber(J, idx);
+-    if (!(d >= 0 && d <= (double) UINT64_MAX))
++    if (!(d >= 0 && d < 0x1p64))
+         js_error(J, "uint64 out of range at index %d", idx);
+     return d;
+ }
+diff --git a/player/lua.c b/player/lua.c
+index cd27e376805aaedb330d3db7b52f6acd683a56ff..f6ee3f3646f613420f96784e426163a869315137 100644
+--- a/player/lua.c
++++ b/player/lua.c
+@@ -657,7 +657,7 @@ static int script_set_property_bool(lua_State *L)
+ 
+ static bool is_int(double d)
+ {
+-    return d >= (double)INT64_MIN && d <= (double)INT64_MAX && d == (int64_t)d;
++    return d >= -0x1p63 && d < 0x1p63 && d == (int64_t)d;
+ }
+ 
+ static int script_set_property_number(lua_State *L)
+diff --git a/sub/sd_ass.c b/sub/sd_ass.c
+index 0e8f9f323e584bf896243b22417ce1f1d7cae338..99714fb222219a7e58eb4c3ec38738d63df78af2 100644
+--- a/sub/sd_ass.c
++++ b/sub/sd_ass.c
+@@ -462,6 +462,10 @@ static void filter_and_add(struct sd *sd, struct demux_packet *pkt)
+     ass_process_chunk(ctx->ass_track, pkt->buffer, pkt->len,
+                       floor(pkt->pts * 1000 + 1e-6),
+                       floor(pkt->duration * 1000 + 1e-6));
++    if (pkt != orig_pkt)
++        talloc_free(pkt);
++    // the seen and animated state is kept on the original packet
++    pkt = orig_pkt;
+ 
+     // This bookkeeping only has any practical use for ASS subs
+     // over a VO with no video.
+@@ -491,28 +495,37 @@ static void filter_and_add(struct sd *sd, struct demux_packet *pkt)
+             }
+         }
+     }
++}
+ 
+-    if (pkt != orig_pkt)
+-        talloc_free(pkt);
++// 64-bit FNV-1a
++static inline uint64_t hash_data(const unsigned char *data, size_t len)
++{
++    uint64_t hash = 0xcbf29ce484222325; // offset basis
++    for (size_t n = 0; n < len; n++)
++        hash = (hash ^ data[n]) * 0x100000001b3; // FNV prime
++    return hash;
+ }
+ 
+ // Test if the packet with the given file position and pts was already consumed.
+ // Return false if the packet is new (and add it to the internal list), and
+-// return true if it was already seen.
++// return true if it was already seen. Packets without a file position are
++// identified by a hash of their contents instead.
+ static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
+ {
+     struct sd_ass_priv *priv = sd->priv;
++    int64_t pos = packet->pos >= 0 ? packet->pos
++                                   : hash_data(packet->buffer, packet->len);
+     int a = 0;
+     int b = priv->num_seen_packets;
+     while (a < b) {
+         int mid = a + (b - a) / 2;
+         struct seen_packet *seen_packet = &priv->seen_packets[mid];
+-        if (packet->pos == seen_packet->pos && packet->pts == seen_packet->pts) {
++        if (pos == seen_packet->pos && packet->pts == seen_packet->pts) {
+             packet->seen_pos = mid;
+             return true;
+         }
+-        if (packet->pos > seen_packet->pos ||
+-            (packet->pos == seen_packet->pos && packet->pts > seen_packet->pts)) {
++        if (pos > seen_packet->pos ||
++            (pos == seen_packet->pos && packet->pts > seen_packet->pts)) {
+             a = mid + 1;
+         } else {
+             b = mid;
+@@ -520,7 +533,7 @@ static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
+     }
+     packet->seen_pos = a;
+     MP_TARRAY_INSERT_AT(priv, priv->seen_packets, priv->num_seen_packets, a,
+-                        (struct seen_packet){packet->pos, packet->pts, -1});
++                        (struct seen_packet){pos, packet->pts, -1});
+     return false;
+ }
+ 
+@@ -536,8 +549,7 @@ static void decode(struct sd *sd, struct demux_packet *packet)
+     packet->sub_duration = packet->duration;
+ 
+     if (ctx->converter) {
+-        if (!sd->opts->sub_clear_on_seek && packet->pos >= 0 &&
+-            check_packet_seen(sd, packet))
++        if (!sd->opts->sub_clear_on_seek && check_packet_seen(sd, packet))
+             return;
+ 
+         double sub_pts = 0;
+-- 
+2.54.0.windows.1
+

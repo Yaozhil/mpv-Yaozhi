@@ -74,7 +74,8 @@
     "build/bluray-menu/patches/0057-script-property-lookup.patch": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
     "build/bluray-menu/patches/0058-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
     "build/bluray-menu/patches/0059-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
-    "build/bluray-menu/patches/0060-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5"
+    "build/bluray-menu/patches/0060-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
+    "build/bluray-menu/patches/0061-upstream-stability-round2.patch": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -243,7 +244,7 @@
       }
     },
     "actual_source_timing": {
-      "source": "X:\\\u7535\u89c6\u5267\\Z-\u65e9\u6625\u6674\u6717\uff082026\uff09\\\u65e9\u6625\u6674\u6717.S01E14.2026.2160p.WEB-DL.H265.SDR.60fps.DTS5.1.mkv",
+      "source": "X:\\电视剧\\Z-早春晴朗（2026）\\早春晴朗.S01E14.2026.2160p.WEB-DL.H265.SDR.60fps.DTS5.1.mkv",
       "source_size": 6164689064,
       "bytes_read": 262144,
       "header_sha256": "1cc0e6fad59de2132cc5dc2a179b1604047c5da4d33da16287a594035786952b",
@@ -650,6 +651,70 @@
       }
     ],
     "scope": "Validated programme/content IDs mapped to per-block PCM masks in binaural output; native and default all preserved.",
+    "runtime_verified": false
+  },
+  "round2_stability": {
+    "version": 1,
+    "patch": {
+      "path": "build/bluray-menu/patches/0061-upstream-stability-round2.patch",
+      "sha256": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+      "changed_files": [
+        "demux/demux_mkv.c",
+        "player/javascript.c",
+        "player/lua.c",
+        "sub/sd_ass.c"
+      ]
+    },
+    "variants": {
+      "main": {
+        "baseline_commit": "522d5c8b1274d718a6d81f4c751b9e60a1fc398c",
+        "source_commit": "3021bdff0d1934f621bf957dd97da7321bd2a0c5",
+        "archive_baseline_tree": "dda7f82785d980551524606ae033e92a3024fb7b",
+        "archive_source_tree": "6620a2a543b31caa7a068bf5f339dde1b97fb744",
+        "before_source_sha256": {
+          "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
+          "player/javascript.c": "08b579c5ef60e81dd7bfcdcf347a35ded5ca9de81d1201edb26becc5221f5768",
+          "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
+          "sub/sd_ass.c": "6d821ef48c311b1627bcb85f3999c0ea7e53a2464628127335aba61b5369ad65"
+        },
+        "source_sha256": {
+          "demux/demux_mkv.c": "9421905530524cfc65a7e52e72b6db10280329ab091661f12c66d424e9ce2cd2",
+          "player/javascript.c": "5c8abde2cca3dec00c91239e264e8854da686e47680dd513b6b2d167bd7e2a47",
+          "player/lua.c": "a924854ad9e6b0188bc0648e75a7d1298330decc0316b9ca50586b0173a7d0b6",
+          "sub/sd_ass.c": "253cb88dab1aa288f67d1edf66e50ca5909b1f11747c6578fb3021f9253ed0ea"
+        },
+        "baseline_tree": "728832ffd74cc309654ff7836841f5182db558c7",
+        "source_tree": "8c152fe3e98eb515165fec4b4f65048706bb1d24"
+      },
+      "atmos": {
+        "baseline_commit": "a593df53de904a13d809d2c583a1af675bb5ceca",
+        "source_commit": "02b55413dad0883eee1abeb8d405befc51ffc976",
+        "archive_baseline_tree": "ee3066266e5db01cd4e47381e0b72ada4a23c795",
+        "archive_source_tree": "0be07e1bbf99a4e3b59ab298d9f68e52abfaaa53",
+        "before_source_sha256": {
+          "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
+          "player/javascript.c": "08b579c5ef60e81dd7bfcdcf347a35ded5ca9de81d1201edb26becc5221f5768",
+          "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
+          "sub/sd_ass.c": "6d821ef48c311b1627bcb85f3999c0ea7e53a2464628127335aba61b5369ad65"
+        },
+        "source_sha256": {
+          "demux/demux_mkv.c": "9421905530524cfc65a7e52e72b6db10280329ab091661f12c66d424e9ce2cd2",
+          "player/javascript.c": "5c8abde2cca3dec00c91239e264e8854da686e47680dd513b6b2d167bd7e2a47",
+          "player/lua.c": "a924854ad9e6b0188bc0648e75a7d1298330decc0316b9ca50586b0173a7d0b6",
+          "sub/sd_ass.c": "253cb88dab1aa288f67d1edf66e50ca5909b1f11747c6578fb3021f9253ed0ea"
+        },
+        "baseline_tree": "302a28d143ddfafce744f9db0e91e034a775d055",
+        "source_tree": "604797cad509130af1ccda4b60dac25a76b23e53"
+      }
+    },
+    "tools_sha256": {
+      "build/atmos/parity/prepare-round2-winbuild.py": "3df5e2ea4a8f188de3cfe00e09335bf8d9c79ffd16d56be32e9facbc7ba9c831",
+      "build/atmos/parity/verify-round2-source.py": "f562d35c538f12da1c80d574fc5c65511e3a4a909131b2247505327a70829005",
+      "build/atmos/parity/test-round2-source-gate.py": "9f0100ef9187ca1166eb105edd1909177beebc67a054921a60f07f40845582a7",
+      ".github/workflows/build-mpv-v100-parity.yml": "64d83a8dc48e9ff91d3b1149ecff46a44dd47dec00100cba9d760788eae53e03"
+    },
+    "scope": "ASS packet state and no-position deduplication; Matroska signed padding and early seek; Lua/JavaScript integer boundaries.",
+    "dependency_versions_unchanged": true,
     "runtime_verified": false
   }
 }

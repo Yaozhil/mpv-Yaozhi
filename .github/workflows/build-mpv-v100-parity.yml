@@ -699,7 +699,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          python3 build/atmos/parity/prepare-winbuild.py \
+          python3 build/atmos/parity/prepare-round2-winbuild.py \
             --winbuild winbuild/mpv-winbuild-cmake \
             --variant '${{ matrix.variant }}' \
             --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
@@ -741,7 +741,17 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
-          preselections_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-round2-source-gate.py" \
+            --output "$GITHUB_WORKSPACE/round2-gate-contract-${{ matrix.variant }}"
+          round2_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/round2-source-${{ matrix.variant }}.json"
+          # Historical gates retain their original complete checkout layers.
+          # The AV3A parent below is the observed parent of the checked new
+          # layer, never a replacement expected hash for an older gate.
+          preselections_final_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/round2-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$preselections_final_commit"
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-preselections-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/preselections-source-${{ matrix.variant }}.json"
@@ -788,9 +798,13 @@ jobs:
           git checkout --detach "$pts_final_commit"
           git checkout --detach "$round1_final_commit"
           git checkout --detach "$preselections_final_commit"
+          git checkout --detach "$round2_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/round2-source-restored-${{ matrix.variant }}.json"
 
       - name: Upload Native ASS integration preflight evidence
-        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '')
+        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '' || hashFiles('round2-source-*.json') != '')
         uses: actions/upload-artifact@v6
         with:
           name: mpv-native-ass-integration-${{ matrix.variant }}
@@ -806,6 +820,9 @@ jobs:
             round1-source-${{ matrix.variant }}/
             preselections-source-${{ matrix.variant }}.json
             preselections-property-${{ matrix.variant }}/
+            round2-source-${{ matrix.variant }}.json
+            round2-source-restored-${{ matrix.variant }}.json
+            round2-gate-contract-${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 7
 
@@ -1113,6 +1130,28 @@ jobs:
           fi
           cp -a "$built_dir" release/
           7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
+
+      - name: Bind final compiled mpv source layer and new binaries
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
+          built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          python3 build/atmos/parity/verify-round2-source.py \
+            --source "$winbuild/src_packages/mpv" --variant '${{ matrix.variant }}' \
+            --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
+            --output "round2-compiled-source-${{ matrix.variant }}.json"
+
+      - name: Upload final compiled mpv source evidence
+        if: always() && hashFiles('round2-compiled-source-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-round2-compiled-source-${{ matrix.variant }}
+          path: round2-compiled-source-${{ matrix.variant }}.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Verify AV3A preselections dependency sources and actual C contracts
         if: steps.build.outcome == 'success'
