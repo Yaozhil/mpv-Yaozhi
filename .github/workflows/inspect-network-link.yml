@@ -48,10 +48,12 @@ jobs:
           mkdir "$evidence"
           test -s "$build/build.ninja"
           cp "$build/.ninja_log" "$evidence/"
-          /usr/bin/ninja --version > "$evidence/ninja-version.txt"
-          /usr/bin/ninja -C "$build" -t commands mpv.exe > "$evidence/mpv-build-commands.txt"
-          /usr/bin/ninja -C "$build" -t query mpv.exe > "$evidence/mpv-link-query.txt"
-          /usr/bin/ninja -C "$build" -t compdb -x > "$evidence/expanded-compdb.json"
+          # The minimal image has Ninja in /usr/local/bin. Preserve the old
+          # log above before metadata tools can rewrite a log-version header.
+          ninja --version > "$evidence/ninja-version.txt"
+          ninja -C "$build" -t commands mpv.exe > "$evidence/mpv-build-commands.txt"
+          ninja -C "$build" -t query mpv.exe > "$evidence/mpv-link-query.txt"
+          ninja -C "$build" -t compdb -x > "$evidence/expanded-compdb.json"
           cp "$build/build.ninja" "$evidence/"
           cp "$build/meson-private/rules.ninja" "$evidence/"
           cp "$build/meson-info/intro-targets.json" "$evidence/"
