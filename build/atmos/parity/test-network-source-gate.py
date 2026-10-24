@@ -164,6 +164,8 @@ def main():
         value['variants']['main']['step_trees'][-1] = altered
         check('Unrelated committed change despite adjusted final hash', lambda: run(value), 'Unexpected incremental source scope')
         git(source, 'reset', '--hard', final)
+        target = source/'unchanged.txt'
+        target.chmod(target.stat().st_mode | 0o111)
         git(source, 'update-index', '--chmod=+x', 'unchanged.txt')
         git(source, 'commit', '--amend', '--no-edit', '-q')
         check('Unrelated mode change', run, 'Unexpected complete network final tree')
