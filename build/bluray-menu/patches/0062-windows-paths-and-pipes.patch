@@ -1,0 +1,143 @@
+From: mpv-Yaozhi <yaozhi@localhost>
+Subject: [PATCH] win32: normalize paths, report lookup errors and preserve pipe opens
+
+Backport the following upstream mpv-player/mpv fixes without changing other
+runtime or compatibility layers:
+  https://github.com/mpv-player/mpv/commit/43f08ba9247b6d251f9c983111ec572935951ad6
+  https://github.com/mpv-player/mpv/commit/ba4ba16f9d3fa3307a611b6159d2a96644d0f62d
+  https://github.com/mpv-player/mpv/commit/a3ce7f93df37bea5c38bbc70a0146357882dbc0a
+  https://github.com/mpv-player/mpv/commit/1140d3cc2974d60b3f8f14fa366ce6dde759f12c
+
+Retain the upstream Windows path regression cases.
+
+diff --git a/misc/path_utils.c b/misc/path_utils.c
+index 6d89b90..ea5905e 100644
+--- a/misc/path_utils.c
++++ b/misc/path_utils.c
+@@ -167,9 +167,11 @@ char *mp_path_join(void *talloc_ctx, const char *p1, const char *p2)
+ 
+ char *mp_getcwd(void *talloc_ctx)
+ {
++#if !HAVE_DOS_PATHS
+     char *e_wd = getenv("PWD");
+     if (e_wd)
+         return talloc_strdup(talloc_ctx, e_wd);
++#endif
+ 
+     char *wd = talloc_array(talloc_ctx, char, 20);
+     while (getcwd(wd, talloc_get_size(wd)) == NULL) {
+@@ -193,6 +195,23 @@ char *mp_normalize_path(void *talloc_ctx, const char *path)
+     void *tmp = talloc_new(NULL);
+     char *result;
+ 
++#if HAVE_DOS_PATHS
++    wchar_t *pathw = mp_from_utf8(tmp, path);
++    DWORD len = GetFullPathNameW(pathw, 0, NULL, NULL);
++    wchar_t *pathc = talloc_array(tmp, wchar_t, len);
++    if (!len || !GetFullPathNameW(pathw, len, pathc, NULL)) {
++        result = talloc_strdup(talloc_ctx, path);
++        goto exit;
++    }
++    // PathAllocCanonicalize() treats the "." of a \\.\ path as a directory and
++    // removes it, so skip it for device paths.
++    wchar_t *pathx = NULL;
++    if (wcsncmp(pathc, L"\\\\.\\", 4) &&
++        SUCCEEDED(PathAllocCanonicalize(pathc, PATHCCH_ALLOW_LONG_PATHS, &pathx)))
++        pathc = pathx;
++    result = mp_to_utf8(talloc_ctx, pathc);
++    LocalFree(pathx);
++#else
+     if (!mp_path_is_absolute(bstr0(path))) {
+         char *cwd = mp_getcwd(tmp);
+         if (!cwd) {
+@@ -202,31 +221,6 @@ char *mp_normalize_path(void *talloc_ctx, const char *path)
+         path = mp_path_join(tmp, cwd, path);
+     }
+ 
+-#if HAVE_DOS_PATHS
+-    wchar_t *pathw = mp_from_utf8(tmp, path);
+-    wchar_t *read = pathw, *write = pathw;
+-    wchar_t prev = '\0';
+-    // preserve leading double backslashes
+-    if (read[0] == '\\' && read[1] == '\\') {
+-        prev = '\\';
+-        write += 2;
+-        read += 2;
+-    }
+-    wchar_t curr;
+-    while ((curr = *read)) {
+-        if (curr == '/')
+-            curr = '\\';
+-        if (curr != '\\' || prev != '\\')
+-            *write++ = curr;
+-        prev = curr;
+-        read++;
+-    }
+-    *write = '\0';
+-    size_t max_size = wcslen(pathw) + 1;
+-    wchar_t *pathc = talloc_array(tmp, wchar_t, max_size);
+-    HRESULT hr = PathCchCanonicalizeEx(pathc, max_size, pathw, PATHCCH_ALLOW_LONG_PATHS);
+-    result = SUCCEEDED(hr) ? mp_to_utf8(talloc_ctx, pathc) : talloc_strdup(talloc_ctx, path);
+-#else
+     result = talloc_strdup(tmp, "");
+     const char *next;
+     const char *end = path + strlen(path);
+diff --git a/options/parse_commandline.c b/options/parse_commandline.c
+index 529dc0a..957428e 100644
+--- a/options/parse_commandline.c
++++ b/options/parse_commandline.c
+@@ -100,8 +100,9 @@ static void process_non_option(struct playlist *files, const char *arg)
+ {
+     glob_t gg;
+ 
+-    // Glob filenames on Windows (cmd.exe doesn't do this automatically)
+-    if (glob(arg, 0, NULL, &gg)) {
++    // Glob filenames with wildcards on Windows (cmd.exe doesn't do this
++    // automatically)
++    if (!strpbrk(arg, "*?") || glob(arg, 0, NULL, &gg)) {
+         playlist_append_file(files, arg);
+     } else {
+         for (int i = 0; i < gg.gl_pathc; i++)
+diff --git a/osdep/io.c b/osdep/io.c
+index b7ef6d4..287c27f 100644
+--- a/osdep/io.c
++++ b/osdep/io.c
+@@ -210,10 +210,17 @@ static void set_errno_from_lasterror(void)
+     // This just handles the error codes expected from CreateFile at the moment
+     switch (GetLastError()) {
+     case ERROR_FILE_NOT_FOUND:
++    case ERROR_PATH_NOT_FOUND:
++    case ERROR_INVALID_DRIVE:
++    case ERROR_BAD_NETPATH:
++    case ERROR_BAD_NET_NAME:
++    case ERROR_BAD_PATHNAME:
++    case ERROR_FILENAME_EXCED_RANGE:
+         errno = ENOENT;
+         break;
+     case ERROR_SHARING_VIOLATION:
+     case ERROR_ACCESS_DENIED:
++    case ERROR_NETWORK_ACCESS_DENIED:
+         errno = EACCES;
+         break;
+     case ERROR_FILE_EXISTS:
+diff --git a/test/paths.c b/test/paths.c
+index 1d0d06b..7f47c4f 100644
+--- a/test/paths.c
++++ b/test/paths.c
+@@ -103,6 +103,16 @@ int main(void)
+     TEST_NORMALIZE("\\\\server\\share\\path", "\\\\?\\UNC/server/share/path/.");
+     TEST_NORMALIZE("C:\\", "C:/.");
+     TEST_NORMALIZE("C:\\", "C:/../");
++    TEST_NORMALIZE("\\\\server\\share\\path", "//server/share/path");
++    TEST_NORMALIZE("\\\\server\\share\\path", "//server\\share/path");
++    TEST_NORMALIZE("\\\\server\\share\\path", "\\\\server/share/path");
++    TEST_NORMALIZE("\\\\server\\share\\path", "//server/share/sub/../path");
++    TEST_NORMALIZE("\\\\server\\share\\path", "//server/share/../../path");
++    TEST_NORMALIZE("\\\\server\\share\\path", "//?/UNC/server/share/path");
++    TEST_NORMALIZE("C:\\file.mkv", "//?/C:/folder/../file.mkv");
++    TEST_NORMALIZE("\\\\.\\pipe\\mpv", "\\\\.\\pipe\\mpv");
++    TEST_NORMALIZE("\\\\.\\pipe\\mpv", "//./pipe/mpv");
++    TEST_NORMALIZE("\\\\.\\C:\\file.mkv", "//./C:/folder/../file.mkv");
+ #else
+     TEST_NORMALIZE("/foo/bar", "/foo//bar");
+     TEST_NORMALIZE("/foo/bar", "/foo///bar");

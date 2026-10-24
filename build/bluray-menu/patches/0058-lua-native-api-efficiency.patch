@@ -1,0 +1,290 @@
+From 19c811926b1a3c86364756e41d93250765ba8cf6 Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 22 Oct 2026 16:36:27 +0800
+Subject: [PATCH] lua: reduce native API overhead while retaining autofree
+ semantics
+
+---
+ player/lua.c | 100 +++++++++++++++++++++++++++------------------------
+ 1 file changed, 53 insertions(+), 47 deletions(-)
+
+diff --git a/player/lua.c b/player/lua.c
+index 85aacbc..cd27e37 100644
+--- a/player/lua.c
++++ b/player/lua.c
+@@ -111,6 +111,7 @@ struct script_ctx {
+     lua_Alloc lua_allocf;
+     void *lua_alloc_ud;
+     struct stats_ctx *stats;
++    int ref_array, ref_map, ref_unknown;
+ };
+ 
+ #if LUA_VERSION_NUM <= 501
+@@ -152,11 +153,10 @@ static void mp_lua_optarg(lua_State *L, int arg)
+ // - The autofree overhead per call is roughly two additional plain lua calls.
+ //   Typically that's up to 20% slower than plain new+free without "auto",
+ //   and at most about twice slower - compared to bare new+free lua_CFunction.
+-// - The overhead of af_push* is one additional lua-c-closure with two upvalues.
++// - The overhead of af_push* is one additional lua-c-closure with three upvalues.
+ typedef int (*af_CFunction)(lua_State *L, void *ctx);
+ 
+ static void af_pushcclosure(lua_State *L, af_CFunction fn, int n);
+-#define     af_pushcfunction(L, fn) af_pushcclosure((L), (fn), 0)
+ 
+ 
+ // add_af_dir, add_af_mpv_alloc take a valid DIR*/char* value respectively,
+@@ -214,11 +214,11 @@ static void *mp_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
+     return ptr;
+ }
+ 
++// The script context is the first upvalue of every C function that uses it,
++// including both autofree closures, the error handler and the script loader.
+ static struct script_ctx *get_ctx(lua_State *L)
+ {
+-    lua_getfield(L, LUA_REGISTRYINDEX, "ctx");
+-    struct script_ctx *ctx = lua_touserdata(L, -1);
+-    lua_pop(L, 1);
++    struct script_ctx *ctx = lua_touserdata(L, lua_upvalueindex(1));
+     mp_assert(ctx);
+     return ctx;
+ }
+@@ -322,6 +322,16 @@ static void push_module_table(lua_State *L, const char *module)
+     lua_remove(L, -2); // module
+ }
+ 
++// Create a metatable for pushnode(), store it in the mp table at the top of
++// the stack under name, and return its registry reference.
++static int new_node_metatable(lua_State *L, const char *name)
++{
++    lua_newtable(L); // mp table
++    lua_pushvalue(L, -1); // mp table table
++    lua_setfield(L, -3, name); // mp table
++    return luaL_ref(L, LUA_REGISTRYINDEX); // mp
++}
++
+ static int load_scripts(lua_State *L)
+ {
+     struct script_ctx *ctx = get_ctx(L);
+@@ -387,10 +397,6 @@ static int run_lua(lua_State *L)
+ 
+     luaL_openlibs(L);
+ 
+-    // used by get_ctx()
+-    lua_pushlightuserdata(L, ctx); // ctx
+-    lua_setfield(L, LUA_REGISTRYINDEX, "ctx"); // -
+-
+     add_functions(ctx); // mp
+ 
+     push_module_table(L, "mp"); // mp
+@@ -403,18 +409,9 @@ static int run_lua(lua_State *L)
+     lua_setfield(L, -2, "script_name"); // mp
+ 
+     // used by pushnode()
+-    lua_newtable(L); // mp table
+-    lua_pushvalue(L, -1); // mp table table
+-    lua_setfield(L, LUA_REGISTRYINDEX, "UNKNOWN_TYPE"); // mp table
+-    lua_setfield(L, -2, "UNKNOWN_TYPE"); // mp
+-    lua_newtable(L); // mp table
+-    lua_pushvalue(L, -1); // mp table table
+-    lua_setfield(L, LUA_REGISTRYINDEX, "MAP"); // mp table
+-    lua_setfield(L, -2, "MAP"); // mp
+-    lua_newtable(L); // mp table
+-    lua_pushvalue(L, -1); // mp table table
+-    lua_setfield(L, LUA_REGISTRYINDEX, "ARRAY"); // mp table
+-    lua_setfield(L, -2, "ARRAY"); // mp
++    ctx->ref_unknown = new_node_metatable(L, "UNKNOWN_TYPE"); // mp
++    ctx->ref_map = new_node_metatable(L, "MAP"); // mp
++    ctx->ref_array = new_node_metatable(L, "ARRAY"); // mp
+ 
+     lua_pop(L, 1); // -
+ 
+@@ -438,8 +435,10 @@ static int run_lua(lua_State *L)
+     mp_assert(lua_gettop(L) == 0);
+ 
+     // run this under an error handler that can do backtraces
+-    lua_pushcfunction(L, error_handler); // errf
+-    lua_pushcfunction(L, load_scripts); // errf fn
++    lua_pushlightuserdata(L, ctx); // ctx
++    lua_pushcclosure(L, error_handler, 1); // errf
++    lua_pushlightuserdata(L, ctx); // errf ctx
++    lua_pushcclosure(L, load_scripts, 1); // errf fn
+     if (lua_pcall(L, 0, 0, -2)) { // errf [error]
+         const char *e = lua_tostring(L, -1);
+         MP_FATAL(ctx, "Lua error: %s\n", e ? e : "(unknown)");
+@@ -515,6 +514,8 @@ static int script_log(lua_State *L)
+     struct script_ctx *ctx = get_ctx(L);
+ 
+     int msgl = check_loglevel(L, 1);
++    if (!mp_msg_test(ctx->log, msgl))
++        return 0;
+ 
+     int last = lua_gettop(L);
+     lua_getglobal(L, "tostring"); // args... tostring
+@@ -557,7 +558,7 @@ static int script_get_script_directory(lua_State *L)
+     return 0;
+ }
+ 
+-static void pushnode(lua_State *L, mpv_node *node);
++static void pushnode(lua_State *L, struct script_ctx *ctx, mpv_node *node);
+ 
+ static int script_wait_event(lua_State *L, void *tmp)
+ {
+@@ -569,7 +570,7 @@ static int script_wait_event(lua_State *L, void *tmp)
+     mpv_event_to_node(&rn, event);
+     steal_node_allocations(tmp, &rn);
+ 
+-    pushnode(L, &rn); // event
++    pushnode(L, ctx, &rn); // event
+ 
+     // return event
+     return 1;
+@@ -877,7 +878,7 @@ static int script_get_property_number(lua_State *L)
+     }
+ }
+ 
+-static void pushnode(lua_State *L, mpv_node *node)
++static void pushnode(lua_State *L, struct script_ctx *ctx, mpv_node *node)
+ {
+     luaL_checkstack(L, 6, "pushnode");
+ 
+@@ -899,20 +900,20 @@ static void pushnode(lua_State *L, mpv_node *node)
+         break;
+     case MPV_FORMAT_NODE_ARRAY:
+         lua_createtable(L, node->u.list->num, 0); // table
+-        lua_getfield(L, LUA_REGISTRYINDEX, "ARRAY"); // table mt
++        lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->ref_array); // table mt
+         lua_setmetatable(L, -2); // table
+         for (int n = 0; n < node->u.list->num; n++) {
+-            pushnode(L, &node->u.list->values[n]); // table value
++            pushnode(L, ctx, &node->u.list->values[n]); // table value
+             lua_rawseti(L, -2, n + 1); // table
+         }
+         break;
+     case MPV_FORMAT_NODE_MAP:
+         lua_createtable(L, 0, node->u.list->num); // table
+-        lua_getfield(L, LUA_REGISTRYINDEX, "MAP"); // table mt
++        lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->ref_map); // table mt
+         lua_setmetatable(L, -2); // table
+         for (int n = 0; n < node->u.list->num; n++) {
+             lua_pushstring(L, node->u.list->keys[n]); // table key
+-            pushnode(L, &node->u.list->values[n]); // table key value
++            pushnode(L, ctx, &node->u.list->values[n]); // table key value
+             lua_rawset(L, -3);
+         }
+         break;
+@@ -923,7 +924,7 @@ static void pushnode(lua_State *L, mpv_node *node)
+         // unknown value - what do we do?
+         // for now, set a unique dummy value
+         lua_newtable(L); // table
+-        lua_getfield(L, LUA_REGISTRYINDEX, "UNKNOWN_TYPE");
++        lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->ref_unknown); // table mt
+         lua_setmetatable(L, -2); // table
+         break;
+     }
+@@ -939,7 +940,7 @@ static int script_get_property_native(lua_State *L, void *tmp)
+     int err = mpv_get_property(ctx->client, name, MPV_FORMAT_NODE, &node);
+     if (err >= 0) {
+         steal_node_allocations(tmp, &node);
+-        pushnode(L, &node);
++        pushnode(L, ctx, &node);
+         return 1;
+     }
+     lua_pushvalue(L, 2);
+@@ -990,7 +991,7 @@ static int script_command_native(lua_State *L, void *tmp)
+     int err = mpv_command_node(ctx->client, &node, &result);
+     if (err >= 0) {
+         steal_node_allocations(tmp, &result);
+-        pushnode(L, &result);
++        pushnode(L, ctx, &result);
+         return 1;
+     }
+     lua_pushvalue(L, 2);
+@@ -1172,6 +1173,7 @@ static int script_join_path(lua_State *L, void *tmp)
+ 
+ static int script_parse_json(lua_State *L, void *tmp)
+ {
++    struct script_ctx *ctx = get_ctx(L);
+     mp_lua_optarg(L, 2);
+     char *text = talloc_strdup(tmp, luaL_checkstring(L, 1));
+     bool trail = lua_toboolean(L, 2);
+@@ -1182,7 +1184,7 @@ static int script_parse_json(lua_State *L, void *tmp)
+         ok = !text[0] || trail;
+     }
+     if (ok) {
+-        pushnode(L, &node);
++        pushnode(L, ctx, &node);
+         lua_pushnil(L);
+     } else {
+         lua_pushnil(L);
+@@ -1299,12 +1301,12 @@ static int script_autofree_trampoline(lua_State *L)
+     struct script_ctx *ctx = get_ctx(L);
+     // n*args
+     autofree_data data = {
+-        .target = lua_touserdata(L, lua_upvalueindex(2)),  // fn
++        .target = lua_touserdata(L, lua_upvalueindex(3)),  // fn
+         .ctx = NULL,
+     };
+     mp_assert(data.target);
+ 
+-    lua_pushvalue(L, lua_upvalueindex(1));  // n*args autofree_call (closure)
++    lua_pushvalue(L, lua_upvalueindex(2));  // n*args autofree_call (closure)
+     lua_insert(L, 1);  // autofree_call n*args
+     lua_pushlightuserdata(L, &data);  // autofree_call n*args &data
+ 
+@@ -1321,9 +1323,10 @@ static int script_autofree_trampoline(lua_State *L)
+ static void af_pushcclosure(lua_State *L, af_CFunction fn, int n)
+ {
+     // Instead of pushing a direct closure of fn with n upvalues, we push an
+-    // autofree_trampoline closure with two upvalues:
+-    //   1: autofree_call closure with the n upvalues given here.
+-    //   2: fn
++    // autofree_trampoline closure with three upvalues:
++    //   1: script context (also the first of the n upvalues given here).
++    //   2: autofree_call closure with the n upvalues given here.
++    //   3: fn
+     //
+     // when called the autofree_trampoline closure will pcall the autofree_call
+     // closure with the current lua call arguments and an additional argument
+@@ -1332,20 +1335,25 @@ static void af_pushcclosure(lua_State *L, af_CFunction fn, int n)
+     // so that fn sees the exact n upvalues and lua call arguments as intended,
+     // wrapped with ctx init/cleanup.
+ 
++    mp_assert(n >= 1);
++    lua_pushvalue(L, -n);
++    lua_insert(L, -n - 1);
+     lua_pushcclosure(L, script_autofree_call, n);
+     lua_pushlightuserdata(L, fn);
+-    lua_pushcclosure(L, script_autofree_trampoline, 2);
++    lua_pushcclosure(L, script_autofree_trampoline, 3);
+ }
+ 
+-static void register_package_fns(lua_State *L, char *module,
++static void register_package_fns(struct script_ctx *ctx, char *module,
+                                  const struct fn_entry *e)
+ {
++    lua_State *L = ctx->state;
+     push_module_table(L, module); // modtable
+     for (int n = 0; e[n].name; n++) {
++        lua_pushlightuserdata(L, ctx); // modtable ctx
+         if (e[n].af) {
+-            af_pushcclosure(L, e[n].af, 0); // modtable fn
++            af_pushcclosure(L, e[n].af, 1); // modtable fn
+         } else {
+-            lua_pushcclosure(L, e[n].fn, 0); // modtable fn
++            lua_pushcclosure(L, e[n].fn, 1); // modtable fn
+         }
+         lua_setfield(L, -2, e[n].name); // modtable
+     }
+@@ -1354,10 +1362,8 @@ static void register_package_fns(lua_State *L, char *module,
+ 
+ static void add_functions(struct script_ctx *ctx)
+ {
+-    lua_State *L = ctx->state;
+-
+-    register_package_fns(L, "mp", main_fns);
+-    register_package_fns(L, "mp.utils", utils_fns);
++    register_package_fns(ctx, "mp", main_fns);
++    register_package_fns(ctx, "mp.utils", utils_fns);
+ }
+ 
+ const struct mp_scripting mp_scripting_lua = {

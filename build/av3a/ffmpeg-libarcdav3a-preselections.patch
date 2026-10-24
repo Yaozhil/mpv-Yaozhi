@@ -1,0 +1,341 @@
+diff --git a/libavcodec/libarcdav3a.c b/libavcodec/libarcdav3a.c
+index da44fea..2fae3cc 100644
+--- a/libavcodec/libarcdav3a.c
++++ b/libavcodec/libarcdav3a.c
+@@ -4,6 +4,8 @@
+ #include <stddef.h>
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <stdarg.h>
++#include <stdio.h>
+ #include "av3a.h"
+ #include "decode.h"
+ #include "avcodec.h"
+@@ -13,6 +15,7 @@
+ #include "libavutil/mem.h"
+ #include "libavutil/opt.h"
+ #include <avs3a/avs3_decoder_interface.h>
++#include <avs3a/avs3_spatial_contents.h>
+ #include <avs3-renderer/avs3_audio.h>
+ 
+ #define MAX_VIVID_SIZE (4096U * 64U)
+@@ -36,6 +39,12 @@ typedef struct AVS3DecoderOutput
+ }AVS3DecoderOutput;
+ 
+ 
++typedef struct AV3AContentFrame {
++	AVS3SpatialFrame spatial;
++	uint32_t pcm_mask;
++	int content_applied;
++} AV3AContentFrame;
++
+ typedef struct arcdav3a_context
+ {
+ 	const AVClass*      class;
+@@ -68,14 +77,151 @@ typedef struct arcdav3a_context
+ 	float* renderer_planar;
+ 	float* renderer_output;
+ 	size_t renderer_output_capacity;
+-	AVS3SpatialFrame* spatial_frames;
++	AV3AContentFrame* spatial_frames;
+ 	int spatial_frame_count;
+ 	int spatial_frame_capacity;
+ 	AVS3SpatialFrame last_spatial_frame;
+ 	int have_last_spatial_frame;
++	int content_id;
++	char *contents_json;
++	AVS3SpatialContents contents;
++	int content_missing_frames;
+ 
+ } arcdav3a_context;
+ 
++
++/* Selection is applied to each decoded block, before the renderer consumes
++ * PCM. Native transport output is never changed by a content selection. */
++static int arcdav3a_content_mask(arcdav3a_context *h, uint32_t *mask,
++				 int *applied)
++{
++	AVS3SpatialContents *table = &h->contents;
++	int ret, i;
++
++	memset(table, 0, sizeof(*table));
++	table->struct_size = sizeof(*table);
++	ret = avs3_get_spatial_contents(h->m_hAvs3, table);
++	*mask = UINT32_MAX;
++	*applied = 0;
++	if (ret == AVS3_DECODER_SUCCESS && table->available &&
++	    table->abi_version == AVS3_SPATIAL_CONTENTS_ABI_VERSION &&
++	    table->status == AVS3_CONTENTS_OK &&
++	    table->num_contents > 0 && table->num_contents <= 4 &&
++	    table->num_objects > 0 && table->num_objects <= 8 &&
++	    table->total_channels > 0 && table->total_channels <= 32) {
++		h->content_missing_frames = 0;
++		if (h->content_id < 0 || h->spatial_render != AV3A_RENDER_BINAURAL)
++			return 0;
++		for (i = 0; i < table->num_contents; i++) {
++			const AVS3SpatialContent *content = &table->contents[i];
++			if (content->content_id != h->content_id)
++				continue;
++			if (!content->pcm_channel_mask ||
++			    (table->total_channels < 32 &&
++			     content->pcm_channel_mask >> table->total_channels))
++				return AVERROR_INVALIDDATA;
++			*mask = content->pcm_channel_mask;
++			*applied = 1;
++			return 0;
++		}
++		return AVERROR(EINVAL);
++	}
++	/* Reject a malformed table even if the provider returned success. */
++	if (ret == AVS3_DECODER_SUCCESS || table->status == AVS3_CONTENTS_OK) {
++		table->available = 0;
++		table->status = AVS3_CONTENTS_INVALID;
++	}
++	table->num_contents = table->num_objects = 0;
++	if (h->content_id < 0 || h->spatial_render != AV3A_RENDER_BINAURAL)
++		return 0;
++	/* A seek may begin between repeated static metadata frames. Never play
++	 * unselected sources while waiting for the first complete scene graph. */
++	*mask = 0;
++	if (table->status == AVS3_CONTENTS_NO_METADATA &&
++	    h->content_missing_frames < 64) {
++		h->content_missing_frames++;
++		return 0;
++	}
++	return AVERROR_INVALIDDATA;
++}
++
++static int arcdav3a_json_add(char **next, size_t *left, const char *fmt, ...)
++{
++	va_list args;
++	int length;
++	va_start(args, fmt);
++	length = vsnprintf(*next, *left, fmt, args);
++	va_end(args);
++	if (length < 0 || (size_t)length >= *left)
++		return AVERROR(ENOSPC);
++	*next += length;
++	*left -= length;
++	return 0;
++}
++
++static int arcdav3a_publish_contents(arcdav3a_context *h, int applied)
++{
++	const AVS3SpatialContents *table = &h->contents;
++	/* Export only an applied selection that belongs to this output graph. */
++	int selected_present = 0;
++	for (int i = 0; i < table->num_contents && i < 4; i++)
++		selected_present |= table->contents[i].content_id == h->content_id;
++	applied = applied && table->available && table->status == AVS3_CONTENTS_OK &&
++		h->spatial_render == AV3A_RENDER_BINAURAL && selected_present;
++	const char *status = table->status == AVS3_CONTENTS_OK ? "ok" :
++		table->status == AVS3_CONTENTS_NO_METADATA ? "no-metadata" :
++		table->status == AVS3_CONTENTS_UNSUPPORTED ? "unsupported" : "invalid";
++	char json[8192], *next = json;
++	size_t left = sizeof(json);
++	int i, j;
++	char *copy;
++
++#define ADD(...) do { if (arcdav3a_json_add(&next, &left, __VA_ARGS__) < 0) \
++	return AVERROR(ENOSPC); } while (0)
++	ADD("{\"version\":1,\"status\":\"%s\",\"render\":\"%s\","
++	    "\"selected\":%d,\"applied\":%s,\"contents\":[", status,
++	    h->spatial_render == AV3A_RENDER_BINAURAL ? "binaural" : "native",
++	    h->content_id, applied ? "true" : "false");
++	for (i = 0; i < table->num_contents; i++) {
++		const AVS3SpatialContent *content = &table->contents[i];
++		if (content->num_objects < 0 || content->num_objects > 8)
++			return AVERROR_INVALIDDATA;
++		ADD("%s{\"id\":%d,\"mask\":%u,\"objects\":[", i ? "," : "",
++		    content->content_id, (unsigned)content->pcm_channel_mask);
++		for (j = 0; j < content->num_objects; j++)
++			ADD("%s%d", j ? "," : "", content->object_ids[j]);
++		ADD("]}");
++	}
++	ADD("],\"objects\":[");
++	for (i = 0; i < table->num_objects; i++) {
++		const AVS3SpatialContentObject *object = &table->objects[i];
++		ADD("%s{\"id\":%d,\"mask\":%u,\"name\":\"", i ? "," : "",
++		    object->object_id, (unsigned)object->pcm_channel_mask);
++		/* The SDK does not declare a character encoding for objectName.
++		 * Publish printable ASCII only; IDs remain authoritative. */
++		for (j = 0; j < sizeof(object->name) && object->name[j]; j++) {
++			unsigned char c = object->name[j];
++			if (c < 32 || c > 126)
++				continue;
++			if (c == '"' || c == '\\')
++				ADD("\\%c", c);
++			else
++				ADD("%c", c);
++		}
++		ADD("\"}");
++	}
++	ADD("]}");
++#undef ADD
++	if (h->contents_json && !strcmp(h->contents_json, json))
++		return 0;
++	copy = av_strdup(json);
++	if (!copy)
++		return AVERROR(ENOMEM);
++	av_freep(&h->contents_json);
++	h->contents_json = copy;
++	return 0;
++}
++
+ static void arcdav3a_destroy_renderer(arcdav3a_context *h)
+ {
+ 	if (h->renderer)
+@@ -369,6 +515,7 @@ static int arcdav3a_render_block(
+ 	AVCodecContext *avctx,
+ 	const AVS3SpatialStreamInfo *info,
+ 	const AVS3SpatialFrame *frame,
++	uint32_t pcm_mask,
+ 	const int16_t *input,
+ 	float *output)
+ {
+@@ -387,6 +534,8 @@ static int arcdav3a_render_block(
+ 	}
+ 
+ 	if (info->format == AVS3_SPATIAL_FORMAT_HOA) {
++		if (h->content_id >= 0)
++			return AVERROR_PATCHWELCOME;
+ 		ambisonic_normalization_type normalization;
+ 
+ 		if (info->hoa_ordering != AVS3_SPATIAL_HOA_ORDERING_ACN)
+@@ -425,6 +574,8 @@ static int arcdav3a_render_block(
+ 
+ 			if (!arcdav3a_gain_valid(gain))
+ 				return AVERROR_INVALIDDATA;
++			if (!(pcm_mask & (UINT32_C(1) << i)))
++				gain = 0.0f;
+ 			if (audio_set_source_gain(
+ 				    h->renderer, h->renderer_bed_source_ids[i],
+ 				    gain) != SUCCESS ||
+@@ -470,6 +621,8 @@ static int arcdav3a_render_block(
+ 					    position) != SUCCESS)
+ 					return AVERROR_EXTERNAL;
+ 			}
++			if (!(pcm_mask & (UINT32_C(1) << channel)))
++				gain = 0.0f;
+ 			if (audio_set_source_gain(
+ 				    h->renderer,
+ 				    h->renderer_object_source_ids[i],
+@@ -540,10 +693,12 @@ static int arcdav3a_render_binaural(AVCodecContext *avctx,
+ 	for (i = 0; i < blocks; i++) {
+ 		const AVS3SpatialFrame *frame =
+ 			info->format == AVS3_SPATIAL_FORMAT_HOA ? NULL :
+-			&h->spatial_frames[i];
++			&h->spatial_frames[i].spatial;
+ 
+ 		ret = arcdav3a_render_block(
+ 			avctx, info, frame,
++			info->format == AVS3_SPATIAL_FORMAT_HOA ? UINT32_MAX :
++				h->spatial_frames[i].pcm_mask,
+ 			input + (size_t)i * info->frame_length *
+ 				info->total_channels,
+ 			h->renderer_output +
+@@ -609,6 +764,10 @@ static int arcdav3a_recreate_decoder(AVCodecContext *avctx)
+ 	h->m_bFirstFrame = true;
+ 	h->have_last_stream_info = 0;
+ 	h->m_dwErrorCounter = 0;
++	h->content_missing_frames = 0;
++	memset(&h->contents, 0, sizeof(h->contents));
++	h->contents.status = AVS3_CONTENTS_NO_METADATA;
++	av_freep(&h->contents_json);
+ 	return 0;
+ }
+ 
+@@ -636,12 +795,17 @@ static av_cold void arcdav3a_decode_flush(AVCodecContext *avctx)
+ 	h->spatial_frame_count = 0;
+ 	h->have_last_spatial_frame = 0;
+ 	h->out_frame.have_spatial_info = 0;
++	h->content_missing_frames = 0;
++	av_freep(&h->contents_json);
++	memset(&h->contents, 0, sizeof(h->contents));
++	h->contents.status = AVS3_CONTENTS_NO_METADATA;
+ 	av_log(avctx, AV_LOG_DEBUG, "end arcdav3a_decode_flush!\n");
+ }
+ 
+-static int arcdav3a_append_spatial_frame(arcdav3a_context *h)
++static int arcdav3a_append_spatial_frame(arcdav3a_context *h,
++				 uint32_t mask, int applied)
+ {
+-	AVS3SpatialFrame *frames;
++	AV3AContentFrame *frames;
+ 	AVS3SpatialFrame *frame;
+ 	int capacity;
+ 
+@@ -658,7 +822,9 @@ static int arcdav3a_append_spatial_frame(arcdav3a_context *h)
+ 		h->spatial_frame_capacity = capacity;
+ 	}
+ 
+-	frame = &h->spatial_frames[h->spatial_frame_count++];
++	h->spatial_frames[h->spatial_frame_count].pcm_mask = mask;
++	h->spatial_frames[h->spatial_frame_count].content_applied = applied;
++	frame = &h->spatial_frames[h->spatial_frame_count++].spatial;
+ 	memset(frame, 0, sizeof(*frame));
+ 	frame->struct_size = sizeof(*frame);
+ 	if (avs3_get_spatial_frame(h->m_hAvs3, frame) !=
+@@ -677,6 +843,7 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const uint8_t *pIn,
+     int ret = 0;
+ 	unsigned long required;
+ 	AVS3SpatialStreamInfo output_info = { 0 };
++	AVS3SpatialContents output_contents = { 0 };
+ 	int have_output_info = 0;
+ 
+ 	if (!h->m_hAvs3 || !pIn || !lenConsumed || !pOut || !pOut->pOutData)
+@@ -827,10 +994,18 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const uint8_t *pIn,
+ 
+ 		if (ret != AVS3_DECODER_SUCCESS)
+ 			break;
+-		if (outlen > 0 && h->spatial_render == AV3A_RENDER_BINAURAL) {
+-			ret = arcdav3a_append_spatial_frame(h);
++		if (outlen > 0) {
++			uint32_t mask;
++			int applied;
++			ret = arcdav3a_content_mask(h, &mask, &applied);
+ 			if (ret < 0)
+ 				return ret;
++			output_contents = h->contents;
++			if (h->spatial_render == AV3A_RENDER_BINAURAL) {
++				ret = arcdav3a_append_spatial_frame(h, mask, applied);
++				if (ret < 0)
++					return ret;
++			}
+ 		}
+ 
+ 		h->last_stream_info = stream_info;
+@@ -858,6 +1033,9 @@ static int dav3a_decode_frame(AVCodecContext *avctx, const uint8_t *pIn,
+ 		pOut->nChCfg = info->channel_config;
+ 		pOut->spatial_info = output_info;
+ 		pOut->have_spatial_info = 1;
++		/* A subsequent header can recreate the decoder before this packet's
++		 * already decoded output is returned. Keep its matching scene graph. */
++		h->contents = output_contents;
+ 	}
+ 
+ 	// Adjust input blob 
+@@ -1076,6 +1254,11 @@ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_f
+ 				&frame_data_size);
+ 			if (rendered < 0)
+ 				return rendered;
++			ret = arcdav3a_publish_contents(h,
++				rendered && h->spatial_frame_count > 0 &&
++				h->spatial_frames[h->spatial_frame_count - 1].content_applied);
++			if (ret < 0)
++				return ret;
+ 
+ 			frm->format = rendered ? AV_SAMPLE_FMT_FLT : AV_SAMPLE_FMT_S16;
+ 			sampleSize = (rendered ? 2 : h->out_frame.nChannel) *
+@@ -1161,6 +1344,11 @@ static av_cold int arcdav3a_decode_close(AVCodecContext *avctx)
+ #define DEC (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_AUDIO_PARAM)
+ 
+ static const AVOption arcdav3a_options[] = {
++	{ "av3a_content", "AV3A content ID for binaural output (-1 preserves all objects)",
++	  OFFSET(content_id), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, 3, DEC },
++	{ "av3a_contents", "Validated AV3A scene contents and applied selection (JSON)",
++	  OFFSET(contents_json), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0,
++	  AV_OPT_FLAG_AUDIO_PARAM | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
+ 	{ "av3a_render", "AV3A object/HOA rendering mode",
+ 	  OFFSET(spatial_render), AV_OPT_TYPE_INT,
+ 	  { .i64 = AV3A_RENDER_NATIVE }, AV3A_RENDER_NATIVE,

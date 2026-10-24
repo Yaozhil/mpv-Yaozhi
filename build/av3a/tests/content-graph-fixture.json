@@ -1,0 +1,28 @@
+{
+  "fixture": "DVB No3 actual static metadata, independently parsed from all 2812 MP4 access units",
+  "sample_sha256": "a0b6d84456423589bcea6184f032759238072bc2e50f80bda1781da2f76d06d4",
+  "sdk_commit": "e7d244d29454eb04c968cd98a30587303a9c15f8",
+  "metadata_sha256": "45ed92af71e4aec351d6f93d45d9555ca33f0d37ac2d512b698bf0748afed2a3",
+  "programme_content_ids": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "masks": [
+    "0x3fff",
+    "0x5fff",
+    "0x6fff",
+    "0x9fff"
+  ],
+  "object_names": [
+    "",
+    "AO_O1",
+    "AO_O2",
+    "AO_O3",
+    "AO_O4"
+  ],
+  "default_content": "unspecified",
+  "fixture_sha256": "2feb505565b2183083090ef989b355130fd4fa4e9d8029658f16e63d009867c7",
+  "scope": "Fixture only; production implementation must resolve authored IDs, not hard-code these sample values"
+}

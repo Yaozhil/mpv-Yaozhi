@@ -1,35 +1,1819 @@
-name: HOLD bootstrap diagnostic workspace
+name: "Build V1.0.0 main and Atmos parity candidates"
+
 on:
   workflow_dispatch:
+    inputs:
+      collector_diagnostics_only:
+        description: Build only the isolated diagnostic collector without player or ETW
+        type: boolean
+        required: false
+        default: false
+      reviewed_collector_tools_ref:
+        description: Required only for collector diagnostics; full reviewed tools commit
+        type: string
+        required: false
+      fast_native_preflight:
+        description: Run only the bounded V24 CPU GCC preflight
+        type: boolean
+        required: false
+        default: false
+      expected_main_tree:
+        description: Required only for fast preflight; root-frozen main tree (40 lowercase hex)
+        type: string
+        required: false
+      expected_atmos_tree:
+        description: Required only for fast preflight; root-frozen Atmos tree (40 lowercase hex)
+        type: string
+        required: false
+  pull_request:
+    branches: [codex/v100-core-parity-20260907, codex/danmaku-batch-v9-20261005]
+    paths:
+      - .github/workflows/build-mpv-v100-parity.yml
+      - build/atmos/**
+      - build/bluray-menu/patches/**
+      - build/feedback/tests/verify-secondary-ass-*.c
+      - build/feedback/tests/verify-danmaku-*.lua
+      - portable_config/scripts/uosc_danmaku/modules/render.lua
+      - portable_config/scripts/uosc_danmaku/modules/color.lua
+
+concurrency:
+  group: v100-parity-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
+  collector-diagnostics:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.collector_diagnostics_only && !inputs.fast_native_preflight }}
+    uses: ./.github/workflows/build-collector-v30.yml
+    with:
+      tools_ref: ${{ inputs.reviewed_collector_tools_ref }}
+
+  fast-native-preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.fast_native_preflight && !inputs.collector_diagnostics_only }}
+    uses: ./.github/workflows/native-ass-fast-gcc-preflight.yml
+    with:
+      expected_main_tree: ${{ inputs.expected_main_tree }}
+      expected_atmos_tree: ${{ inputs.expected_atmos_tree }}
+
   build:
+    if: ${{ !inputs.fast_native_preflight && !inputs.collector_diagnostics_only }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, atmos]
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 360
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
+      MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
+      MPV_COMMIT: c318236b8882af860f16f936225430ad053a2179
+      CPPWINRT_COMMIT: 856eaff70a48d6b053c2ad3dffec15b81ca34b10
+      WINDOWS_RS_COMMIT: cad85f9e122b8236f3619ab67b88a1e7242dcb7d
+      WINDOWS_WINMD_SHA256: 9ddfc6f5e5c3d29522f35e1cac566617e9d28ccbc6ccb072c79fa9949cdbe336
+      DAVS2_COMMIT: b42ffca966970dc788f8c57549bee038b2974346
+      SDL2_COMMIT: a2e7c76bda17c853ba93c7d2c9fdddf8a9d621d1
+      LIBPSL_COMMIT: aa3a80e18f25caf3916636c8668dcc0fff7c016d
+      CURL_COMMIT: c2a04c080d79e1eb5d99bc0a73fd71710aa6d345
+      LIBSSH_COMMIT: 26c594227c74bf9fa75fed5d8be61afd1abebc43
+      OPENSSL_COMMIT: 052c9eac52d7eb02a61cfe7c70289c13f06a50e1
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          # Prefer the hosted image's package index. If it has gone stale,
+          # refresh once with bounded retries before the second install attempt.
+          apt_install() {
+            local attempt
+            for attempt in 1 2; do
+              if timeout --foreground --kill-after=2m 45m \
+                sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+                -o Acquire::Retries=3 \
+                -o Acquire::http::Timeout=30 \
+                -o Acquire::https::Timeout=30 \
+                install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 1 ]; then
+                timeout --foreground --kill-after=1m 10m \
+                  sudo apt-get \
+                  -o Acquire::Retries=3 \
+                  -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30 \
+                  update
+                timeout --foreground --kill-after=1m 10m \
+                  sudo dpkg --configure -a || true
+              fi
+            done
+            return 1
+          }
+
+          apt_install \
+            build-essential bison flex gettext git mercurial subversion \
+            ninja-build gyp cmake yasm nasm automake pkg-config libtool \
+            libtool-bin gcc-multilib g++-multilib clang lld libc++-dev \
+            libc++abi-dev libgmp-dev libmpfr-dev libmpc-dev libgcrypt20-dev \
+            gperf ragel texinfo autopoint re2c python3-pip \
+            python3-cairo unzip p7zip-full curl wget ccache
+          apt_install luajit
+          timeout --foreground --kill-after=1m 20m \
+            python3 -m pip install --break-system-packages \
+            --retries 3 --default-timeout 30 \
+            rst2pdf meson mako jsonschema roman
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check out configuration and patch
+        uses: actions/checkout@v6
         with:
+          # The PR base is used only for its dependency cache. Build the
+          # reviewed HOLD-derived head, never the base branch's merge tree.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: actions/cache/restore@v4
+
+      - name: Verify Lua subtitle and danmaku policies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export LUA_PATH="portable_config/scripts/uosc_danmaku/?.lua;;"
+          luajit build/hdr-pgs/tests/verify-image-subs-policy.lua
+          luajit build/uosc-danmaku/tests/verify-blackbar-layout.lua
+          for core_range in 1000 240 missing legacy; do
+            luajit build/feedback/tests/verify-danmaku-native-cadence.lua \
+              portable_config/scripts/uosc_danmaku/modules/render.lua "$core_range"
+          done
+          luajit build/feedback/tests/verify-danmaku-native-viewport.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua modern
+          luajit build/feedback/tests/verify-danmaku-native-viewport.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua legacy
+          luajit build/feedback/tests/verify-danmaku-auto-cadence.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua verify 23.976
+          luajit build/feedback/tests/verify-danmaku-auto-cadence.lua \
+            portable_config/scripts/uosc_danmaku/modules/render.lua verify 25
+
+      - name: Prepare matching Windows build system
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          clone_commit() {
+            local repository="$1"
+            local destination="$2"
+            local commit="$3"
+            git init "$destination"
+            git -C "$destination" remote add origin "$repository"
+            git -C "$destination" fetch --depth 1 origin "$commit"
+            git -C "$destination" checkout --detach FETCH_HEAD
+            test "$(git -C "$destination" rev-parse HEAD)" = "$commit"
+          }
+
+          clone_commit \
+            https://github.com/zhongfly/mpv-winbuild.git \
+            winbuild \
+            "$MPV_WINBUILD_COMMIT"
+          clone_commit \
+            https://github.com/shinchiro/mpv-winbuild-cmake.git \
+            winbuild/mpv-winbuild-cmake \
+            "$MPV_WINBUILD_CMAKE_COMMIT"
+
+          cd winbuild/mpv-winbuild-cmake
+
+          # The pinned GCC snapshot was pruned upstream and now returns
+          # HTTP 404. Keep the verified build-system commit, but use the stable
+          # GCC 14.4.0 source and SHA-512 published by current upstream winbuild.
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("toolchain/gcc/gcc.cmake")
+          text = path.read_text()
+          replacements = {
+              "https://mirrorservice.org/sites/sourceware.org/pub/gcc/snapshots/14-20251205/gcc-14-20251205.tar.xz":
+                  "https://ftp.gnu.org/gnu/gcc/gcc-14.4.0/gcc-14.4.0.tar.xz",
+              "SHA512=b05c932de5c478cf9b64a4f2cbdf1de9b37a4845614ff8bc0e0563cd1e716f69ea0fe070ef9bf5ec1fccc0658705ec76cef536ac8dc4ca4c32cf81dad8588c37":
+                  "SHA512=725ed8bdd43ef1726ffe8b5e8615a13e247fac9575b7626ae013a2975d000ea213212dc414b2f2631ac4785c1c8beca85555222faf9904d3b2fa6a3807a83a15",
+          }
+          for source, replacement in replacements.items():
+              if text.count(source) != 1:
+                  raise SystemExit(f"expected exactly one pinned GCC token: {source}")
+              text = text.replace(source, replacement)
+          path.write_text(text)
+          PY
+
+          for patch in ../patch/*.patch; do
+            if [ "$(basename "$patch")" = \
+              "0008-ngtcp2-nghttp3-nghttp2-add-ngtcp2-nghttp3-nghttp2.patch" ]; then
+              echo "Skipping optional HTTP/3 patch incompatible with current OpenSSL"
+              continue
+            fi
+            echo "Applying required build patch: $patch"
+            git am --3way "$patch"
+          done
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("packages/mpv.cmake")
+          text = path.read_text()
+          patch_command = (
+              "    GIT_CLONE_FLAGS \"\"\n"
+              "    PATCH_COMMAND ${EXEC} git am --3way "
+              "${CMAKE_CURRENT_SOURCE_DIR}/mpv-*.patch\n"
+          )
+          if "mpv-*.patch" not in text:
+              anchor = '    GIT_CLONE_FLAGS "--filter=tree:0"\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate mpv GIT_CLONE_FLAGS anchor")
+              text = text.replace(anchor, patch_command, 1)
+
+          option = "        -Dsdl2-audio=enabled\n"
+          if option not in text:
+              anchor = "        -Dsdl2-gamepad=enabled\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate SDL2 gamepad option")
+              text = text.replace(anchor, anchor + option, 1)
+
+          smtc_option = "        -Dwin32-smtc=enabled\n"
+          if smtc_option not in text:
+              anchor = "        -Dlibmpv=true\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate libmpv option")
+              text = text.replace(anchor, anchor + smtc_option, 1)
+
+          cppwinrt_dependency = "        cppwinrt\n"
+          if cppwinrt_dependency not in text:
+              anchor = "        angle-headers\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate mpv dependency anchor")
+              text = text.replace(anchor, anchor + cppwinrt_dependency, 1)
+
+          path.write_text(text)
+
+          sdl2 = Path("packages/libsdl2.cmake")
+          text = sdl2.read_text()
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9000-spatial-speaker-mask.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9000-spatial-speaker-mask.patch\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9001-spatial-channel-counts.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "sdl2-9001-spatial-channel-counts.patch\n"
+          )
+          if "sdl2-9000-spatial-speaker-mask.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate SDL2 update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+          sdl2.write_text(text)
+
+          # Build the pinned native generator here, then stage its generated
+          # headers in an explicit bounded step below. This avoids the pinned
+          # winbuild install-command regression without disabling C++/WinRT.
+          import re
+
+          cppwinrt = Path("toolchain/cppwinrt.cmake")
+          text = cppwinrt.read_text()
+          tag = f"    GIT_TAG {os.environ['CPPWINRT_COMMIT']}\n"
+          if tag not in text:
+              anchor = "    GIT_REPOSITORY https://github.com/microsoft/cppwinrt.git\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate cppwinrt repository anchor")
+              text = text.replace(anchor, anchor + tag, 1)
+          pattern = r"^    INSTALL_COMMAND[\s\S]*?(?=^    LOG_DOWNLOAD)"
+          if not re.search(pattern, text, flags=re.MULTILINE):
+              raise SystemExit("Could not locate cppwinrt install command")
+          text = re.sub(pattern, '    INSTALL_COMMAND ""\n', text,
+                        count=1, flags=re.MULTILINE)
+          cleanup = "cleanup(cppwinrt install)\n"
+          if cleanup not in text:
+              raise SystemExit("Could not locate cppwinrt cleanup hook")
+          # The native generator is consumed by the next workflow step. Keep
+          # its build directory until the generated headers have been staged.
+          text = text.replace(cleanup, "# cppwinrt cleanup is deferred\n", 1)
+          cppwinrt.write_text(text)
+          PY
+
+          # Apply the single audited c318236 candidate mailbox. It
+          # contains only the sixteen consecutive audited commits from the isolated
+          # source tree; upstreamed fixes are supplied by the pinned base.
+          cp "$GITHUB_WORKSPACE/build/atmos/parity/main-core.patch" \
+            packages/mpv-9000-candidate-c318236.patch
+          cp "$GITHUB_WORKSPACE/patches/0003-sdl2-wasapi-spatial-speaker-mask.patch" \
+            packages/sdl2-9000-spatial-speaker-mask.patch
+          cp "$GITHUB_WORKSPACE/patches/0006-sdl2-allow-spatial-channel-counts.patch" \
+            packages/sdl2-9001-spatial-channel-counts.patch
+
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec.cmake" \
+            packages/avs3-audiodec.cmake
+          cp "$GITHUB_WORKSPACE/build/av3a/normalize-source-eol.py" \
+            packages/avs3-normalize-source-eol.py
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodec-static-library.patch" \
+            packages/avs3-audiodec-9000-static-library.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-stage2.patch" \
+            packages/avs3-audiodec-9001-spatial-metadata.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-audiodecoder-preselections.patch" \
+            packages/avs3-audiodec-9002-preselections.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-build.patch" \
+            packages/avs3-renderer-build.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/avs3-renderer-hardening.patch" \
+            packages/avs3-renderer-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-hardening.patch" \
+            packages/ffmpeg-9000-libarcdav3a-hardening.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-spatial.patch" \
+            packages/ffmpeg-9004-libarcdav3a-spatial.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-libarcdav3a-preselections.patch" \
+            packages/ffmpeg-9006-libarcdav3a-preselections.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-multiframe-probe.patch" \
+            packages/ffmpeg-9001-av3a-multiframe-probe.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-av3a-frame-parser.patch" \
+            packages/ffmpeg-9002-av3a-frame-parser.patch
+          cp "$GITHUB_WORKSPACE/build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch" \
+            packages/ffmpeg-9005-bluray-hdmv-context.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/ffmpeg-nvenc-sdk-13.1.patch" \
+            packages/ffmpeg-9003-nvenc-sdk-13.1.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split.c" \
+            packages/ffmpeg-8998-dovi-split.c
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-hevc-missing-ref-foll.patch" \
+            packages/ffmpeg-8995-hevc-missing-ref-foll.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-hevc-dovi-rpu-scan.patch" \
+            packages/ffmpeg-8996-hevc-dovi-rpu-scan.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch" \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-split-registration.patch" \
+            packages/ffmpeg-8998-dovi-split-registration.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-dovi-dual-track-stream-group.patch" \
+            packages/ffmpeg-8999-dovi-dual-track-stream-group.patch
+          cp "$GITHUB_WORKSPACE/build/dolby-vision/ffmpeg-mpegts-dovi-stream-group.patch" \
+            packages/ffmpeg-8999a-mpegts-dovi-stream-group.patch
+          cp "$GITHUB_WORKSPACE/build/core-candidate/ffmpeg-8800-truehd-mat-padding.patch" \
+            packages/ffmpeg-9010-truehd-mat-padding.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/davs2-const-correctness.patch" \
+            packages/davs2-9000-const-correctness.patch
+          cp "$GITHUB_WORKSPACE/build/av3a/davs2-error-recovery.patch" \
+            packages/davs2-9001-error-recovery.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          packages = Path("packages/CMakeLists.txt")
+          text = packages.read_text()
+          av3a_entry = "    avs3-audiodec\n"
+          if av3a_entry not in text:
+              anchor = "    ffmpeg\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate ffmpeg package-list anchor")
+              text = text.replace(anchor, av3a_entry + anchor, 1)
+              packages.write_text(text)
+
+          ffmpeg = Path("packages/ffmpeg.cmake")
+          text = ffmpeg.read_text()
+          dependency = "        avs3-audiodec\n"
+          if dependency not in text:
+              anchor = "    DEPENDS\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg dependency anchor")
+              text = text.replace(anchor, anchor + dependency, 1)
+
+          upstream = "    GIT_REPOSITORY https://github.com/FFmpeg/FFmpeg.git\n"
+          fork = "    GIT_REPOSITORY https://github.com/llawsxx/FFmpeg.git\n"
+          if upstream in text:
+              text = text.replace(upstream, fork, 1)
+          elif fork not in text:
+              raise SystemExit("Could not locate FFmpeg repository")
+
+          tag = "    GIT_TAG 18c01ad424ca7712ef9a9d46953308efc75c4776\n"
+          if tag not in text:
+              text = text.replace(fork, fork + tag, 1)
+
+          patch_files = [
+              "ffmpeg-8995-hevc-missing-ref-foll.patch",
+              "ffmpeg-8996-hevc-dovi-rpu-scan.patch",
+              "ffmpeg-8997-dovi-split-prerequisites.patch",
+              "ffmpeg-8998-dovi-split-registration.patch",
+              "ffmpeg-8999-dovi-dual-track-stream-group.patch",
+              "ffmpeg-8999a-mpegts-dovi-stream-group.patch",
+              "ffmpeg-9000-libarcdav3a-hardening.patch",
+              "ffmpeg-9004-libarcdav3a-spatial.patch",
+              "ffmpeg-9006-libarcdav3a-preselections.patch",
+              "ffmpeg-9001-av3a-multiframe-probe.patch",
+              "ffmpeg-9002-av3a-frame-parser.patch",
+              "ffmpeg-9003-nvenc-sdk-13.1.patch",
+              "ffmpeg-9005-bluray-hdmv-context.patch",
+              "ffmpeg-9010-truehd-mat-padding.patch",
+          ]
+          patch = (
+              "    PATCH_COMMAND ${CMAKE_COMMAND} -E copy "
+              "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-8998-dovi-split.c "
+              "libavcodec/bsf/dovi_split.c\n"
+          )
+          for patch_file in patch_files:
+              command = "        COMMAND"
+              patch += (
+                  command + " ${EXEC} git apply --check "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/" + patch_file + "\n"
+                  "        COMMAND ${EXEC} git apply "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/" + patch_file + "\n"
+              )
+          if "ffmpeg-9000-libarcdav3a-hardening.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+
+          option = "        --enable-libarcdav3a\n"
+          if option not in text:
+              anchor = "        --enable-libplacebo\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate FFmpeg configure anchor")
+              text = text.replace(anchor, anchor + option, 1)
+
+          ffmpeg.write_text(text)
+
+          davs2 = Path("packages/davs2.cmake")
+          text = davs2.read_text()
+          upstream = "    GIT_REPOSITORY https://github.com/saindriches/davs2.git\n"
+          fork = "    GIT_REPOSITORY https://github.com/llawsxx/davs2-10bit.git\n"
+          if upstream in text:
+              text = text.replace(upstream, fork, 1)
+          elif fork not in text:
+              raise SystemExit("Could not locate davs2 repository")
+
+          tag = "    GIT_TAG b42ffca966970dc788f8c57549bee038b2974346\n"
+          if tag not in text:
+              text = text.replace(fork, fork + tag, 1)
+
+          patch = (
+              "    PATCH_COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9000-const-correctness.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9000-const-correctness.patch\n"
+              "        COMMAND ${EXEC} git apply --check "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9001-error-recovery.patch\n"
+              "        COMMAND ${EXEC} git apply "
+              "${CMAKE_CURRENT_SOURCE_DIR}/"
+              "davs2-9001-error-recovery.patch\n"
+          )
+          if "davs2-9000-const-correctness.patch" not in text:
+              anchor = '    UPDATE_COMMAND ""\n'
+              if anchor not in text:
+                  raise SystemExit("Could not locate davs2 update anchor")
+              text = text.replace(anchor, anchor + patch, 1)
+
+          davs2.write_text(text)
+          PY
+
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/mpv-player\\/mpv.git/a\\    GIT_TAG $MPV_COMMIT" \
+            packages/mpv.cmake
+          sed -i \
+            's#https://git.videolan.org/git/ffmpeg/nv-codec-headers.git#https://github.com/FFmpeg/nv-codec-headers.git#' \
+            packages/nvcodec-headers.cmake
+          sed -i \
+            "s/GIT_TAG SDL2/GIT_TAG $SDL2_COMMIT/" \
+            packages/libsdl2.cmake
+          # A pinned commit is checked out detached. Leaving GIT_REMOTE_NAME
+          # set makes winbuild's force-update helper try to resolve @{u}.
+          sed -i \
+            '/^[[:space:]]*GIT_REMOTE_NAME origin$/d' \
+            packages/libsdl2.cmake
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/rockdaboot\\/libpsl.git/a\\    GIT_TAG $LIBPSL_COMMIT" \
+            packages/libpsl.cmake
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/curl\\/curl.git/a\\    GIT_TAG $CURL_COMMIT" \
+            packages/curl.cmake
+          # libssh master removed the legacy ssh_scp typedef on 9/3 while the
+          # pinned curl release still consumes it. Keep the exact libssh
+          # revision used by the last successful formal build.
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/gitlab.com\\/libssh\\/libssh-mirror.git/a\\    GIT_TAG $LIBSSH_COMMIT" \
+            packages/libssh.cmake
+
+          # OpenSSL incorporated winbuild's MinGW SIO_UDP_NETRESET workaround
+          # upstream. Pin the last known-good source used by the 8/29 formal
+          # build and stop reapplying the now-duplicate mailbox patch.
+          sed -i \
+            "/GIT_REPOSITORY https:\\/\\/github.com\\/openssl\\/openssl.git/a\\    GIT_TAG $OPENSSL_COMMIT" \
+            packages/openssl.cmake
+          sed -i '/PATCH_COMMAND.*openssl-.*\.patch/d' packages/openssl.cmake
+
+          # The Windows release must use Schannel so certificate verification
+          # follows the Windows trust store, matching the proven 7/17 build.
+          sed -i \
+            's/-DCURL_USE_OPENSSL=ON/-DCURL_USE_OPENSSL=OFF/' \
+            packages/curl.cmake
+          sed -i \
+            '/-DCURL_USE_OPENSSL=OFF/a\        -DCURL_USE_SCHANNEL=ON' \
+            packages/curl.cmake
+
+          # ECH is not available through Schannel in this build. Normal
+          # HTTP/HTTPS, Windows CA, redirects, ranges and request headers remain.
+          sed -i \
+            's/-DUSE_ECH=ON/-DUSE_ECH=OFF/' \
+            packages/curl.cmake
+
+          test -f packages/curl.cmake
+          grep -Eq '^[[:space:]]*curl[[:space:]]*$' packages/mpv.cmake
+          grep -Fq -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dsdl2-audio=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dsdl2-gamepad=enabled' packages/mpv.cmake
+          grep -Fq -- '-Dwin32-smtc=enabled' packages/mpv.cmake
+          grep -Fq '        cppwinrt' packages/mpv.cmake
+          grep -Fq "GIT_TAG $CPPWINRT_COMMIT" toolchain/cppwinrt.cmake
+          if grep -Fq 'cleanup(cppwinrt install)' toolchain/cppwinrt.cmake; then
+            echo "::error::cppwinrt generator would be deleted before header staging"
+            exit 1
+          fi
+          grep -Fq "GIT_TAG $SDL2_COMMIT" packages/libsdl2.cmake
+          grep -Fq "GIT_TAG $LIBPSL_COMMIT" packages/libpsl.cmake
+          grep -Fq "GIT_TAG $CURL_COMMIT" packages/curl.cmake
+          grep -Fq "GIT_TAG $LIBSSH_COMMIT" packages/libssh.cmake
+          grep -Fq "GIT_TAG $OPENSSL_COMMIT" packages/openssl.cmake
+          if grep -Fq 'PATCH_COMMAND' packages/openssl.cmake; then
+            echo "::error::obsolete OpenSSL MinGW patch is still enabled"
+            exit 1
+          fi
+          if grep -Fq 'GIT_REMOTE_NAME origin' packages/libsdl2.cmake; then
+            echo "::error::pinned SDL2 still uses branch-only force-update"
+            exit 1
+          fi
+          grep -n 'PATCH_COMMAND.*sdl2-9000' packages/libsdl2.cmake
+          grep -Fq 'sdl2-9001-spatial-channel-counts.patch' \
+            packages/libsdl2.cmake
+          grep -Fq 'WASAPI_ApplySpatialSpeakerMask' \
+            packages/sdl2-9000-spatial-speaker-mask.patch
+          grep -Fq 'orig->channels != 10' \
+            packages/sdl2-9001-spatial-channel-counts.patch
+          grep -Fq 'orig->channels != 12' \
+            packages/sdl2-9001-spatial-channel-counts.patch
+          if grep -E 'list\(APPEND removed .*"curl"' packages/CMakeLists.txt; then
+            echo "::error::curl is still excluded from the mpv dependency graph"
+            exit 1
+          fi
+          grep -Fq -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
+          grep -Fq -- '-DCURL_USE_SCHANNEL=ON' packages/curl.cmake
+          grep -Fq -- '-DCURL_CA_NATIVE=ON' packages/curl.cmake
+          grep -Fq -- '-DUSE_ECH=OFF' packages/curl.cmake
+          if grep -Fq -- '-DCURL_USE_OPENSSL=ON' packages/curl.cmake; then
+            echo "::error::curl OpenSSL backend is still enabled"
+            exit 1
+          fi
+          if grep -Fq -- '-DCURL_USE_SCHANNEL=OFF' packages/curl.cmake; then
+            echo "::error::curl Schannel backend is disabled"
+            exit 1
+          fi
+          if grep -Fq -- '-DUSE_ECH=ON' packages/curl.cmake; then
+            echo "::error::curl ECH is enabled in the Schannel release build"
+            exit 1
+          fi
+          if grep -Eq 'ngtcp2|nghttp3|USE_NGTCP2=ON|USE_NGHTTP3=ON' \
+            packages/CMakeLists.txt packages/curl.cmake; then
+            echo "::error::optional HTTP/3 dependencies are still enabled"
+            exit 1
+          fi
+          grep -A5 -B2 'GIT_REPOSITORY.*mpv-player' packages/mpv.cmake
+          grep -n 'PATCH_COMMAND.*mpv-' packages/mpv.cmake
+          # Fail before the expensive build if the candidate mailbox is
+          # incomplete or no longer carries a required private regression fix.
+          candidate_mpv_patch=packages/mpv-9000-candidate-c318236.patch
+          grep -Fq '[Luna] prepare Blu-ray menu and metadata candidate' "$candidate_mpv_patch"
+          grep -Fq '[Luna] preserve subtitle cache and remote Blu-ray ISO' "$candidate_mpv_patch"
+          grep -Fq '[Luna] enable backported Dolby Vision stream groups' "$candidate_mpv_patch"
+          grep -Fq '[Luna] expose Profile 7 metadata on paired base layer' "$candidate_mpv_patch"
+          grep -Fq 'expose Profile 7 metadata for authored Blu-ray' "$candidate_mpv_patch"
+          grep -Fq 'preserve Profile 7 recovery for authored Blu-ray' "$candidate_mpv_patch"
+          grep -Fq 'stream_bluray: wait for delayed BD-J title transitions' "$candidate_mpv_patch"
+          grep -Fq 'stream_dvdnav: activate buttons from queued NAV data' "$candidate_mpv_patch"
+          grep -Fq 'stream_dvdnav: trace authored button activation' "$candidate_mpv_patch"
+          grep -Fq 'stream_dvdnav: recover false-success LinkRSM buttons' "$candidate_mpv_patch"
+          grep -Fq '[Luna] demux_disc: wait for async Blu-ray destination' "$candidate_mpv_patch"
+          grep -Fq 'demux_disc: avoid nested Blu-ray reopen polling' "$candidate_mpv_patch"
+          grep -Fq 'discnav: handle back-to-back navigation boundaries' "$candidate_mpv_patch"
+          grep -Fq 'vo_gpu_next: honor SDR mode for bitmap subtitles' "$candidate_mpv_patch"
+          grep -Fq 'demux: bound read-ahead during disc title playback' "$candidate_mpv_patch"
+          grep -Fq 'BLURAY_BDJ_NAV_EOF_POLLS 300' "$candidate_mpv_patch"
+          grep -Fq 'b->bdj_nav = info->bdj_detected && info->bdj_handled' "$candidate_mpv_patch"
+          grep -Fq 'dvdnav_button_activate_cmd(priv->dvdnav, btn, &b.cmd)' "$candidate_mpv_patch"
+          grep -Fq 'select button: vm=%d cached=%d buttons=%d' "$candidate_mpv_patch"
+          grep -Fq 'is_link_rsm_command' "$candidate_mpv_patch"
+          grep -Fq 'LinkRSM stayed in the menu' "$candidate_mpv_patch"
+          grep -Fq 'last_drain_discontinuity_id' "$candidate_mpv_patch"
+          grep -Fq 'bool force_sdr = !tagged_overlay && src' "$candidate_mpv_patch"
+          grep -Fq 'NAV_PLAYBACK_READAHEAD_SECS 2.0' "$candidate_mpv_patch"
+          grep -Fq 'NAV_PLAYBACK_READAHEAD_MAX_BYTES (16 * 1024 * 1024)' "$candidate_mpv_patch"
+          grep -Fq 'demux_set_nav_state(demuxer, nav.nav_active, nav.menu_active' "$candidate_mpv_patch"
+          grep -Fq 'AV_VERSION_INT(62, 13, 102)' "$candidate_mpv_patch"
+          grep -Fq 'bl_sh->codec->dv_profile = el_sh->codec->dv_profile' "$candidate_mpv_patch"
+          grep -Fq 'AV_CHANNEL_ORDER_CUSTOM' "$candidate_mpv_patch"
+          grep -Fq 'image-subs-colorspace' "$candidate_mpv_patch"
+          grep -Fq 'AV_FRAME_DATA_DYNAMIC_HDR_VIVID' "$candidate_mpv_patch"
+          grep -Fq 'dst->params.hdr_vivid = src->params.hdr_vivid' "$candidate_mpv_patch"
+          grep -Fq 'dovi_el_only' "$candidate_mpv_patch"
+          grep -Fq 'AV_CODEC_FLAG_OUTPUT_CORRUPT' "$candidate_mpv_patch"
+          grep -Fq 'demuxer_set_stream_cache_inactive' "$candidate_mpv_patch"
+          grep -Fq 'bd_open_stream(bd, b, remote_read_blocks)' "$candidate_mpv_patch"
+          grep -Fq 'Remote Blu-ray image is not seekable' "$candidate_mpv_patch"
+          grep -n -A8 -B2 'avs3-audiodec' packages/CMakeLists.txt
+          grep -n -A10 -B4 'GIT_REPOSITORY.*llawsxx' packages/ffmpeg.cmake
+          grep -n -A4 -B4 -- '--enable-libarcdav3a' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9001-av3a-multiframe-probe.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9002-av3a-frame-parser.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9003-nvenc-sdk-13.1.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9004-libarcdav3a-spatial.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9006-libarcdav3a-preselections.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8998-dovi-split-registration.patch' packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-8997-dovi-split-prerequisites.patch' packages/ffmpeg.cmake
+          grep -Fq 'AV_PKT_DATA_HEVC_CONF' \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq 'MATROSKA_BLOCK_ADD_ID_TYPE_HVCE' \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq "MKTAG('h','v','c','E')" \
+            packages/ffmpeg-8997-dovi-split-prerequisites.patch
+          grep -Fq 'dovi_split_bsf_select="hevcparse"' \
+            packages/ffmpeg-8998-dovi-split-registration.patch
+          grep -Fq "MKTAG('v','d','e','p')" \
+            packages/ffmpeg-8999-dovi-dual-track-stream-group.patch
+          grep -Fq 'AV_STREAM_GROUP_PARAMS_DOLBY_VISION' \
+            packages/ffmpeg-8999-dovi-dual-track-stream-group.patch
+          grep -Fq 'M2TS_VIDEO_EL_PID' \
+            packages/ffmpeg-8999a-mpegts-dovi-stream-group.patch
+          grep -Fq 'dependency_pid' \
+            packages/ffmpeg-8999a-mpegts-dovi-stream-group.patch
+          grep -Fq 'ffmpeg-8999-dovi-dual-track-stream-group.patch' \
+            packages/ffmpeg.cmake
+          grep -Fq 'ffmpeg-9010-truehd-mat-padding.patch' \
+            packages/ffmpeg.cmake
+          grep -n -A8 -B2 'Sourcecodeforplayer' packages/avs3-audiodec.cmake
+          grep -Fq 'av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
+            packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-renderer-build.patch' packages/avs3-audiodec.cmake
+          grep -Fq 'add_library(RendererCore STATIC' \
+            packages/avs3-renderer-build.patch
+          grep -Fq 'install(TARGETS RendererCore avs3_samplerate' \
+            packages/avs3-renderer-build.patch
+          grep -Fq 'avs3-renderer-hardening.patch' packages/avs3-audiodec.cmake
+          grep -Fq 'avs3-normalize-source-eol.py' packages/avs3-audiodec.cmake
+          grep -Fq -- '-DAVS3_BUILD_RENDERER=ON' packages/avs3-audiodec.cmake
+          grep -Fq -- \
+            '-DRENDERER_ROOT=<SOURCE_DIR>/av3a_binaural_render/AudioDecoder/av3a_binaural_render' \
+            packages/avs3-audiodec.cmake
+          grep -n -A4 -B2 'llawsxx/davs2-10bit' packages/davs2.cmake
+          grep -Fq "GIT_TAG $DAVS2_COMMIT" packages/davs2.cmake
+          grep -n 'PATCH_COMMAND.*davs2-9000' packages/davs2.cmake
+          grep -Fq 'davs2-9001-error-recovery.patch' packages/davs2.cmake
+          grep -Fq 'decode_lcu_parse(h, i_level_next' \
+            packages/davs2-9001-error-recovery.patch
+          grep -Fq 'decode_lcu_recon(h, row_rec, i_level_next' \
+            packages/davs2-9001-error-recovery.patch
+          grep -Fq 'h->decoding_error == 0 && h->rps.refered_by_others' \
+            packages/davs2-9001-error-recovery.patch
+          grep -n -A4 -B4 -- '-Dlibcurl=enabled' packages/mpv.cmake
+          grep -n -A4 -B4 -- '-Dwin32-smtc=enabled' packages/mpv.cmake
+          grep -n -A12 -B4 -- '-DCURL_USE_OPENSSL=OFF' packages/curl.cmake
+          grep -n 'GIT_REPOSITORY.*nv-codec-headers' packages/nvcodec-headers.cmake
+          grep -Fq "GIT_TAG $MPV_COMMIT" packages/mpv.cmake
+          grep -Fqx 'audio-device=auto' "$GITHUB_WORKSPACE/portable_config/mpv.conf"
+
+      - name: Check out pinned ASIO headers
+        if: matrix.variant == 'atmos'
+        uses: actions/checkout@v6
+        with:
+          repository: audiosdk/asio
+          ref: 496a0765b8bb9c26f764f22f9a9712a937177db2
+          path: third-party/asio
+
+      - name: Preserve common features and prepare variant
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 build/atmos/parity/prepare-network-winbuild.py \
+            --winbuild winbuild/mpv-winbuild-cmake \
+            --variant '${{ matrix.variant }}' \
+            --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
+          python3 build/atmos/parity/prepare-dependency-lock.py \
+            --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
+          python3 build/atmos/parity/test-dependency-build-gate.py \
+            --output "dependency-gate-contract-${{ matrix.variant }}.json"
+
+      - name: Preflight mpv patch chain before dependency build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export LC_ALL=C
+          # Replay the exact package patch glob on a fresh, disposable tree.
+          # This keeps an invalid ancestor or patch-order regression from
+          # consuming the dependency-build portion of the six-hour job.
+          preflight_root="$(mktemp -d)"
+          trap 'rm -rf "$preflight_root"' EXIT
+          preflight_src="$preflight_root/mpv"
+          timeout --foreground --kill-after=20s 60s \
+            git -c init.defaultBranch=main init "$preflight_src"
+          git -C "$preflight_src" config core.autocrlf false
+          cd "$preflight_src"
+          git remote add origin https://github.com/mpv-player/mpv.git
+          timeout --foreground --kill-after=30s 120s \
+            git -c protocol.version=2 fetch --no-tags --depth=1 origin "$MPV_COMMIT"
+          git -c core.autocrlf=false checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$MPV_COMMIT"
+
+          mapfile -t mpv_patches < <(
+            find "$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake/packages" \
+              -maxdepth 1 -type f -name 'mpv-*.patch' -print | sort
+          )
+          test "${#mpv_patches[@]}" -gt 0
+          printf 'Preflight patch order (%s files):\n' "${#mpv_patches[@]}"
+          printf '  %s\n' "${mpv_patches[@]}"
+          for patch in "${mpv_patches[@]}"; do
+            git -c core.autocrlf=false \
+              -c user.name='CI patch preflight' \
+              -c user.email='ci-preflight@localhost' \
+              am --3way "$patch"
+          done
+          test -z "$(git status --porcelain)"
+          printf 'Preflight passed at %s after %s patches.\n' \
+            "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-network-source-gate.py" \
+            --output "$GITHUB_WORKSPACE/network-gate-contract-${{ matrix.variant }}"
+          network_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-network-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/network-source-${{ matrix.variant }}.json"
+          round2_parent="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/network-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$round2_parent"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-round2-source-gate.py" \
+            --output "$GITHUB_WORKSPACE/round2-gate-contract-${{ matrix.variant }}"
+          round2_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/round2-source-${{ matrix.variant }}.json"
+          # Historical gates retain their original complete checkout layers.
+          # The AV3A parent below is the observed parent of the checked new
+          # layer, never a replacement expected hash for an older gate.
+          preselections_final_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/round2-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$preselections_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-preselections-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/preselections-source-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/av3a/tests/verify-mpv-content-property.py" \
+            --mpv-source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/preselections-property-${{ matrix.variant }}"
+          round1_final_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/preselections-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$round1_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round1-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/round1-source-${{ matrix.variant }}.json"
+          round1_baseline="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/round1-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$round1_baseline"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-video-pts-repair.py" \
+            --source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-pts-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-eof-cache-source.py" \
+            --source "$preflight_src" \
+            --output "$GITHUB_WORKSPACE/demux-cache-source-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-inactive-subtitle-cache-contract.py" \
+            --source "$preflight_src" --compiler /usr/bin/gcc \
+            --output "$GITHUB_WORKSPACE/demux-cache-contract-${{ matrix.variant }}"
+          pts_final_commit="$(git rev-parse HEAD)"
+          # Historical ASS gates inspect the observer commit's own parent.
+          # Skip both the common EOF fix and the final PTS layer here.
+          git checkout --detach HEAD~2
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-observer-recovery.py" \
+            --source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-observer-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-prepass-display-budget.py" \
+            --source "$preflight_src" --after-observer-recovery --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-prepass-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-paused-bitmap.py" \
+            --source "$preflight_src" --after-observer-recovery --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-pause-${{ matrix.variant }}.json"
+          # Use actual declarations and consumer expressions, rather than
+          # inferring a stand-in struct from the fields used by the consumer.
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-ass-integration-v31.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-ass-integration-${{ matrix.variant }}.json" \
+            | python3 -c 'import json, sys; r = json.load(sys.stdin); print(json.dumps({k: r.get(k) for k in ("status", "error")} | {"meson": r.get("meson"), "compile_diagnostics": r.get("compile", {}).get("diagnostics"), "closure_errors": r.get("compile", {}).get("closure_errors")}, indent=2))'
+
+          git checkout --detach "$pts_final_commit"
+          git checkout --detach "$round1_final_commit"
+          git checkout --detach "$preselections_final_commit"
+          git checkout --detach "$round2_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/round2-source-restored-${{ matrix.variant }}.json"
+          git checkout --detach "$network_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-network-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/network-source-restored-${{ matrix.variant }}.json"
+
+      - name: Upload Native ASS integration preflight evidence
+        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '' || hashFiles('round2-source-*.json') != '' || hashFiles('network-source-*.json') != '')
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-native-ass-integration-${{ matrix.variant }}
+          path: |
+            native-ass-integration-${{ matrix.variant }}.json
+            native-ass-integration-pause-${{ matrix.variant }}.json
+            native-ass-integration-prepass-${{ matrix.variant }}.json
+            native-ass-integration-observer-${{ matrix.variant }}.json
+            native-ass-integration-pts-${{ matrix.variant }}.json
+            demux-cache-source-${{ matrix.variant }}.json
+            demux-cache-contract-${{ matrix.variant }}/
+            round1-source-${{ matrix.variant }}.json
+            round1-source-${{ matrix.variant }}/
+            preselections-source-${{ matrix.variant }}.json
+            preselections-property-${{ matrix.variant }}/
+            round2-source-${{ matrix.variant }}.json
+            round2-source-restored-${{ matrix.variant }}.json
+            round2-gate-contract-${{ matrix.variant }}/
+            network-source-${{ matrix.variant }}.json
+            network-source-restored-${{ matrix.variant }}.json
+            network-gate-contract-${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Restore reusable build cache
+        id: build-cache
+        uses: actions/cache@v5
         with:
           path: |
             winbuild/mpv-winbuild-cmake/build64
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-v100-atmos-ubuntu-gcc64-129b1c81a8d4264a70a90922aaabea3ad37dcdb7aa24fae998bf9daef1ce1faa
-          fail-on-cache-miss: true
-      - name: Install native build commands
+          # A dependency lock is a cache boundary. Never restore an older
+          # dependency generation or the other variant's patched source cache.
+          key: mpv-dependency-v1-${{ matrix.variant }}-${{ hashFiles('build/atmos/parity/dependency-lock.json') }}-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
+
+      - name: Verify and preserve pinned GCC source archive
+        id: gcc-source-archive
+        shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ninja-build pkg-config ccache python3-pip python3-cairo
-          python3 -m pip install --break-system-packages meson mako jsonschema roman rst2pdf
-      - name: Compile exact HOLD with bounded observation only
-        run: python3 bootstrap-input/build.py
-      - uses: actions/upload-artifact@v4
-        if: always()
+          set -euxo pipefail
+          archive=winbuild/mpv-winbuild-cmake/src_packages/gcc/gcc-14.4.0.tar.xz
+          if [ -f "$archive" ]; then
+            echo "725ed8bdd43ef1726ffe8b5e8615a13e247fac9575b7626ae013a2975d000ea213212dc414b2f2631ac4785c1c8beca85555222faf9904d3b2fa6a3807a83a15  $archive" | sha512sum --check --strict
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload verified pinned GCC source archive
+        if: steps.gcc-source-archive.outputs.available == 'true'
+        uses: actions/upload-artifact@v6
         with:
-          name: fixed-bootstrap-diagnostic
-          path: bootstrap-artifact
-          retention-days: 14
+          name: gcc-14.4.0-source-${{ matrix.variant }}
+          path: winbuild/mpv-winbuild-cmake/src_packages/gcc/gcc-14.4.0.tar.xz
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Reset cached patched sources before building
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd winbuild/mpv-winbuild-cmake
+
+          # winbuild applies package changes with `git am`. Its cache stores
+          # source trees, so a failed or interrupted prior run can leave any
+          # patched package mid-series. Recreate exactly the package sources
+          # that define PATCH_COMMANDs; unpatched and expensive dependencies
+          # remain cached.
+          for package_file in packages/*.cmake; do
+            package="$(basename "$package_file" .cmake)"
+            if grep -q 'PATCH_COMMAND' "$package_file"; then
+              rm -rf "src_packages/$package" \
+                "build64/packages/${package}-prefix"
+            fi
+          done
+          # OpenSSL no longer has a PATCH_COMMAND because the required MinGW
+          # workaround is upstream. Recreate it explicitly so a restored cache
+          # cannot reuse a different unpinned source revision.
+          rm -rf src_packages/openssl build64/packages/openssl-prefix
+          rm -rf build64/packages/mpv-release-prefix \
+            build64/packages/mpv-packaging-prefix \
+            build64/mpv-x86_64-* \
+            release/mpv-x86_64-*
+          rm -f release/mpv-x86_64-*.7z \
+            install/x86_64-w64-mingw32/bin/mpv.exe \
+            install/x86_64-w64-mingw32/bin/mpv.com
+
+          # Reject unidentified cache contents, then rebuild the locked
+          # rendering inputs and archive even after an exact cache hit.
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-dependency-build.py" \
+            --winbuild "$PWD" --variant '${{ matrix.variant }}' --phase cache
+
+          # FFmpeg's patched headers and executable can be rebuilt while an
+          # older static libavformat archive remains in the shared install
+          # prefix. That lets mpv link 62.13.101 even though the FFmpeg
+          # validation binary reports 62.13.102, silently disabling the
+          # backported Dolby Vision stream-group handler. Remove only the
+          # FFmpeg install outputs so the next mpv link cannot reuse them.
+          rm -f \
+            install/x86_64-w64-mingw32/bin/ffmpeg.exe \
+            install/x86_64-w64-mingw32/bin/ffprobe.exe \
+            install/x86_64-w64-mingw32/bin/ffplay.exe \
+            install/x86_64-w64-mingw32/lib/libavcodec.* \
+            install/x86_64-w64-mingw32/lib/libavdevice.* \
+            install/x86_64-w64-mingw32/lib/libavfilter.* \
+            install/x86_64-w64-mingw32/lib/libavformat.* \
+            install/x86_64-w64-mingw32/lib/libavutil.* \
+            install/x86_64-w64-mingw32/lib/libpostproc.* \
+            install/x86_64-w64-mingw32/lib/libswresample.* \
+            install/x86_64-w64-mingw32/lib/libswscale.*
+          rm -rf \
+            install/x86_64-w64-mingw32/include/libavcodec \
+            install/x86_64-w64-mingw32/include/libavdevice \
+            install/x86_64-w64-mingw32/include/libavfilter \
+            install/x86_64-w64-mingw32/include/libavformat \
+            install/x86_64-w64-mingw32/include/libavutil \
+            install/x86_64-w64-mingw32/include/postproc \
+            install/x86_64-w64-mingw32/include/libswresample \
+            install/x86_64-w64-mingw32/include/libswscale
+
+      - name: Preflight and build libcurl dependency chain
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          # The runner's rolling CMake release regressed this pinned
+          # winbuild's cppwinrt ExternalProject install command.
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          cmake -Wno-dev --fresh \
+            -DTARGET_ARCH=x86_64-w64-mingw32 \
+            -DCOMPILER_TOOLCHAIN=gcc \
+            -DENABLE_CCACHE=ON \
+            -DSINGLE_SOURCE_LOCATION="$PWD/src_packages" \
+            -DRUSTUP_LOCATION="$PWD/install_rustup" \
+            -G Ninja \
+            -S . \
+            -B build64
+
+          # ExternalProject fans out dozens of public Git clones. Hosted
+          # runners can be throttled when all of them start together, so keep
+          # the network phase bounded, low-concurrency and retry only the
+          # unfinished stamp targets.
+          download_complete=no
+          for attempt in 1 2 3; do
+            if timeout --foreground 20m ninja -j2 -C build64 download; then
+              download_complete=yes
+              break
+            fi
+            echo "::warning::Dependency download attempt ${attempt}/3 failed; retrying unfinished sources"
+            sleep $((attempt * 15))
+          done
+          test "$download_complete" = yes
+          test "$(git -C src_packages/openssl rev-parse HEAD)" = "$OPENSSL_COMMIT"
+          grep -Fq '#if defined(__MINGW32__) && !defined(SIO_UDP_NETRESET)' \
+            src_packages/openssl/ssl/quic/quic_reactor.c
+          grep -Fq '#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)' \
+            src_packages/openssl/ssl/quic/quic_reactor.c
+          if [ ! -f build64/install/bin/cross-gcc ]; then
+            timeout --foreground 30m ninja -C build64 gcc
+            rm -rf build64/toolchain
+          fi
+
+          # curl is pinned to the already verified Schannel build. Reusing its
+          # source/prefix avoids a fresh network update, which can leave the
+          # hosted runner in a silent ExternalProject wait. A cold cache still
+          # gets the normal update/build path, but both network-sensitive steps
+          # have a finite bound.
+          curl_done=build64/packages/curl-prefix/src/curl-stamp/curl-done
+          if [ -f "$curl_done" ]; then
+            echo "Reusing cached libcurl Schannel build"
+          else
+            # All curl inputs have explicit pins. A global update would also
+            # advance unrelated branch-based dependencies behind our back.
+            timeout --foreground 25m ninja -j2 -C build64 \
+              curl-force-update libpsl-force-update libssh-force-update openssl-force-update
+            if ! timeout --foreground 25m ninja -C build64 curl; then
+              for log in \
+                build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log \
+                build64/packages/curl-prefix/src/curl-stamp/curl-configure-err.log \
+                build64/packages/curl-prefix/src/curl-stamp/curl-build-out.log \
+                build64/packages/curl-prefix/src/curl-stamp/curl-build-err.log; do
+                if [ -f "$log" ]; then
+                  echo "::group::$log"
+                  tail -n 200 "$log"
+                  echo "::endgroup::"
+                fi
+              done
+              exit 1
+            fi
+          fi
+
+          curl_config_log=build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log
+          test -f "$curl_config_log"
+          grep -Fq -- 'Enabled SSL backends: Schannel' "$curl_config_log"
+          if grep -Fq -- 'Enabled SSL backends: OpenSSL' "$curl_config_log"; then
+            echo "::error::libcurl unexpectedly configured with OpenSSL"
+            exit 1
+          fi
+          grep -F -- 'Features:' "$curl_config_log"
+          grep -F -- 'Enabled SSL backends:' "$curl_config_log"
+
+      - name: Build and stage pinned C++ WinRT headers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          # A restored cache can contain the old completed cleanup stamp but no
+          # generator binary. Recreate this one bounded intermediate exactly.
+          rm -rf build64/toolchain/cppwinrt-prefix
+          timeout --foreground --kill-after=2m 30m ninja -C build64 cppwinrt
+          cppwinrt_bin="$(find build64/toolchain/cppwinrt-prefix/src/cppwinrt-build \
+            -maxdepth 2 -type f -name cppwinrt -perm -u+x -print -quit)"
+          test -n "$cppwinrt_bin"
+
+          winmd=build64/toolchain/cppwinrt-prefix/src/cppwinrt-build/Windows.winmd
+          curl --fail --location --retry 3 --connect-timeout 30 \
+            --max-time 300 \
+            "https://raw.githubusercontent.com/microsoft/windows-rs/$WINDOWS_RS_COMMIT/crates/libs/default/Windows.winmd" \
+            --output "$winmd"
+          echo "$WINDOWS_WINMD_SHA256  $winmd" | sha256sum --check --strict
+
+          include_root=build64/install/x86_64-w64-mingw32/include
+          "$cppwinrt_bin" -input "$winmd" -output "$include_root"
+          test -f "$include_root/winrt/base.h"
+          test -f "$include_root/winrt/Windows.Foundation.h"
+          test -f "$include_root/winrt/Windows.Media.h"
+
+      - name: Build and verify AV3A decoder dependency
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          ninja -C build64 avs3-audiodec
+
+          av3a_lib=build64/install/x86_64-w64-mingw32/lib/libAVS3AudioDec.a
+          renderer_lib=build64/install/x86_64-w64-mingw32/lib/libRendererCore.a
+          samplerate_lib=build64/install/x86_64-w64-mingw32/lib/libavs3_samplerate.a
+          test -f "$av3a_lib"
+          test -f "$renderer_lib"
+          test -f "$samplerate_lib"
+          test -f \
+            build64/install/x86_64-w64-mingw32/include/avs3a/avs3_spatial_metadata.h
+          test -f \
+            build64/install/x86_64-w64-mingw32/include/avs3-renderer/avs3_audio.h
+          nm -g --defined-only "$av3a_lib" > avs3-audiodec-symbols.txt
+          nm -g --defined-only "$renderer_lib" > avs3-renderer-symbols.txt
+          for symbol in \
+            avs3_create_decoder \
+            avs3_destroy_decoder \
+            parse_header \
+            avs3_decode \
+            avs3_get_spatial_stream_info \
+            avs3_get_spatial_frame; do
+            grep -Eq "[[:space:]]_?${symbol}$" avs3-audiodec-symbols.txt
+          done
+          for symbol in \
+            audio_create_context \
+            audio_destroy \
+            audio_submit_ambisonic_channel_buffer \
+            audio_submit_interleaved_ambisonic_buffer; do
+            grep -Eq "[[:space:]]_?${symbol}$" avs3-renderer-symbols.txt
+          done
+
+          av3a_prefix=build64/install/x86_64-w64-mingw32
+          build64/install/bin/cross-gcc \
+            -std=c99 -O2 -Wall -Wextra -Werror \
+            -I"$av3a_prefix/include/avs3a" \
+            "$GITHUB_WORKSPACE/build/av3a/tests/object-metadata-probe.c" \
+            "$av3a_lib" -lm \
+            -o object-metadata-probe.exe
+          test -f object-metadata-probe.exe
+
+      - name: Build static x86-64 mpv
+        id: build
+        continue-on-error: true
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          set -euxo pipefail
+          export PATH=/usr/bin:$PATH
+          cd winbuild/mpv-winbuild-cmake
+
+          # Reapply the current package patch chain without invoking the
+          # winbuild helper's unconditional `ninja update` remote fetch.
+          # AV3A was freshly rebuilt and verified in the preceding step.
+          # Preserve those exact patched sources and stamps for the identity
+          # gate; fullclean would restore tracked files but retain the new
+          # untracked CMakeLists, causing a second patch application to fail.
+          for package in davs2 ffmpeg libpsl libsdl2 mpv; do
+            stamp_dir="build64/packages/${package}-prefix/src/${package}-stamp"
+            if [ -d "$stamp_dir" ]; then
+              ninja -C build64 "${package}-fullclean"
+              touch "$stamp_dir/${package}-download" "$stamp_dir/${package}-update"
+            fi
+          done
+
+          build_marker="$(mktemp)"
+          touch "$build_marker"
+
+          # A pinned ExternalProject checkout is intentionally detached. Some
+          # winbuild cleanup hooks still try to reset @{u} after the install;
+          # that hook can return non-zero after mpv.exe is already complete.
+          # Accept only that narrow post-build cleanup failure and require the
+          # actual release directory/binaries below.
+          set +e
+          timeout --foreground --kill-after=2m 180m ninja -C build64 mpv
+          mpv_status=$?
+          set -e
+
+          mkdir -p release
+          built_dir="$(find build64 -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          test -f "$built_dir/mpv.exe"
+          test -f "$built_dir/mpv.com"
+          test "$built_dir/mpv.exe" -nt "$build_marker"
+          test "$built_dir/mpv.com" -nt "$build_marker"
+          if [ "$mpv_status" -ne 0 ]; then
+            echo "mpv target returned $mpv_status after producing a complete binary; treating detached-HEAD cleanup as non-fatal"
+          fi
+          cp -a "$built_dir" release/
+          7z a -m0=lzma2 -mx=9 -ms=on "release/$(basename "$built_dir").7z" "$built_dir"/* -x!*.7z
+
+      - name: Bind final compiled mpv source layer and new binaries
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
+          built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          python3 build/atmos/parity/verify-network-source.py \
+            --source "$winbuild/src_packages/mpv" --variant '${{ matrix.variant }}' \
+            --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
+            --output "network-compiled-source-${{ matrix.variant }}.json"
+
+      - name: Bind compiled rendering dependency and source snapshots
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
+          built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          python3 build/atmos/parity/verify-dependency-build.py \
+            --winbuild "$winbuild" --variant '${{ matrix.variant }}' --phase final \
+            --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
+            --output "dependency-compiled-source-${{ matrix.variant }}.json"
+
+      - name: Upload rendering dependency identity evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-dependency-identity-${{ matrix.variant }}
+          include-hidden-files: true
+          path: |
+            dependency-gate-contract-${{ matrix.variant }}.json
+            dependency-compiled-source-${{ matrix.variant }}.json
+            winbuild/mpv-winbuild-cmake/dependency-preparation.json
+            winbuild/mpv-winbuild-cmake/dependency-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload final compiled mpv source evidence
+        if: always() && hashFiles('network-compiled-source-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-network-compiled-source-${{ matrix.variant }}
+          path: network-compiled-source-${{ matrix.variant }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify AV3A preselections dependency sources and actual C contracts
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 build/atmos/parity/verify-preselections-source.py \
+            --sdk-source winbuild/mpv-winbuild-cmake/src_packages/avs3-audiodec \
+            --ffmpeg-source winbuild/mpv-winbuild-cmake/src_packages/ffmpeg \
+            --cc /usr/bin/cc \
+            --output "preselections-dependencies-${{ matrix.variant }}.json"
+
+      - name: Upload AV3A preselections dependency evidence
+        if: always() && hashFiles('preselections-dependencies-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-preselections-dependencies-${{ matrix.variant }}
+          path: |
+            preselections-dependencies-${{ matrix.variant }}.json
+            preselections-dependencies-${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify menu command termination and late enhancement selection
+        if: steps.build.outcome == 'success'
+        run: |
+          python3 build/bluray-menu/tests/verify-menu-dv-state.py \
+            --mpv-source winbuild/mpv-winbuild-cmake/src_packages/mpv \
+            --bd-source winbuild/mpv-winbuild-cmake/build64/menu-dv-bd-source \
+            --work menu-dv-state-verification
+
+      - name: Verify optional tail tags preserve indexed seeking and required headers
+        if: steps.build.outcome == 'success'
+        run: |
+          python3 build/bluray-menu/tests/verify-still-ig-filter.py \
+            --source winbuild/mpv-winbuild-cmake/build64/still-ig-bd-source \
+            --work artifacts/still-ig-filter-check
+          python3 build/bluray-menu/tests/verify-bluray-jump-head.py \
+            --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
+            --work bluray-jump-head-verification
+          python3 build/bluray-menu/tests/verify-mkv-tail-tags.py \
+            --source winbuild/mpv-winbuild-cmake/src_packages/mpv \
+            --work mkv-tail-tags-verification
+
+      - name: Verify Blu-ray audio metadata and independent ASS scheduling
+        if: steps.build.outcome == 'success'
+        run: |
+          source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
+          # Host gcc must use host libc, while checking the exact libbluray
+          # headers installed for the player. Do not add the Windows sysroot.
+          include_dir=artifacts/audio-host-include
+          mkdir -p "$include_dir"
+          cp -a winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/include/libbluray "$include_dir/"
+          gcc -Wall -Werror -I "$source_dir" -I "$include_dir" build/feedback/tests/test-bluray-audio-rate.c -o audio-rate-test
+          ./audio-rate-test
+          python3 build/feedback/tests/test-bluray-audio-metadata.py --compiler gcc --source "$source_dir" --include "$include_dir" --output artifacts/audio-metadata-test
+          gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-scheduling.c -o ass-scheduling-test
+          ./ass-scheduling-test
+          gcc -Wall -Werror -I "$source_dir/video/out" build/feedback/tests/verify-secondary-ass-high-fps.c -o ass-high-fps-test
+          ./ass-high-fps-test
+
+      - name: Verify continuous ASS clock and display scheduling with host fixtures
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
+          mkdir -p artifacts
+          # These execute the exact source headers with controlled clocks;
+          # they do not stand in for physical-screen or PresentMon measurements.
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/sub" \
+            build/feedback/tests/verify-secondary-ass-clock.c -lm -o ass-clock-test
+          ./ass-clock-test | tee artifacts/secondary-ass-clock.json
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" -I "$source_dir/sub" \
+            build/feedback/tests/verify-secondary-ass-presentation.c -lm -o ass-presentation-test
+          ./ass-presentation-test | tee artifacts/secondary-ass-presentation.txt
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I "$source_dir/video/out" -I "$source_dir/sub" \
+            build/feedback/tests/verify-secondary-ass-physical.c -lm -o ass-physical-test
+          ./ass-physical-test
+
+      - name: Verify decoded Dolby Vision metadata and build real RPU parser probe
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_dir=winbuild/mpv-winbuild-cmake/src_packages/mpv
+          ffmpeg_dir=winbuild/mpv-winbuild-cmake/src_packages/ffmpeg
+          prefix=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32
+          include_dir=artifacts/dovi-host-include
+          mkdir -p "$include_dir"
+          # Keep host libc headers; only the exact installed libavutil subtree
+          # is needed to compile the read-only identification helper.
+          cp -a "$prefix/include/libavutil" "$include_dir/"
+          gcc -Wall -Wextra -Werror -I "$source_dir" -I "$include_dir" \
+            build/dolby-vision/tests/test-dovi-metadata.c -o dovi-metadata-test
+          ./dovi-metadata-test
+          python3 build/dolby-vision/tests/test-dovi-frame-info.py \
+            --source "$source_dir" --include "$include_dir" --compiler gcc \
+            --output artifacts/dovi-frame-info-test
+          # Resolve both archives' private codec/hardware dependencies from
+          # the exact target prefix, without picking up host pkg-config files.
+          # VPL and other C++ dependencies also need their static runtime.
+          ffmpeg_libs="$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --libs --static libavcodec libavutil)"
+          winbuild/mpv-winbuild-cmake/build64/install/bin/cross-gcc \
+            -std=c11 -O2 -static -ffunction-sections -fdata-sections \
+            -Wl,--gc-sections -Wall -Wextra -Werror \
+            -I "$source_dir" -I "$prefix/include" -I "$ffmpeg_dir" \
+            build/dolby-vision/tests/probe-dovi-rpu.c \
+            -L "$prefix/lib" $ffmpeg_libs -lstdc++ -lwinpthread -lm \
+            -o artifacts/dovi-rpu-probe.exe
+          test -f artifacts/dovi-rpu-probe.exe
+
+      - name: Preserve dependency cache after a failed build
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+          key: mpv-dependency-v1-${{ matrix.variant }}-${{ hashFiles('build/atmos/parity/dependency-lock.json') }}-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
+
+      - name: Collect failed build logs
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
+        shell: bash
+        run: |
+          find winbuild/mpv-winbuild-cmake/build64 -type f \
+            \( -iname '*-*.log' -o -path '*/ffbuild/config.log' \) \
+            -print > build-log-files.txt
+          7za a build-logs.7z @build-log-files.txt
+
+      - name: Upload failed build logs
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-v100-${{ matrix.variant }}-build-logs
+          path: |
+            build-logs.7z
+            build-log-files.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stop after failed build
+        if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
+        run: exit 1
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          archive="$(find winbuild/mpv-winbuild-cmake/release \
+            -maxdepth 1 -type f -name 'mpv-x86_64-*.7z' -print -quit)"
+          test -n "$archive"
+          7za l "$archive" | grep -E 'mpv\.(exe|com)'
+          mkdir artifact-check
+          # The custom staging fallback preserves the build64/<release>/ path
+          # in the 7z archive. Extract recursively instead of assuming the
+          # binaries live at the archive root.
+          7za x -y -oartifact-check "$archive"
+          mpv_binary="$(find artifact-check -type f -name 'mpv.exe' -print -quit)"
+          mpv_com="$(find artifact-check -type f -name 'mpv.com' -print -quit)"
+          test -n "$mpv_binary"
+          test -n "$mpv_com"
+          strings -a "$mpv_binary" > artifact-check/mpv.strings
+          grep -qi schannel artifact-check/mpv.strings
+          grep -qi libarcdav3a artifact-check/mpv.strings
+          grep -Fq 'secondary-sub-scale' artifact-check/mpv.strings
+          grep -Fq 'SDL Audio' artifact-check/mpv.strings
+          grep -Fq 'Windows WASAPI audio output' artifact-check/mpv.strings
+          grep -Fq 'hdr-vivid' artifact-check/mpv.strings
+          grep -Fq 'dolby-vision-rpu-present' artifact-check/mpv.strings
+          grep -Fq 'dolby-vision-el-type' artifact-check/mpv.strings
+          grep -Fq 'dolby-vision-config-rpu-present' artifact-check/mpv.strings
+          grep -Fq 'SystemMediaTransportControls' artifact-check/mpv.strings
+          # The authored Blu-ray pairing path is runtime-only and its MP_VERBOSE
+          # text may be removed by the Windows release linker. Source
+          # application is checked above; the Windows validation job checks the
+          # resulting stream group when a real Blu-ray sample is supplied. Do
+          # not infer functionality from a retained diagnostic string in a
+          # stripped binary.
+
+          ffmpeg_exe=winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe
+          test -f "$ffmpeg_exe"
+          strings -a "$ffmpeg_exe" > artifact-check/ffmpeg.strings
+          grep -qi libarcdav3a artifact-check/ffmpeg.strings
+          grep -Fq av3a_render artifact-check/ffmpeg.strings
+          grep -Fq 'force binaural rendering for spatial AV3A streams' \
+            artifact-check/ffmpeg.strings
+          grep -Fq 'dovi_split' artifact-check/ffmpeg.strings
+          grep -Fq 'More than one vdep reference is not supported.' \
+            artifact-check/ffmpeg.strings
+
+          mkdir artifact
+          cp "$archive" artifact/
+          cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
+          cp build/dolby-vision/verify-fel.ps1 artifact/
+          cp artifacts/dovi-rpu-probe.exe artifact/
+          cp build/dolby-vision/tests/verify-dovi-rpu.py artifact/
+          cp -a build/dolby-vision/tests/fixtures artifact/dovi-rpu-fixtures
+          cp build/bluray-menu/tests/verify-hdmv-context.py artifact/
+          cp build/feedback/tests/verify-inactive-subtitle-cache.py artifact/
+          cp artifacts/secondary-ass-clock.json artifact/
+          cp artifacts/secondary-ass-presentation.txt artifact/
+          cp \
+            winbuild/mpv-winbuild-cmake/avs3-audiodec-symbols.txt \
+            artifact/AV3A-SYMBOLS.txt
+          cp \
+            winbuild/mpv-winbuild-cmake/avs3-renderer-symbols.txt \
+            artifact/AV3A-RENDERER-SYMBOLS.txt
+          cp \
+            build/av3a/tests/hoa-order1-128k.av3a \
+            artifact/
+          cp \
+            build/av3a/tests/bed-object-moving.av3a \
+            artifact/
+          cp \
+            winbuild/mpv-winbuild-cmake/object-metadata-probe.exe \
+            artifact/
+          cp \
+            build/av3a/tests/verify-stage2.ps1 \
+            artifact/
+          cp \
+            build/audio-layout/verify-spatial-layouts.ps1 \
+            artifact/
+          (
+            cd artifact
+            sha256sum \
+              "$(basename "$archive")" \
+              ffmpeg-av3a-validation.exe \
+              hoa-order1-128k.av3a \
+              bed-object-moving.av3a \
+              object-metadata-probe.exe \
+              verify-stage2.ps1 \
+              verify-spatial-layouts.ps1 \
+              verify-fel.ps1 \
+              dovi-rpu-probe.exe \
+              verify-dovi-rpu.py \
+              dovi-rpu-fixtures/* \
+              verify-hdmv-context.py \
+              verify-inactive-subtitle-cache.py \
+              secondary-ass-clock.json \
+              secondary-ass-presentation.txt \
+              > SHA256SUMS.txt
+          )
+
+      - name: Upload custom mpv
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-v100-${{ matrix.variant }}-x86_64
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 7
+
+  validate-windows:
+    needs: [build, build-orender]
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, atmos]
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download custom mpv
+        uses: actions/download-artifact@v6
+        with:
+          name: mpv-v100-${{ matrix.variant }}-x86_64
+          path: artifact
+
+      - name: Download matching renderer
+        if: matrix.variant == 'atmos'
+        uses: actions/download-artifact@v6
+        with:
+          name: orender-v0.5.2-windows-x86_64
+          path: renderer
+
+      - name: Verify spatial audio and AV3A playback on Windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifact = Join-Path $env:GITHUB_WORKSPACE "artifact"
+
+          Get-Content -LiteralPath (Join-Path $artifact "SHA256SUMS.txt") |
+            ForEach-Object {
+              if ($_ -notmatch "^([0-9a-f]{64})\s+(.+)$") {
+                throw "Invalid SHA256SUMS entry: $_"
+              }
+              $expected = $matches[1].ToUpperInvariant()
+              $path = Join-Path $artifact $matches[2]
+              $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+              if ($actual -ne $expected) {
+                throw "SHA-256 mismatch for $path"
+              }
+            }
+
+          $archive = Get-ChildItem -LiteralPath $artifact -Filter "mpv-x86_64-*.7z" |
+            Select-Object -First 1
+          if (-not $archive) {
+            throw "mpv release archive not found"
+          }
+
+          $mpvDir = Join-Path $artifact "mpv"
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$mpvDir" $archive.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip extraction failed with exit code $LASTEXITCODE"
+          }
+
+          # The release archive preserves its staging directory. Locate the
+          # executable after extraction instead of assuming a flat archive.
+          $mpv = Get-ChildItem -LiteralPath $mpvDir -Filter "mpv.com" -File -Recurse |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $mpv) {
+            throw "mpv.com not found in release archive"
+          }
+          python (Join-Path $artifact "verify-inactive-subtitle-cache.py") `
+            --core $mpv `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --output (Join-Path $artifact "inactive-subtitle-cache-validation") `
+            --expect complete
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inactive subtitle cache playback regression failed"
+          }
+          python (Join-Path $artifact "verify-inactive-subtitle-cache.py") `
+            --core $mpv `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --output (Join-Path $artifact "inactive-subtitle-cache-validation-60") `
+            --tracks 60 --expect complete
+          if ($LASTEXITCODE -ne 0) {
+            throw "Sixty-track inactive subtitle cache playback regression failed"
+          }
+          $aoHelp = & $mpv --no-config --ao=help 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "mpv --ao=help failed"
+          }
+          $aoText = ($aoHelp | ForEach-Object { "$_" }) -join "`n"
+          foreach ($required in @("wasapi", "sdl", "SDL Audio")) {
+            if ($aoText -notmatch [regex]::Escape($required)) {
+              throw "Missing audio output marker: $required"
+            }
+          }
+
+          $versionText = (& $mpv --version 2>&1 | ForEach-Object { "$_" }) -join "`n"
+          if ($versionText -notmatch '(?m)^mpv\s+\S+.*\(mpv-Yaozhi\)') {
+            throw "mpv is missing the common mpv-Yaozhi version brand: $versionText"
+          }
+          if ($versionText -notmatch 'libavformat\s+62\.13\.102') {
+            throw "mpv linked an unexpected libavformat version; expected 62.13.102 for Dolby Vision stream groups:`n$versionText"
+          }
+
+          $optionText = (& $mpv --no-config --list-options 2>&1 |
+            ForEach-Object { "$_" }) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $optionText -notmatch 'secondary-sub-scale') {
+            throw "mpv is missing the formal core secondary-sub-scale option"
+          }
+
+          $featureOutput = & $mpv `
+            --no-config `
+            --idle=no `
+            --vo=null `
+            --ao=null `
+            --media-controls=yes `
+            --frames=1 `
+            --msg-level=all=v `
+            'av://lavfi:testsrc2=size=64x64:rate=1:duration=1' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "SMTC feature probe failed"
+          }
+          $featureText = ($featureOutput | ForEach-Object { "$_" }) -join "`n"
+          $featureLine = ($featureOutput | Where-Object {
+              "$_" -match 'List of enabled features:'
+            } | Select-Object -First 1)
+          if (-not $featureLine) {
+            throw "mpv did not publish its enabled feature list"
+          }
+          $requiredFeatures = @(
+            'amf', 'build-date', 'cplugins', 'cuda-hwaccel', 'cuda-interop',
+            'd3d-hwaccel', 'd3d11', 'd3d9-hwaccel', 'debug', 'direct3d',
+            'dos-paths', 'dvda', 'dvdnav', 'dxgi-debug-d3d11', 'egl-angle',
+            'egl-angle-win32', 'ffmpeg', 'ffnvcodec', 'gl', 'gl-dxinterop',
+            'gl-dxinterop-d3d9', 'gl-win32', 'glob', 'glob-win32', 'gpl',
+            'iconv', 'javascript', 'jpeg', 'lcms2', 'libarchive', 'libass',
+            'libavdevice', 'libbluray', 'libcurl', 'libplacebo', 'luajit',
+            'openal', 'rubberband', 'rubberband-3', 'sdl2-audio',
+            'sdl2-gamepad', 'shaderc', 'sixel', 'spirv-cross', 'subrandr',
+            'uchardet', 'vaapi', 'vaapi-win32', 'vapoursynth', 'vector',
+            'vk-khr-display', 'vulkan', 'wasapi', 'win32', 'win32-desktop',
+            'win32-executable', 'win32-smtc', 'win32-threads', 'zimg',
+            'zimg-st428', 'zlib'
+          )
+          if ('${{ matrix.variant }}' -eq 'atmos') {
+            $requiredFeatures += @('orender','asio')
+            if ($optionText -notmatch 'ad-orender-library' -or $aoText -notmatch 'Steinberg ASIO') {
+              throw 'Atmos decoder/ASIO interface missing'
+            }
+          }
+          $enabledFeatures = @(
+            (("$featureLine" -split 'List of enabled features:', 2)[1] -split '\s+') |
+              Where-Object { $_ }
+          )
+          foreach ($feature in $requiredFeatures) {
+            if ($feature -notin $enabledFeatures) {
+              throw "Required feature was lost: $feature`n$featureText"
+            }
+          }
+
+          python (Join-Path $artifact "verify-hdmv-context.py") `
+            --ffmpeg (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            --mpv $mpv --work (Join-Path $artifact "hdmv-context-validation")
+          if ($LASTEXITCODE -ne 0) { throw 'HDMV missing-registration audio regression' }
+
+          python (Join-Path $artifact "verify-dovi-rpu.py") `
+            --probe (Join-Path $artifact "dovi-rpu-probe.exe") `
+            --fixtures (Join-Path $artifact "dovi-rpu-fixtures") `
+            --output (Join-Path $artifact "dovi-rpu-verification") `
+            --variant "${{ matrix.variant }}" `
+            --commit "${{ github.event.pull_request.head.sha || github.sha }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Actual FFmpeg MEL/FEL RPU parsing regression' }
+
+          & (Join-Path $artifact "verify-fel.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv
+
+          & (Join-Path $artifact "verify-spatial-layouts.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -WorkDir (Join-Path $artifact "spatial-layout-validation")
+
+          # SDL only exposes a channel count to mpv.  The dummy backend makes
+          # negotiation deterministic and must successfully open both spatial
+          # layouts.  This catches mpv layout folds as well as SDL's historical
+          # public eight-channel limit before the Windows WASAPI endpoint applies
+          # the matching WAVEFORMATEXTENSIBLE speaker mask.
+          $sdlSpatialCases = @(
+            @{
+              Name = "5.1.4"
+              Count = 10
+              Layout = "fl-fr-fc-lfe-sl-sr-tfl-tfr-tbl-tbr"
+            },
+            @{
+              Name = "7.1.4"
+              Count = 12
+              Layout = "fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr"
+            }
+          )
+          $previousSdlDriver = $env:SDL_AUDIODRIVER
+          $env:SDL_AUDIODRIVER = "dummy"
+          try {
+            foreach ($spatialCase in $sdlSpatialCases) {
+              $channelCount = [int]$spatialCase.Count
+              $layout = [string]$spatialCase.Layout
+              $sample = Join-Path $artifact "sdl-$($spatialCase.Name)-silence.raw"
+              [IO.File]::WriteAllBytes(
+                $sample,
+                (New-Object byte[] (48000 * $channelCount * 2 / 10))
+              )
+              $sdlSpatialOutput = & $mpv `
+                --no-config `
+                --demuxer=rawaudio `
+                --demuxer-rawaudio-format=s16le `
+                "--demuxer-rawaudio-channels=$layout" `
+                --demuxer-rawaudio-rate=48000 `
+                "--audio-channels=$layout" `
+                --vo=null `
+                --ao=sdl `
+                --length=0.05 `
+                --msg-level=all=warn,ao/sdl=trace `
+                $sample 2>&1
+              $sdlSpatialExit = $LASTEXITCODE
+              $sdlSpatialText = `
+                ($sdlSpatialOutput | ForEach-Object { "$_" }) -join "`n"
+
+              if ($sdlSpatialExit -ne 0) {
+                throw "SDL $($spatialCase.Name) open failed:`n$sdlSpatialText"
+              }
+              $expectedResult = "result: $layout"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedResult)) {
+                throw "SDL changed the $($spatialCase.Name) channel layout"
+              }
+              $expectedRequested = `
+                "requested format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedRequested)) {
+                throw "SDL requested the wrong $($spatialCase.Name) channel count"
+              }
+              $expectedObtained = `
+                "obtained format: 48000 Hz, $channelCount channels"
+              if ($sdlSpatialText -notmatch [regex]::Escape($expectedObtained)) {
+                throw "SDL did not open $($spatialCase.Name) with $channelCount channels"
+              }
+              if ($sdlSpatialText -match "Unsupported number of audio channels") {
+                throw "SDL still rejects $($spatialCase.Name) before opening the device"
+              }
+            }
+          } finally {
+            $env:SDL_AUDIODRIVER = $previousSdlDriver
+          }
+
+          $hdrVividSample = Join-Path $artifact "hdr_vivid_h265_sample.hevc"
+          Invoke-WebRequest `
+            -Uri "https://fate-suite.ffmpeg.org/hevc/hdr_vivid_h265_sample.hevc" `
+            -OutFile $hdrVividSample
+          $expectedHdrVividSha = `
+            "F03A633D537C8B34B3FA81EC17C986A5E05E13F22C4B43ADCF1DF0CECE9DCBAC"
+          $actualHdrVividSha = `
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrVividSample).Hash
+          if ($actualHdrVividSha -ne $expectedHdrVividSha) {
+            throw "HDR Vivid FATE sample SHA-256 mismatch"
+          }
+
+          # Keep mpv alive after the first frame.  Some Windows runners
+          # report an access violation while tearing down this raw HEVC
+          # sample, after the metadata probe has already succeeded.  The
+          # probe must validate the exposed property, not the unrelated EOF
+          # teardown path, so terminate the idle process after observing it.
+          $hdrVividStdout = Join-Path $artifact "hdr-vivid.stdout.log"
+          $hdrVividStderr = Join-Path $artifact "hdr-vivid.stderr.log"
+          $hdrVividArgs = @(
+            '--no-config',
+            '--hwdec=no',
+            '--vo=null',
+            '--ao=null',
+            '--no-correct-pts',
+            '--container-fps-override=25',
+            '--frames=1',
+            '--idle=yes',
+            '--term-playing-msg=HDR_VIVID=${video-params/hdr-vivid}',
+            $hdrVividSample
+          )
+          $hdrVividProcess = Start-Process -FilePath $mpv `
+            -ArgumentList $hdrVividArgs `
+            -RedirectStandardOutput $hdrVividStdout `
+            -RedirectStandardError $hdrVividStderr `
+            -PassThru -WindowStyle Hidden
+          try {
+            $hdrVividDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            $hdrVividText = ''
+            while ([DateTime]::UtcNow -lt $hdrVividDeadline) {
+              Start-Sleep -Milliseconds 200
+              $hdrVividParts = @()
+              if (Test-Path -LiteralPath $hdrVividStdout) {
+                $hdrVividParts += Get-Content -Raw -LiteralPath $hdrVividStdout
+              }
+              if (Test-Path -LiteralPath $hdrVividStderr) {
+                $hdrVividParts += Get-Content -Raw -LiteralPath $hdrVividStderr
+              }
+              $hdrVividText = $hdrVividParts -join "`n"
+              if ($hdrVividText -match "HDR_VIVID=yes") {
+                break
+              }
+              if ($hdrVividProcess.HasExited) {
+                throw "HDR Vivid FATE sample exited before metadata probe (exit code $($hdrVividProcess.ExitCode))"
+              }
+            }
+            if ($hdrVividText -notmatch "HDR_VIVID=yes") {
+              Write-Host $hdrVividText
+              throw "mpv did not expose video-params/hdr-vivid within 20 seconds"
+            }
+            Write-Host $hdrVividText
+          } finally {
+            if (!$hdrVividProcess.HasExited) {
+              Stop-Process -Id $hdrVividProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          & (Join-Path $artifact "verify-stage2.ps1") `
+            -FFmpegPath (Join-Path $artifact "ffmpeg-av3a-validation.exe") `
+            -MpvPath $mpv `
+            -SamplePath (Join-Path $artifact "hoa-order1-128k.av3a") `
+            -ObjectSamplePath (Join-Path $artifact "bed-object-moving.av3a") `
+            -MetadataProbePath (Join-Path $artifact "object-metadata-probe.exe")
+
+  build-orender:
+    if: ${{ !inputs.fast_native_preflight && !inputs.collector_diagnostics_only }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out pinned renderer
+        uses: actions/checkout@v6
+        with:
+          repository: mgth/Omniphony
+          ref: f9a79721af64ad9c39042d4deded158b568fc598
+      - name: Check out verified dependency lock
+        uses: actions/checkout@v6
+        with:
+          path: ci-config
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build renderer
+        working-directory: omniphony-renderer
+        run: |
+          Copy-Item -LiteralPath ../ci-config/build/atmos/parity/orender-Cargo.lock -Destination Cargo.lock
+          cargo build --locked --profile release-deploy -p orender_ffi
+      - name: Package renderer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item -LiteralPath omniphony-renderer/target/release-deploy/orender.dll -Destination out/
+          Copy-Item -LiteralPath omniphony-renderer/orender_ffi/include/orender.h -Destination out/
+          Copy-Item -LiteralPath omniphony-renderer/Cargo.lock -Destination out/Cargo.lock
+          Get-ChildItem -File -Filter 'LICENSE*' | Copy-Item -Destination out/
+          Get-ChildItem -LiteralPath out -File | Get-FileHash -Algorithm SHA256 |
+            Select-Object Hash,Path | ConvertTo-Json | Set-Content out/SHA256.json
+      - name: Upload renderer
+        uses: actions/upload-artifact@v6
+        with:
+          name: orender-v0.5.2-windows-x86_64
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7

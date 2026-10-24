@@ -68,8 +68,16 @@
     "build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
     "build/bluray-menu/patches/0052-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
     "build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
-    "build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch": "0ed941b348ba37a3bda06687118d93b78a972b354cc8554459567fd5fa3db582",
-    "build/bluray-menu/patches/0055-native-ass-fresh-submit-window.patch": "a74d3df426d9a240ce166ed4d703a14f1e2fff1dd449e0f31e0de046cd60c215"
+    "build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd",
+    "build/bluray-menu/patches/0055-vc1-bounded-decoder-fallback.patch": "23bdcc03829fe39b0bc72efe8398c7959397ee8b583f971fbaa2badbf3675a9b",
+    "build/bluray-menu/patches/0056-vc1-disc-parameter-probe.patch": "f47be59435bf0df6b92ca46ec006f5ab1b7bbf068a4cb301e83a0c6a6b3224fd",
+    "build/bluray-menu/patches/0057-script-property-lookup.patch": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
+    "build/bluray-menu/patches/0058-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
+    "build/bluray-menu/patches/0059-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
+    "build/bluray-menu/patches/0060-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
+    "build/bluray-menu/patches/0061-upstream-stability-round2.patch": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+    "build/bluray-menu/patches/0062-windows-paths-and-pipes.patch": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+    "build/bluray-menu/patches/0063-http-range-boundaries.patch": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -238,7 +246,7 @@
       }
     },
     "actual_source_timing": {
-      "source": "X:\\\u7535\u89c6\u5267\\Z-\u65e9\u6625\u6674\u6717\uff082026\uff09\\\u65e9\u6625\u6674\u6717.S01E14.2026.2160p.WEB-DL.H265.SDR.60fps.DTS5.1.mkv",
+      "source": "X:\\电视剧\\Z-早春晴朗（2026）\\早春晴朗.S01E14.2026.2160p.WEB-DL.H265.SDR.60fps.DTS5.1.mkv",
       "source_size": 6164689064,
       "bytes_read": 262144,
       "header_sha256": "1cc0e6fad59de2132cc5dc2a179b1604047c5da4d33da16287a594035786952b",
@@ -251,64 +259,577 @@
       }
     }
   },
-  "native_ass_neutral_ab": {
-    "source_commit": "bb4159d26ea6e3b3c3991d8bf3a2e50626fd2b75",
-    "parent_commit": "86aec0a81ecb149fae92721bcc8733516e9ed776",
-    "source_tree": "2de8c3322f219cb6bdbc0b28859c40af5dadeb58",
-    "patch": "build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch",
-    "patch_sha256": "0ed941b348ba37a3bda06687118d93b78a972b354cc8554459567fd5fa3db582",
-    "vo_sha256": "ba21e1ecb9aea85e0ecec0d2191e3ba7a36a460d0f65016921ed25546e303b65",
-    "default_changed": false,
-    "scope": "Diagnostic one-variable neutral Present admission A/B, with mandatory fresh fallback and F/H/phase unchanged; no runtime or pacing acceptance.",
-    "variants": {
-      "main": {
-        "parent_tree": "048f70cee7e4a27977a976146141b9c71739a965",
-        "tree": "2de8c3322f219cb6bdbc0b28859c40af5dadeb58",
-        "linux_parent_tree": "cecec02cefc56753065f25a6240ef50c1fb8c2cd",
-        "linux_tree": "1bf29d17cc662b2f884425d854905d7bcaf02eba"
-      },
-      "atmos": {
-        "parent_tree": "6150adfebba17ffcfdda83f2f514cfc92d2f5c03",
-        "tree": "d5a7a6eba5a6c3d2a52f3706e60ee0472c22dd14",
-        "linux_parent_tree": "9637db9ad7607a829c6fca1a228fc8220d2d0eaf",
-        "linux_tree": "5927b34005f8cb5c987df742833de99377a42f07"
-      }
+  "demux_inactive_subtitle_cache_fix": {
+    "patch": "build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch",
+    "patch_sha256": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd",
+    "source_commit": "56a41e900008f057c81495ef34a7634ef2679d5a",
+    "source_parent_commit": "25d1988c3b4ec7f392953d0af01416a128efdd6e",
+    "changed_files": [
+      "demux/demux.c"
+    ],
+    "before_source_sha256": {
+      "demux/demux.c": "95643a35b1383dc2af3061a0bf42702b10eef2ce508e63c1682bea96ef546147"
     },
-    "tools_sha256": {
-      "verify-native-ass-neutral-ab.py": "f60e35c15b2d244e52199ce3202b414b842783e12a19c1c125de8d6f67885f86",
-      "verify-neutral-ab-caller.py": "5cf2ae87d433cafc71a12b0ff444c69aedaeef6c77e11363a5a89d74f234809a",
-      "v30-neutral-pose-contract.c": "491bb901cc6f480948644cafab44ed56f64552f4b74b7b973fc4ab3e0311217a"
-    }
+    "source_sha256": {
+      "demux/demux.c": "67f55daa88f493b05ffba902c82f351d6da93dd3819d56419b7baef8e6dc5060"
+    },
+    "preserved_source_sha256": {
+      "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
+      "filters/f_enhancement_pair.c": "89224f86acf3b40b6c7137e170610b4a2ec0262faec136be7a20ceedb703d929",
+      "filters/f_demux_in.c": "b7f90aae2415838fb2ef59f973bd91e92f180420211b4171ca804b3ba5d58b04",
+      "player/playloop.c": "ccec9f4ba50bfbecfd05aee24926e820f25b32db676cf1590106181dac86fa92"
+    },
+    "test_sha256": {
+      "build/atmos/parity/verify-inactive-subtitle-cache-contract.py": "630d4184033de96e6606344b4789c8f742e50ebfde5905a981fbdbe5c77e4b95",
+      "build/atmos/parity/verify-eof-cache-source.py": "84d502d1a49cf532c090fd44cadc327397340e480dce1641a301692acf26d8a8",
+      "build/atmos/parity/replay-eof-cache.py": "f306770bf79856d7b868d16e7537fda7592cb7f23edc026c155d6485205fdb13",
+      "build/feedback/tests/verify-inactive-subtitle-cache.py": "3d3ee9d6171e0275b3afc3548760ac86544a50994cfad2bb6eb45cabc179e44c"
+    },
+    "scope": "Bound optional inactive embedded subtitle queues across ranges; invalidate discarded subtitle coverage and refresh on reuse; preserve selected streams and the generic overflow safeguard.",
+    "runtime_verified": false
   },
-  "native_ass_fresh_window_fix": {
-    "source_commit": "7f8eca4903a3dd4e9d3879506e7b8dc6a5999135",
-    "parent_commit": "bb4159d26ea6e3b3c3991d8bf3a2e50626fd2b75",
-    "source_tree": "245d24e719fcdb203f2bcea7e610020b9143cdea",
-    "patch": "build/bluray-menu/patches/0055-native-ass-fresh-submit-window.patch",
-    "patch_sha256": "a74d3df426d9a240ce166ed4d703a14f1e2fff1dd449e0f31e0de046cd60c215",
-    "vo_sha256": "24e50faf1259a7992dbce83a21bde13dc0a92abc6bcf72609708a10a1a3b3b52",
+  "round1_vc1_and_script_api": {
+    "scope": "Five independently reversible layers after exact HOLD/EOF/PTS baseline; no dependency upgrades.",
+    "patches": [
+      {
+        "path": "build/bluray-menu/patches/0055-vc1-bounded-decoder-fallback.patch",
+        "sha256": "23bdcc03829fe39b0bc72efe8398c7959397ee8b583f971fbaa2badbf3675a9b",
+        "changed_files": [
+          "video/decode/vd_lavc.c"
+        ]
+      },
+      {
+        "path": "build/bluray-menu/patches/0056-vc1-disc-parameter-probe.patch",
+        "sha256": "f47be59435bf0df6b92ca46ec006f5ab1b7bbf068a4cb301e83a0c6a6b3224fd",
+        "changed_files": [
+          "demux/demux_lavf.c"
+        ]
+      },
+      {
+        "path": "build/bluray-menu/patches/0057-script-property-lookup.patch",
+        "sha256": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
+        "changed_files": [
+          "DOCS/interface-changes/property-list-sorted.txt",
+          "options/m_config_frontend.c",
+          "options/m_config_frontend.h",
+          "options/m_property.c",
+          "options/m_property.h",
+          "player/command.c"
+        ]
+      },
+      {
+        "path": "build/bluray-menu/patches/0058-lua-native-api-efficiency.patch",
+        "sha256": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
+        "changed_files": [
+          "player/lua.c"
+        ]
+      },
+      {
+        "path": "build/bluray-menu/patches/0059-windows-com-lifetime.patch",
+        "sha256": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
+        "changed_files": [
+          "audio/out/ao_wasapi.c",
+          "audio/out/ao_wasapi.h",
+          "osdep/win32/smtc.cpp"
+        ]
+      }
+    ],
     "variants": {
       "main": {
-        "parent_tree": "2de8c3322f219cb6bdbc0b28859c40af5dadeb58",
-        "linux_parent_tree": "1bf29d17cc662b2f884425d854905d7bcaf02eba",
-        "tree": "245d24e719fcdb203f2bcea7e610020b9143cdea",
-        "linux_tree": "f61c767ef3b22cab0792351ecc8d688b3f82548d"
+        "baseline_tree": "44921051a784569f12306df20884103d86dc95b4",
+        "before_source_sha256": {
+          "DOCS/interface-changes/property-list-sorted.txt": null,
+          "audio/out/ao_wasapi.c": "2064029a592e7c600c34d58f1a58b013ae6ecbc3b66a49479a424f551ef4b4d1",
+          "audio/out/ao_wasapi.h": "0d65fa84ac680569432655fa1d7ce9ed96a53ab3c7624dde4af145ac25be1832",
+          "demux/demux_lavf.c": "e83084716e18a6c96ce8887ec77d138dc896a152a00874412bf93b706223220c",
+          "options/m_config_frontend.c": "88d9962f8bb6aacee79d6e4da9bc9a23dc086099023839d7b8fe118fe2fb0d5f",
+          "options/m_config_frontend.h": "8790ebf096dc6513d7a6cbbf778236ffb858ed909888cc5fdc5a71029aad3f3b",
+          "options/m_property.c": "d248342bd7e12de5b0396c5d7dbf56d0cb6fb31e7d9cd1077331a4010a4e18a9",
+          "options/m_property.h": "bbc1ade6fbcf5c11da2a751693fcfee41b25488a787bc5305df9c5610320c153",
+          "osdep/win32/smtc.cpp": "296ebd3a090b954c85ed505d84793ae44904a025a44af766a7d4af577ce4dbb8",
+          "player/command.c": "17dc733721e730f55c6efa75c61ad4b774c83c8a465b362dc7ef5a75cb0694fe",
+          "player/lua.c": "734e516263819d70ddd8f00d7ae0a30ed50d5fe7e0347b593efd56cb33492a53",
+          "video/decode/vd_lavc.c": "663917f15ca5aeabf48f50a60be4e8a078288fe11304f1d25a3b6d0511f958af"
+        },
+        "source_sha256": {
+          "DOCS/interface-changes/property-list-sorted.txt": "68fd9d43c08e1aec5e0f5febd77fff5f86725b8755184ad79c27cef12d1ebe55",
+          "audio/out/ao_wasapi.c": "9fc211418c4983aa5e0829e892a7f901c8d8e9b62b5536df61553ed11f7f7301",
+          "audio/out/ao_wasapi.h": "302d489e0da1f0362546afdd21e960974e2f15fa5b1cba48568e1ef5921ae4ad",
+          "demux/demux_lavf.c": "c37325fd39409d9f886ea47ffaa1ce8bea432cf177ebac81f09765c97236a4c5",
+          "options/m_config_frontend.c": "4bc9e84a391692d7894dfb763f2267ad2bda244ab7f97421ec2b0e76b235807b",
+          "options/m_config_frontend.h": "060cb634d4442c2ef4d3d972500ccdaf166c63bad980f48f874253ef0cb19a22",
+          "options/m_property.c": "50226c3a0283f8943709065dda69223efb4e81ca9d1f976efe51c2628f656aae",
+          "options/m_property.h": "42e3e5542078fd14044a5d76881ed01c8a6ef5f775d53da59024b5b3431373ae",
+          "osdep/win32/smtc.cpp": "2f37ad4a4c8d7dbd6c9e6505954dd5b7afc3d7fa7a981ce654c3ac27753d4cc0",
+          "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07",
+          "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
+          "video/decode/vd_lavc.c": "c711cce9062633940da1a2a024beedaee3b91d37e242ef468bcbeba5a2185e3f"
+        },
+        "archive_baseline_tree": "d33bd1e8142199a4c90cb18c7f1f4f3b9eef808d",
+        "archive_mode_note": "Same blobs; Windows archive source lost 23 executable bits from the exact upstream Git tree. CI requires canonical modes."
       },
       "atmos": {
-        "parent_tree": "d5a7a6eba5a6c3d2a52f3706e60ee0472c22dd14",
-        "linux_parent_tree": "5927b34005f8cb5c987df742833de99377a42f07",
-        "tree": "3da286a7e8eb42040b9414fc549a925070c279c5",
-        "linux_tree": "7b35c76d17f8d1fdd0b9314b1cb1e44d35d7fddd"
+        "baseline_tree": "08caeecaac1fb19ca222d2055a88421e5fa647a2",
+        "before_source_sha256": {
+          "DOCS/interface-changes/property-list-sorted.txt": null,
+          "audio/out/ao_wasapi.c": "2064029a592e7c600c34d58f1a58b013ae6ecbc3b66a49479a424f551ef4b4d1",
+          "audio/out/ao_wasapi.h": "0d65fa84ac680569432655fa1d7ce9ed96a53ab3c7624dde4af145ac25be1832",
+          "demux/demux_lavf.c": "e83084716e18a6c96ce8887ec77d138dc896a152a00874412bf93b706223220c",
+          "options/m_config_frontend.c": "88d9962f8bb6aacee79d6e4da9bc9a23dc086099023839d7b8fe118fe2fb0d5f",
+          "options/m_config_frontend.h": "8790ebf096dc6513d7a6cbbf778236ffb858ed909888cc5fdc5a71029aad3f3b",
+          "options/m_property.c": "d248342bd7e12de5b0396c5d7dbf56d0cb6fb31e7d9cd1077331a4010a4e18a9",
+          "options/m_property.h": "bbc1ade6fbcf5c11da2a751693fcfee41b25488a787bc5305df9c5610320c153",
+          "osdep/win32/smtc.cpp": "296ebd3a090b954c85ed505d84793ae44904a025a44af766a7d4af577ce4dbb8",
+          "player/command.c": "17dc733721e730f55c6efa75c61ad4b774c83c8a465b362dc7ef5a75cb0694fe",
+          "player/lua.c": "734e516263819d70ddd8f00d7ae0a30ed50d5fe7e0347b593efd56cb33492a53",
+          "video/decode/vd_lavc.c": "663917f15ca5aeabf48f50a60be4e8a078288fe11304f1d25a3b6d0511f958af"
+        },
+        "source_sha256": {
+          "DOCS/interface-changes/property-list-sorted.txt": "68fd9d43c08e1aec5e0f5febd77fff5f86725b8755184ad79c27cef12d1ebe55",
+          "audio/out/ao_wasapi.c": "9fc211418c4983aa5e0829e892a7f901c8d8e9b62b5536df61553ed11f7f7301",
+          "audio/out/ao_wasapi.h": "302d489e0da1f0362546afdd21e960974e2f15fa5b1cba48568e1ef5921ae4ad",
+          "demux/demux_lavf.c": "c37325fd39409d9f886ea47ffaa1ce8bea432cf177ebac81f09765c97236a4c5",
+          "options/m_config_frontend.c": "4bc9e84a391692d7894dfb763f2267ad2bda244ab7f97421ec2b0e76b235807b",
+          "options/m_config_frontend.h": "060cb634d4442c2ef4d3d972500ccdaf166c63bad980f48f874253ef0cb19a22",
+          "options/m_property.c": "50226c3a0283f8943709065dda69223efb4e81ca9d1f976efe51c2628f656aae",
+          "options/m_property.h": "42e3e5542078fd14044a5d76881ed01c8a6ef5f775d53da59024b5b3431373ae",
+          "osdep/win32/smtc.cpp": "2f37ad4a4c8d7dbd6c9e6505954dd5b7afc3d7fa7a981ce654c3ac27753d4cc0",
+          "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07",
+          "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
+          "video/decode/vd_lavc.c": "c711cce9062633940da1a2a024beedaee3b91d37e242ef468bcbeba5a2185e3f"
+        },
+        "archive_baseline_tree": "de8a5e9af53fca0a052450ce4ceb3133fe31d6c4",
+        "archive_mode_note": "Same blobs; Windows archive source lost 23 executable bits from the exact upstream Git tree. CI requires canonical modes."
       }
     },
     "tools_sha256": {
-      "verify-native-ass-fresh-window.py": "8dce681f538d207628ddfed6ae57dd96eff010edb47f73d579f96b176f570ce1",
-      "fresh-window-actual-selection.c": "e0c562937c41f1e2027440b2c4daefff338b3398a6d91adf7f1661154014cd60",
-      "fresh-window-predicate-candidate.c": "cd6d783a73bacab4ec6f01128c5e96e0f0229b9e3ab94834c1d7cc5eec82d50c",
-      "fresh-window-predicate-original_counterexample.c": "527311927582ee075ad70ff58d95f95de6db18f689453b1bdcbdc0a2cabc9b78",
-      "fresh-window-predicate-mutation_scope_lost.c": "3bc658e138b3695b953b8c360ebc8ea39bf13fa93d574526c8a83edc6efb3091",
-      "fresh-window-predicate-mutation_submit_equality_rejected.c": "cc48624cbedcca64f6f18fdad4f3a7a74e6393c695108bc1bc14f58c6687209a"
+      "build/atmos/parity/verify-round1-source.py": "851dfcea59a515640ac1f45653c2e725a502e605e3f9d9258d6c008e1156576b",
+      "build/atmos/parity/verify-vc1-round1.py": "bceb73a5e1a5091e21e5aba7f0e4d6a8dffa01db13ac83d0db16c24b97dabc4a"
     },
-    "scope": "Only new uncaptured fixed fresh proposals with S>=F may retain original G/D; captured, legacy, queue, phase, H and late guards unchanged; no Display acceptance."
+    "runtime_and_performance_validation": "Required separately on Windows before deployment."
+  },
+  "av3a_preselections": {
+    "version": 1,
+    "patches": {
+      "mpv": {
+        "path": "build/bluray-menu/patches/0060-av3a-content-selection.patch",
+        "sha256": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
+        "changed_files": [
+          "DOCS/man/input.rst",
+          "audio/decode/ad_lavc.c",
+          "filters/f_decoder_wrapper.h",
+          "player/command.c"
+        ]
+      },
+      "sdk": {
+        "path": "build/av3a/avs3-audiodecoder-preselections.patch",
+        "sha256": "493f18cc19dbc019f2fc47eca2e2b9fc2516c4b0eb3d44f138d674127d2a8a40",
+        "changed_files": [
+          "av3adecoder/CMakeLists.txt",
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h",
+          "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h",
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c"
+        ]
+      },
+      "ffmpeg": {
+        "path": "build/av3a/ffmpeg-libarcdav3a-preselections.patch",
+        "sha256": "dbff4be3c0d58b0b7012ee62476ad21fd860c7fc9db7c7c450d532d77515cbb3",
+        "changed_files": [
+          "libavcodec/libarcdav3a.c"
+        ]
+      }
+    },
+    "variants": {
+      "main": {
+        "baseline_tree": "9dead13eeb817c8a702f0f8dcbb4ac53804fd670",
+        "source_tree": "728832ffd74cc309654ff7836841f5182db558c7",
+        "archive_baseline_tree": "42642711cc1a29e4fbdef0ee9108d27619d12763",
+        "archive_source_tree": "dda7f82785d980551524606ae033e92a3024fb7b",
+        "before_source_sha256": {
+          "DOCS/man/input.rst": "179bcfacd1cfcf4b30295a321fe8dbcf411d000f60e16c267888d972e8e0a186",
+          "audio/decode/ad_lavc.c": "d2662c390407d9a89b08faf1413ef9695db55496d4e755ae95cab21a9edabf25",
+          "filters/f_decoder_wrapper.h": "2d133e104dac514e7f05beeeb78713755019a65c24bc984e2596559a124565dc",
+          "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07"
+        },
+        "source_sha256": {
+          "DOCS/man/input.rst": "43d1701aa50d4bfbb46ffbdedc75d5ab9b329ed3dee730f647940427aec33fc7",
+          "audio/decode/ad_lavc.c": "77bd9945dae2b1cd4ee801d4ddaf06a37d29889aaaae6b1847ae9369037c1285",
+          "filters/f_decoder_wrapper.h": "65545d9113bf07387983b8249b7a55ce4ab9e2f90191d15f40c8f455672c8fa0",
+          "player/command.c": "2c623b19e1fba2542966dd88422e17ed50de52ec5e077f4481937276a19c3c37"
+        }
+      },
+      "atmos": {
+        "baseline_tree": "608e2c603be798c37cabdb089679b3a7b4185093",
+        "source_tree": "302a28d143ddfafce744f9db0e91e034a775d055",
+        "archive_baseline_tree": "7edd7a654881300c3e0bfca55b3f57b6033f230f",
+        "archive_source_tree": "ee3066266e5db01cd4e47381e0b72ada4a23c795",
+        "before_source_sha256": {
+          "DOCS/man/input.rst": "179bcfacd1cfcf4b30295a321fe8dbcf411d000f60e16c267888d972e8e0a186",
+          "audio/decode/ad_lavc.c": "d2662c390407d9a89b08faf1413ef9695db55496d4e755ae95cab21a9edabf25",
+          "filters/f_decoder_wrapper.h": "9e2ee13c6283b7a655524ac15971b778db58dea46264856f1b4435dedde9f666",
+          "player/command.c": "9fc17e843a050794aba972b7998806710d7e4382f3a228630cfe006482ad4c07"
+        },
+        "source_sha256": {
+          "DOCS/man/input.rst": "43d1701aa50d4bfbb46ffbdedc75d5ab9b329ed3dee730f647940427aec33fc7",
+          "audio/decode/ad_lavc.c": "77bd9945dae2b1cd4ee801d4ddaf06a37d29889aaaae6b1847ae9369037c1285",
+          "filters/f_decoder_wrapper.h": "88b9c287bfa65c5873df524e7c8cfa0fc826cef828f2b780beacca3fa4d4aa29",
+          "player/command.c": "2c623b19e1fba2542966dd88422e17ed50de52ec5e077f4481937276a19c3c37"
+        }
+      }
+    },
+    "dependencies": {
+      "sdk": {
+        "base_commit": "e7d244d29454eb04c968cd98a30587303a9c15f8",
+        "normalize_lf_files": [
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h",
+          "av3adecoder/avs3Decoder/src/avs3_init_dec.c",
+          "av3adecoder/avs3Decoder/src/decoder.c",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.cpp",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio.h",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/avs3_audio_types.h",
+          "av3a_binaural_render/AudioDecoder/av3a_binaural_render/core/ambisonic_rotator.cpp"
+        ],
+        "seed_files": [],
+        "baseline_patches": [
+          {
+            "path": "build/av3a/avs3-audiodec-static-library.patch",
+            "sha256": "108a81592ed3ccfd93f0fc0f04b0b76c124e7680bbd69ebfa5e81788f848fcad"
+          },
+          {
+            "path": "build/av3a/avs3-audiodecoder-stage2.patch",
+            "sha256": "cd337dda983d1e8717b2d776b06d6eee609dd58bbae113be0100c70569d53c37"
+          },
+          {
+            "path": "build/av3a/avs3-renderer-build.patch",
+            "sha256": "19e3b4e6fd0cfd0e3397efd6ee91caf52f1d42e3eb07ce338ec568ee73ebcb73"
+          },
+          {
+            "path": "build/av3a/avs3-renderer-hardening.patch",
+            "sha256": "3b914f652d4ca8ec8e6ed7bd4eeab89c437d993c4cf81ea4b61136f2d7bde95f"
+          }
+        ],
+        "before_source_sha256": {
+          "av3adecoder/CMakeLists.txt": "bf339b3861497a3e784e5535b5505dede58fc3389c500ee8774f8aebf61d9542",
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h": "53f12049d11d3054c3c313781a9e43eb28ae01047f903481c7eb5135a4a840af",
+          "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h": null,
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c": null
+        },
+        "source_sha256": {
+          "av3adecoder/CMakeLists.txt": "55800fd3f883e76fafc85c7a9a653b902149af46736ebf422fec6cda2ca2c818",
+          "av3adecoder/avs3Decoder/include/avs3_decoder_interface.h": "d95ff557fa34c38d2efe55bf4a5a5bb009a4a558a0dd7574eee02fe416f81191",
+          "av3adecoder/avs3Decoder/include/avs3_spatial_contents.h": "0791293a2e08c92e751eb2e81d55191a45bd9a1537044886bd6d9bf06e0d11ff",
+          "av3adecoder/avs3Decoder/src/avs3_spatial_contents.c": "0fbc54dd3cba9d4a206c1f977b9ae6a4b2abb170f0311e32caff5a1bc097a7df"
+        }
+      },
+      "ffmpeg": {
+        "base_commit": "18c01ad424ca7712ef9a9d46953308efc75c4776",
+        "normalize_lf_files": [],
+        "seed_files": [
+          {
+            "path": "libavcodec/bsf/dovi_split.c",
+            "source": "build/dolby-vision/ffmpeg-dovi-split.c",
+            "sha256": "9f9e666bae767964dc4cfad8d2247e869148071ce9cc35318090779d37ec0cf9",
+            "mode": "100644"
+          }
+        ],
+        "baseline_patches": [
+          {
+            "path": "build/dolby-vision/ffmpeg-hevc-missing-ref-foll.patch",
+            "sha256": "f28425c9b3bc201e1252a4efcb6783b60b53cab58beb30dcb320fb9cb9d1b4af"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-hevc-dovi-rpu-scan.patch",
+            "sha256": "81f8bd9e0e1e38d4f0ec6228f02e8a39b38b5eb00b0b11a11b9392a39c50b17f"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-dovi-split-prerequisites.patch",
+            "sha256": "43730be42a490ddbc918bc4810f8aa7737f98eb4d065abcdfffa32ca61b6e0b0"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-dovi-split-registration.patch",
+            "sha256": "699aa735f6f8e5cde7643eaabfacfff52b21161c6deeb0af631a2bec98f7fa01"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-dovi-dual-track-stream-group.patch",
+            "sha256": "ccbe3aa0e9ba4b32a9ddef525fe67793bfb3e8205d44bcf33e94c8e0b9a0bbb9"
+          },
+          {
+            "path": "build/dolby-vision/ffmpeg-mpegts-dovi-stream-group.patch",
+            "sha256": "c1627ed5856da6f27f0560736a826a6b837b7e640abe46fe301778840bef2c01"
+          },
+          {
+            "path": "build/av3a/ffmpeg-libarcdav3a-hardening.patch",
+            "sha256": "a1ce37c8bf39be65f31da2107356299b8fbdab197759d0b4601a69398174fe58"
+          },
+          {
+            "path": "build/av3a/ffmpeg-libarcdav3a-spatial.patch",
+            "sha256": "28c48464bea4ace76b460d23aa7172d3e82be3aa37d45bd53a32eedc83a48f53"
+          },
+          {
+            "path": "build/av3a/ffmpeg-av3a-multiframe-probe.patch",
+            "sha256": "39d53b20c9c226a19e8e8971a0d35b65165a1f793112b85ac7fc006e5964dac1"
+          },
+          {
+            "path": "build/av3a/ffmpeg-av3a-frame-parser.patch",
+            "sha256": "9db2ae7d3bcae4c31cdb296f169f45b8d5a23c234ae06102269c14a9d87dd1a2"
+          },
+          {
+            "path": "build/av3a/ffmpeg-nvenc-sdk-13.1.patch",
+            "sha256": "7288c3011bfcb54310649e9c0b7e620107f57bac68f841ebe28bdf8e1ff92eef"
+          },
+          {
+            "path": "build/bluray-menu/patches/ffmpeg-9005-bluray-hdmv-context.patch",
+            "sha256": "26969d733227e55c2f8385958e17ef99227609270246832ba2f66c57c2303aa1"
+          },
+          {
+            "path": "build/core-candidate/ffmpeg-8800-truehd-mat-padding.patch",
+            "sha256": "50c591ad133ea531223c6ce8f8963759dbe2a62f171fa859716557ecbf398d45"
+          }
+        ],
+        "before_source_sha256": {
+          "libavcodec/libarcdav3a.c": "e1a5ad8955c77c59d7886f6d59bb25acb6e4828e51e02ad01c675b95685a1d14"
+        },
+        "source_sha256": {
+          "libavcodec/libarcdav3a.c": "86c7044a0038d461d24ad2bff72a90773f70a18f2ad127af62764a3e436a2536"
+        }
+      }
+    },
+    "tools_sha256": {
+      "build/atmos/parity/verify-preselections-source.py": "85000c9026bce2895c902af93349d36e047a4057bcef4e1c39842704c2293fea",
+      "build/atmos/parity/prepare-winbuild.py": "3f71d20eeae2511b41f0980489961ba5b7a737710bc0eac7d9ad5afbf84d7360",
+      "build/av3a/avs3-audiodec.cmake": "c5f51ef48d4d46bbf48e18ffb6f67a6c6880aef7b666a1eab003dfd7ef749383",
+      "build/av3a/normalize-source-eol.py": "4d2f84425950ce9df898926f69ab0c2b68db32ca5963c0f8c21e17f232c43980",
+      "build/av3a/tests/verify-preselections-contract.py": "dd93892c85606a05dcd83894cd679a56c7b0d4c516ba732beef2b79a075d6f70",
+      "build/av3a/tests/verify-content-graph.py": "8c50ed8a214d1269fa68185a684702386bffb8afb1124c69d9424b12d437394d",
+      "build/av3a/tests/content-graph-cases.c": "81e8c44bf85d87abae55963eee909b227d69a8e90d4ca12df3f1cd269e209679",
+      "build/av3a/tests/sample_fixture.inc": "2feb505565b2183083090ef989b355130fd4fa4e9d8029658f16e63d009867c7",
+      "build/av3a/tests/content-graph-fixture.json": "9cd3214c2b3da843ee5a161611a3bc198200300e2b1060b23b618e0a64dc2ad1",
+      "build/av3a/tests/verify-mpv-content-property.py": "2e57b5ad782d8ccc58edc03cdc3ae0daf2dd48c716de168eb0252c5df19095fd",
+      "build/av3a/tests/verify-content-output-graph.py": "7c86b561a56e8b013debc1ba3328751d69bff9495e05f92d2bce8fc83b32d931"
+    },
+    "contracts": [
+      {
+        "path": "build/av3a/tests/verify-content-graph.py",
+        "sha256": "8c50ed8a214d1269fa68185a684702386bffb8afb1124c69d9424b12d437394d",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--output",
+          "{output_dir}/sdk",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "path": "build/av3a/tests/verify-preselections-contract.py",
+        "sha256": "dd93892c85606a05dcd83894cd679a56c7b0d4c516ba732beef2b79a075d6f70",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--ffmpeg-source",
+          "{ffmpeg_source}",
+          "--output",
+          "{output_dir}/ffmpeg",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "path": "build/av3a/tests/verify-content-output-graph.py",
+        "sha256": "7c86b561a56e8b013debc1ba3328751d69bff9495e05f92d2bce8fc83b32d931",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--ffmpeg-source",
+          "{ffmpeg_source}",
+          "--output",
+          "{output_dir}/output-graph",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      }
+    ],
+    "scope": "Validated programme/content IDs mapped to per-block PCM masks in binaural output; native and default all preserved.",
+    "runtime_verified": false
+  },
+  "round2_stability": {
+    "version": 1,
+    "patch": {
+      "path": "build/bluray-menu/patches/0061-upstream-stability-round2.patch",
+      "sha256": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+      "changed_files": [
+        "demux/demux_mkv.c",
+        "player/javascript.c",
+        "player/lua.c",
+        "sub/sd_ass.c"
+      ]
+    },
+    "variants": {
+      "main": {
+        "baseline_commit": "522d5c8b1274d718a6d81f4c751b9e60a1fc398c",
+        "source_commit": "3021bdff0d1934f621bf957dd97da7321bd2a0c5",
+        "archive_baseline_tree": "dda7f82785d980551524606ae033e92a3024fb7b",
+        "archive_source_tree": "6620a2a543b31caa7a068bf5f339dde1b97fb744",
+        "before_source_sha256": {
+          "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
+          "player/javascript.c": "08b579c5ef60e81dd7bfcdcf347a35ded5ca9de81d1201edb26becc5221f5768",
+          "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
+          "sub/sd_ass.c": "6d821ef48c311b1627bcb85f3999c0ea7e53a2464628127335aba61b5369ad65"
+        },
+        "source_sha256": {
+          "demux/demux_mkv.c": "9421905530524cfc65a7e52e72b6db10280329ab091661f12c66d424e9ce2cd2",
+          "player/javascript.c": "5c8abde2cca3dec00c91239e264e8854da686e47680dd513b6b2d167bd7e2a47",
+          "player/lua.c": "a924854ad9e6b0188bc0648e75a7d1298330decc0316b9ca50586b0173a7d0b6",
+          "sub/sd_ass.c": "253cb88dab1aa288f67d1edf66e50ca5909b1f11747c6578fb3021f9253ed0ea"
+        },
+        "baseline_tree": "728832ffd74cc309654ff7836841f5182db558c7",
+        "source_tree": "8c152fe3e98eb515165fec4b4f65048706bb1d24"
+      },
+      "atmos": {
+        "baseline_commit": "a593df53de904a13d809d2c583a1af675bb5ceca",
+        "source_commit": "02b55413dad0883eee1abeb8d405befc51ffc976",
+        "archive_baseline_tree": "ee3066266e5db01cd4e47381e0b72ada4a23c795",
+        "archive_source_tree": "0be07e1bbf99a4e3b59ab298d9f68e52abfaaa53",
+        "before_source_sha256": {
+          "demux/demux_mkv.c": "be2766b89d2d70a9366be3157e7694609abb3a2e7db8fd4bf0501fd63357c918",
+          "player/javascript.c": "08b579c5ef60e81dd7bfcdcf347a35ded5ca9de81d1201edb26becc5221f5768",
+          "player/lua.c": "bb6340e84c9071c13fccb1290691265a3f49bb76f8384f65f6f46ad1687f855b",
+          "sub/sd_ass.c": "6d821ef48c311b1627bcb85f3999c0ea7e53a2464628127335aba61b5369ad65"
+        },
+        "source_sha256": {
+          "demux/demux_mkv.c": "9421905530524cfc65a7e52e72b6db10280329ab091661f12c66d424e9ce2cd2",
+          "player/javascript.c": "5c8abde2cca3dec00c91239e264e8854da686e47680dd513b6b2d167bd7e2a47",
+          "player/lua.c": "a924854ad9e6b0188bc0648e75a7d1298330decc0316b9ca50586b0173a7d0b6",
+          "sub/sd_ass.c": "253cb88dab1aa288f67d1edf66e50ca5909b1f11747c6578fb3021f9253ed0ea"
+        },
+        "baseline_tree": "302a28d143ddfafce744f9db0e91e034a775d055",
+        "source_tree": "604797cad509130af1ccda4b60dac25a76b23e53"
+      }
+    },
+    "tools_sha256": {
+      "build/atmos/parity/prepare-round2-winbuild.py": "3df5e2ea4a8f188de3cfe00e09335bf8d9c79ffd16d56be32e9facbc7ba9c831",
+      "build/atmos/parity/verify-round2-source.py": "f562d35c538f12da1c80d574fc5c65511e3a4a909131b2247505327a70829005",
+      "build/atmos/parity/test-round2-source-gate.py": "9f0100ef9187ca1166eb105edd1909177beebc67a054921a60f07f40845582a7",
+      ".github/workflows/build-mpv-v100-parity.yml": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864"
+    },
+    "scope": "ASS packet state and no-position deduplication; Matroska signed padding and early seek; Lua/JavaScript integer boundaries.",
+    "dependency_versions_unchanged": true,
+    "runtime_verified": false
+  },
+  "network_stability": {
+    "version": 1,
+    "patches": [
+      {
+        "path": "build/bluray-menu/patches/0062-windows-paths-and-pipes.patch",
+        "sha256": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+        "changed_files": [
+          "misc/path_utils.c",
+          "options/parse_commandline.c",
+          "osdep/io.c",
+          "test/paths.c"
+        ]
+      },
+      {
+        "path": "build/bluray-menu/patches/0063-http-range-boundaries.patch",
+        "sha256": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46",
+        "changed_files": [
+          "stream/stream_curl.c"
+        ]
+      }
+    ],
+    "variants": {
+      "main": {
+        "baseline_commit": "3021bdff0d1934f621bf957dd97da7321bd2a0c5",
+        "source_commit": "7b13e97d5ce4f93b78c001a43ecd5158a70b4fdc",
+        "baseline_tree": "8c152fe3e98eb515165fec4b4f65048706bb1d24",
+        "source_tree": "c979f78e6702fd78c5a3263cc2b752c7972c6b92",
+        "step_trees": [
+          "595e9aad00beff2dbfe75073ed3b0429eee6ff6a",
+          "c979f78e6702fd78c5a3263cc2b752c7972c6b92"
+        ],
+        "archive_baseline_tree": "6620a2a543b31caa7a068bf5f339dde1b97fb744",
+        "archive_source_tree": "d76378c8728888a4f7b2b64401a3b1a64771a3be",
+        "archive_step_trees": [
+          "46805b2f0cca3eb734861d33619efb0750a0ceb4",
+          "d76378c8728888a4f7b2b64401a3b1a64771a3be"
+        ],
+        "before_source_sha256": {
+          "misc/path_utils.c": "4f279a51859cd611186d19e16b73c9738390f727fc8d0c6b387afd218969a93a",
+          "options/parse_commandline.c": "25503037f07ae92f5bc5086ffb85ae92e4dff604eef6932d9607749029aee177",
+          "osdep/io.c": "898dfb39bde0315decf3da608459e85af661878f3815530e7a4617942a3de990",
+          "stream/stream_curl.c": "1f0d6c64427e73da2c6b220a1d9d4c77f617a0b7f31c4c80bbe480dfa9fcada7",
+          "test/paths.c": "5f38932f0e8e941f4e6a8039dc2b8a612d1c76dc6cb2f8eb9f7fb3c8311b08c5"
+        },
+        "source_sha256": {
+          "misc/path_utils.c": "90bc28c668da1b1137bf18f13e77e2a0237a4961e0771ae64cfd057acc676101",
+          "options/parse_commandline.c": "d9946574dc94e8a2af9d8ce24746918156b005c8685b44e5fba1868f333085c8",
+          "osdep/io.c": "225ac9d11b0ffb30f02f695e349e119b501a567098c2bbbceeefc201eeecb9f7",
+          "stream/stream_curl.c": "68efa6b1cc0fa48d9f522b86528059b6528d8226f9f179a9e321051a3f065e7c",
+          "test/paths.c": "8a91df9a0a5c090cf270a52ca8500b7177def357ce5bba8a193e37c544d047c9"
+        }
+      },
+      "atmos": {
+        "baseline_commit": "02b55413dad0883eee1abeb8d405befc51ffc976",
+        "source_commit": "b3a9a84261ed1810ef26e5fe0309d6de724126cb",
+        "baseline_tree": "604797cad509130af1ccda4b60dac25a76b23e53",
+        "source_tree": "a1ddecf31992defadcc62349c9daea0ab61916a4",
+        "step_trees": [
+          "74869dc83146547d0187d0dad731d76f5bf884cb",
+          "a1ddecf31992defadcc62349c9daea0ab61916a4"
+        ],
+        "archive_baseline_tree": "0be07e1bbf99a4e3b59ab298d9f68e52abfaaa53",
+        "archive_source_tree": "5806a5fe7d006d7fc567a882fd8fabcf1f7ee83f",
+        "archive_step_trees": [
+          "de6f4933f44fcf32553cc5ef75292fd913a4f40a",
+          "5806a5fe7d006d7fc567a882fd8fabcf1f7ee83f"
+        ],
+        "before_source_sha256": {
+          "misc/path_utils.c": "4f279a51859cd611186d19e16b73c9738390f727fc8d0c6b387afd218969a93a",
+          "options/parse_commandline.c": "25503037f07ae92f5bc5086ffb85ae92e4dff604eef6932d9607749029aee177",
+          "osdep/io.c": "898dfb39bde0315decf3da608459e85af661878f3815530e7a4617942a3de990",
+          "stream/stream_curl.c": "1f0d6c64427e73da2c6b220a1d9d4c77f617a0b7f31c4c80bbe480dfa9fcada7",
+          "test/paths.c": "5f38932f0e8e941f4e6a8039dc2b8a612d1c76dc6cb2f8eb9f7fb3c8311b08c5"
+        },
+        "source_sha256": {
+          "misc/path_utils.c": "90bc28c668da1b1137bf18f13e77e2a0237a4961e0771ae64cfd057acc676101",
+          "options/parse_commandline.c": "d9946574dc94e8a2af9d8ce24746918156b005c8685b44e5fba1868f333085c8",
+          "osdep/io.c": "225ac9d11b0ffb30f02f695e349e119b501a567098c2bbbceeefc201eeecb9f7",
+          "stream/stream_curl.c": "68efa6b1cc0fa48d9f522b86528059b6528d8226f9f179a9e321051a3f065e7c",
+          "test/paths.c": "8a91df9a0a5c090cf270a52ca8500b7177def357ce5bba8a193e37c544d047c9"
+        }
+      }
+    },
+    "tools_sha256": {
+      ".github/workflows/build-mpv-v100-parity.yml": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864",
+      "build/atmos/parity/dependency-lock.json": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
+      "build/atmos/parity/prepare-dependency-lock.py": "348079f571c794a70501e8c1efb328df850b5dfba3cd59c2406c05a2214967e1",
+      "build/atmos/parity/prepare-network-winbuild.py": "6cdba6f6b443da742f46e0f30a274f45e81f2db3060544fe53e490aa4576aacc",
+      "build/atmos/parity/test-dependency-build-gate.py": "df0602e409de92a8c7dc04952a5e54c4ac529182d7704a790b8d6de5847df042",
+      "build/atmos/parity/test-network-source-gate.py": "098725ccf30330ad7984c2f409884539fe2fff9682d7d737cec25a25da0647c2",
+      "build/atmos/parity/tests/http-playback-runtime.py": "b0c41284445ebc6c2b91085beaf487ac62cffd1c4718e51301700e87de02e254",
+      "build/atmos/parity/tests/http-range-runtime.py": "f7d66320faf2cfdcdd2cdc3c7afc755e3c2e7128dfc7d107a53a8b67cdc47d99",
+      "build/atmos/parity/tests/windows-paths-runtime.lua": "ce62eb118e67ed0e23d3eb5e83e2f597a17aef382d4b8015b5d9a664198e142a",
+      "build/atmos/parity/tests/windows-paths-runtime.py": "aaf7e9993dedf53f38587dca17c2a5bcf060c81c1e6de572becf5359ce8503de",
+      "build/atmos/parity/verify-dependency-build.py": "1552e3b58c94a2f78bd569858a6963973f38adddf4a715647ee757153bafd615",
+      "build/atmos/parity/verify-network-source.py": "f423b3463d0de7d9ecce530ea86af3dbdf693f9762bf29227eadb869d378a601"
+    },
+    "scope": "Windows path normalization, PWD/errno/pipe handling; bounded HTTP Range continuation and EOF validation.",
+    "dependency_lock_sha256": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
+    "runtime_verified": false,
+    "dependency_baseline_correction": {
+      "previous_libplacebo": "v7.380.0 / bb4d5a4-dirty",
+      "installed_round2_libplacebo": "v7.387.0 / c9076f7-dirty",
+      "historical_dependency_versions_unchanged_claim_incorrect_for_libplacebo": true,
+      "previous_external_glad_fast_float_exact_identity_not_retained": true,
+      "previous_sealed_evidence_unmodified": true
+    },
+    "historical_workflow_identity_refresh": {
+      "before": "64d83a8dc48e9ff91d3b1149ecff46a44dd47dec00100cba9d760788eae53e03",
+      "after": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864",
+      "historical_runtime_source_and_patch_constraints_unchanged": true
+    }
   }
 }
