@@ -1,0 +1,73 @@
+name: Inspect the exact CI4 dependency link graph
+
+on:
+  pull_request:
+    branches: [codex/danmaku-batch-v9-20261005]
+    paths: [.github/workflows/inspect-network-link.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event.pull_request.number == 29 && github.head_ref == 'codex/eof-cache-fix-20261017'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, atmos]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 7dfd292c914957b3daac618d0f6855609fdaaf49
+          persist-credentials: false
+      - name: Restore only the exact completed CI4 cache
+        id: cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+          key: mpv-dependency-v1-${{ matrix.variant }}-5af20b67145af620cacd185ef437330a3b46b1abd69bd503d581f5a0a6b9a006-091de578de139c811ede589c644722f3342b48e35398fc7ad1f1d566d659bd96
+          fail-on-cache-miss: true
+      - name: Read the actual Ninja graph without building or running a player
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          VARIANT: ${{ matrix.variant }}
+          PYTHONDONTWRITEBYTECODE: 1
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          python3 -c "import json,os; p=json.load(open('winbuild/mpv-winbuild-cmake/build64/dependency-cache-identity.json')); assert p['variant']==os.environ['VARIANT'] and p['lock_sha256']=='515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55'"
+          build="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake/build64/packages/mpv-prefix/src/mpv-build"
+          evidence="$GITHUB_WORKSPACE/link-evidence"
+          mkdir "$evidence"
+          test -s "$build/build.ninja"
+          command -v ninja
+          ninja --version > "$evidence/ninja-version.txt"
+          ninja -C "$build" -t commands mpv.exe > "$evidence/mpv-build-commands.txt"
+          ninja -C "$build" -t query mpv.exe > "$evidence/mpv-link-query.txt"
+          cp "$build/build.ninja" "$evidence/"
+          cp "$build/meson-info/intro-targets.json" "$evidence/"
+          cp "$build/meson-info/meson-info.json" "$evidence/"
+          cp "$build/meson-info/intro-buildoptions.json" "$evidence/"
+          cp "$build/compile_commands.json" "$evidence/"
+          cp "$build/.ninja_log" "$evidence/"
+          cp winbuild/mpv-winbuild-cmake/build64/dependency-cache-identity.json "$evidence/"
+          cp winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/lib/pkgconfig/libplacebo.pc "$evidence/"
+          sha256sum winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/lib/libplacebo.a > "$evidence/installed-libplacebo.sha256"
+          git -C winbuild/mpv-winbuild-cmake/src_packages/mpv rev-parse HEAD > "$evidence/mpv-source-commit.txt"
+          printf '%s\n' "$VARIANT" > "$evidence/variant.txt"
+          printf '%s\n' 40067764397 > "$evidence/source-build-run.txt"
+          (cd "$evidence" && find . -type f ! -name evidence.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence.sha256)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: exact-ci4-link-${{ matrix.variant }}
+          path: link-evidence/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
