@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -318,12 +319,46 @@ def main():
             path.write_bytes(b'fixture binary output ' + path.suffix.encode())
         phase.binary = binaries
         real_check_output = subprocess.check_output
-        link_commands = (str(installed) + ' -o mpv.exe').encode()
+        mpv_build = winbuild / 'build64/packages/mpv-prefix/src/mpv-build'
+        mpv_build.mkdir(parents=True)
+        mpv_graph = mpv_build / 'build.ninja'
+        link_commands, link_query, link_database = b'', b'', []
+        link_arguments = [str(cpp), '-o', 'mpv.exe', 'fixture.obj', str(installed)]
+
+        def reset_link(response=False):
+            nonlocal link_commands, link_query, link_database
+            rule = 'cpp_LINKER' + ('_RSP' if response else '')
+            quoted_compiler = shlex.quote(str(cpp))
+            raw = quoted_compiler + (' @mpv.exe.rsp' if response else
+                                     ' -o mpv.exe fixture.obj ' + shlex.quote(str(installed)))
+            link_commands = (raw + '\n').encode()
+            link_query = ('mpv.exe:\n  input: ' + rule + '\n    fixture.obj\n    | ' +
+                          str(installed) + '\n  outputs:\n').encode()
+            link_database = [{'directory': str(mpv_build), 'command': shlex.join(link_arguments),
+                              'file': 'fixture.obj', 'output': 'mpv.exe'}]
+            path = str(installed).replace('$', '$$').replace(':', '$:').replace(' ', '$ ')
+            graph = 'rule ' + rule + '\n command = ' + quoted_compiler
+            if response:
+                graph += ' @$out.rsp\n rspfile = $out.rsp\n rspfile_content = $ARGS -o $out $in $LINK_ARGS\n'
+            else:
+                graph += ' $ARGS -o $out $in $LINK_ARGS\n'
+            graph += '\nbuild mpv.exe: ' + rule + ' fixture.obj | ' + path
+            graph += '\n LINK_ARGS = ' + shlex.quote(str(installed)) + '\n'
+            mpv_graph.write_text(graph, encoding='utf-8')
+
+        reset_link()
+
+        def link_check():
+            return verify.check_mpv_link(winbuild, link_commands, link_query,
+                                         link_database, mpv_graph.read_bytes())
 
         def command_output(command, *arguments, **kwargs):
             if command[0] == 'ninja':
                 if 'query' in command:
-                    return ('mpv.exe:\n  input: c_LINKER\n    ' + str(installed) + '\n  outputs:\n').encode()
+                    return link_query
+                if 'compdb' in command:
+                    assert command[-1] == '-x'
+                    return json.dumps(link_database).encode()
                 return link_commands
             return real_check_output(command, *arguments, **kwargs)
 
@@ -334,11 +369,73 @@ def main():
             installed.write_bytes(original_archive + b'drift')
             check('archive changed before final link gate', lambda: verify.phase(phase), True)
             installed.write_bytes(original_archive)
-            link_commands = b'other.a -o mpv.exe'
+            link_database[0]['command'] = shlex.join(link_arguments[:-1] + [str(root / 'other.a')])
             check('link graph consumes different archive', lambda: verify.phase(phase), True)
-            link_commands = (str(installed) + ' -o libmpv.dll\nother.a -o mpv.exe').encode()
+            reset_link()
+            link_database[0]['output'] = 'libmpv.dll'
             check('different target consumes verified archive', lambda: verify.phase(phase), True)
-            link_commands = (str(installed) + ' -o mpv.exe').encode()
+            reset_link()
+            link_database.append(copy.deepcopy(link_database[0]))
+            check('duplicate expanded mpv.exe edge', link_check, True)
+            reset_link()
+            link_database[0]['directory'] = str(root)
+            check('expanded link has foreign build directory', link_check, True)
+            reset_link()
+            link_database[0]['command'] = shlex.join([str(root / 'foreign-g++')] + link_arguments[1:])
+            check('expanded link has foreign compiler', link_check, True)
+            reset_link()
+            link_database[0]['command'] = shlex.join(link_arguments[:-1] + [str(installed) + '.unverified'])
+            check('archive pathname substring is not an archive identity', link_check, True)
+            reset_link()
+            link_database[0]['command'] = shlex.join(link_arguments[:-1] + ['-lplacebo'])
+            check('unresolved library name is not a verified archive', link_check, True)
+            reset_link()
+            link_database[0]['command'] = shlex.join([str(cpp), '-o', 'other.exe'] + link_arguments[3:])
+            check('expanded command produces another output', link_check, True)
+            reset_link()
+            link_database[0]['command'] = shlex.join(link_arguments + ['-o', 'mpv.exe'])
+            check('multiple output flags rejected', link_check, True)
+            reset_link()
+            link_query = link_query.replace(('    | ' + str(installed)).encode(), ('    || ' + str(installed)).encode())
+            check('query order-only archive is not a direct input', link_check, True)
+            reset_link()
+            link_query = ('mpv.exe:\n  input: cpp_LINKER\n    fixture.obj\n  outputs:\n    ' + str(installed) + '\n').encode()
+            check('archive only in query outputs is rejected', link_check, True)
+            reset_link()
+            link_query = link_query.replace(str(installed).encode(), (str(installed) + '.unverified').encode())
+            check('query archive pathname substring rejected', link_check, True)
+            reset_link()
+            original_graph = mpv_graph.read_bytes()
+            mpv_graph.write_bytes(original_graph + original_graph)
+            check('duplicate graph link edge rejected', link_check, True)
+            reset_link(True)
+            check('response-file final lifecycle with expanded actual link', lambda: verify.phase(phase))
+            assert verify.read(winbuild / 'dependency-evidence/final.json')['mpv_link_binding']['response_file']
+            link_commands = link_commands.replace(b'@mpv.exe.rsp', b'@other.exe.rsp')
+            check('raw response belongs to another target', link_check, True)
+            reset_link(True)
+            link_database[0]['command'] += ' @unexpanded.rsp'
+            check('nested unresolved expanded response rejected', link_check, True)
+            reset_link(True)
+            mpv_graph.write_text(mpv_graph.read_text(encoding='utf-8').replace('$LINK_ARGS', '$LINK_ARGS -Dchanged_response'), encoding='utf-8')
+            check('changed response content differs from expanded command', link_check, True)
+            reset_link(True)
+            mpv_graph.write_text(mpv_graph.read_text(encoding='utf-8').replace('rspfile = $out.rsp', 'rspfile = other.exe.rsp'), encoding='utf-8')
+            check('changed response file target rejected', link_check, True)
+            reset_link(True)
+            for name in ('final.json', 'evidence-index.json'):
+                (winbuild / 'dependency-evidence' / name).unlink()
+            link_database[0]['output'] = 'other.exe'
+            check('failed final link never creates a pass receipt', lambda: verify.phase(phase), True)
+
+            def retained_failure():
+                evidence = winbuild / 'dependency-evidence'
+                assert all((evidence / name).is_file() for name in ('mpv-build-commands.txt', 'mpv-link-query.txt',
+                                                                  'mpv-expanded-compdb.json', 'mpv-build.ninja'))
+                assert not (evidence / 'final.json').exists() and not (evidence / 'evidence-index.json').exists()
+
+            check('failed link preserves original raw graph and schemas without pass', retained_failure)
+            reset_link()
             os.utime(binaries[0], ns=(old, old))
             check('stale player binary', lambda: verify.phase(phase), True)
             binaries[0].write_bytes(b'fixture binary output .exe')
@@ -350,6 +447,21 @@ def main():
             check('restored final lifecycle', lambda: verify.phase(phase))
         finally:
             verify.subprocess.check_output = real_compiler_output
+        # Exercise the installed Ninja tool itself. Only graph introspection
+        # runs: the compiler and binary fixture bytes are never executed.
+        ninja = shutil.which('ninja')
+        if ninja is None:
+            raise ValueError('Ninja is required for the real response-file schema contract')
+        for response in (False, True):
+            reset_link(response)
+
+            def actual_ninja_schema():
+                commands = real_check_output([ninja, '-C', str(mpv_build), '-t', 'commands', 'mpv.exe'])
+                query = real_check_output([ninja, '-C', str(mpv_build), '-t', 'query', 'mpv.exe'])
+                expanded = json.loads(real_check_output([ninja, '-C', str(mpv_build), '-t', 'compdb', '-x']))
+                verify.check_mpv_link(winbuild, commands, query, expanded, mpv_graph.read_bytes())
+
+            check('real Ninja ' + ('RSP' if response else 'normal') + ' graph introspection without execution', actual_ninja_schema)
         # Every actual upstream pin is checked syntactically and by the recipe
         # frozen above. CI compilation performs the real source/library gate.
         upstream_lock = json.loads(original_lock)

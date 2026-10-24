@@ -4,9 +4,12 @@ import ast
 import configparser
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
+import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -316,6 +319,147 @@ def snapshot(winbuild, manifest, evidence):
         (evidence / (name + '-actual.diff')).write_bytes(result)
 
 
+def absolute_link_path(value):
+    """Compare absolute link identities without depending on the reader's OS."""
+    value = str(value)
+    if value.startswith('/'):
+        return posixpath.normpath(value)
+    if re.match(r'^[A-Za-z]:[\\/]', value):
+        return ntpath.normcase(ntpath.normpath(value))
+    return None
+
+
+def ninja_link_arguments(graph, rule_name, response):
+    """Expand only the actual Meson mpv.exe link rule, not arbitrary Ninja code."""
+    text = re.sub(r'\$\r?\n[ \t]*', '', graph.decode())
+    lines = text.splitlines()
+    edges = [(index, re.fullmatch(r'build mpv\.exe: (\S+) (.+)', line))
+             for index, line in enumerate(lines) if line.startswith('build mpv.exe:')]
+    require(len(edges) == 1 and edges[0][1] and edges[0][1][1] == rule_name,
+            'Missing or duplicate actual mpv.exe graph edge')
+    rules = [index for index, line in enumerate(lines) if line == 'rule ' + rule_name]
+    require(len(rules) == 1, 'Missing or duplicate actual mpv.exe graph rule')
+
+    def properties(index):
+        values = {}
+        for line in lines[index + 1:]:
+            if not line.startswith((' ', '\t')):
+                break
+            match = re.fullmatch(r'[ \t]+(\w+) = (.*)', line)
+            require(match and match[1] not in values, 'Invalid or duplicate Ninja link variable')
+            values[match[1]] = match[2]
+        return values
+
+    target = properties(edges[0][0])
+    rule = properties(rules[0])
+    require('LINK_ARGS' in target and 'command' in rule,
+            'Missing actual Meson link arguments')
+    # The reviewed CI workspace and mpv object names contain no whitespace.
+    words = re.findall(r'(?:\$[ :$]|[^\s])+', edges[0][1][2])
+    explicit = words[:words.index('|')] if '|' in words else words[:]
+    if '||' in explicit:
+        explicit = explicit[:explicit.index('||')]
+    variables = target | {'ARGS': target.get('ARGS', ''), 'out': 'mpv.exe', 'in': ' '.join(explicit)}
+    pattern = re.compile(r'\$(?:\{(\w+)\}|(\w+)|(.))')
+
+    def expand(value, depth=0):
+        require(depth < 20, 'Recursive Ninja link variable')
+
+        def replace(match):
+            name = match[1] or match[2]
+            if name:
+                require(name in variables, 'Unknown Ninja link variable: ' + name)
+                return expand(variables[name], depth + 1)
+            require(match[3] in ('$', ':', ' '), 'Unknown Ninja link escape')
+            return match[3]
+
+        return pattern.sub(replace, value)
+
+    raw_arguments = shlex.split(expand(rule['command']))
+    if response:
+        require(rule.get('rspfile') == '$out.rsp' and 'rspfile_content' in rule and
+                len(raw_arguments) == 2 and raw_arguments[1] == '@mpv.exe.rsp',
+                'Unexpected actual Meson response-file rule')
+        arguments = [raw_arguments[0]] + shlex.split(expand(rule['rspfile_content']))
+    else:
+        arguments = raw_arguments
+    direct = words[:words.index('||')] if '||' in words else words
+    direct = [expand(value) for value in direct if value != '|']
+    return raw_arguments, arguments, direct
+
+
+def check_mpv_link(winbuild, commands, query, expanded, graph):
+    """Bind the actual Ninja edge, including Meson's response-file links."""
+    build = winbuild / 'build64/packages/mpv-prefix/src/mpv-build'
+    installed = winbuild / 'build64/install/x86_64-w64-mingw32/lib/libplacebo.a'
+    compilers = {winbuild / 'build64/install/bin' / ('x86_64-w64-mingw32-' + name)
+                 for name in ('gcc', 'g++')}
+    compilers = {absolute_link_path(path) for path in compilers}
+    require(absolute_link_path(build) is not None, 'Expected an absolute mpv build directory')
+    require(isinstance(expanded, list) and all(isinstance(entry, dict) for entry in expanded),
+            'Invalid expanded Ninja compilation database')
+    entries = [entry for entry in expanded if entry.get('output') == 'mpv.exe']
+    require(len(entries) == 1, 'Require one actual expanded mpv.exe link edge')
+    entry = entries[0]
+    require(absolute_link_path(entry['directory']) == absolute_link_path(build),
+            'Expanded mpv.exe link belongs to another build directory')
+    command = entry['command']
+    require(isinstance(command, str) and '\n' not in command and '\r' not in command,
+            'Invalid expanded mpv.exe command')
+    arguments = shlex.split(command)
+    require(arguments and absolute_link_path(arguments[0]) in compilers,
+            'Unexpected mpv.exe linker compiler')
+    require(arguments.count('-o') == 1 and arguments.index('-o') + 1 < len(arguments) and
+            arguments[arguments.index('-o') + 1] == 'mpv.exe',
+            'Expanded link does not produce exactly mpv.exe')
+    require(not any(value.startswith('@') for value in arguments),
+            'Expanded mpv.exe command still contains an unresolved response file')
+    require(sum(absolute_link_path(value) == absolute_link_path(installed)
+                for value in arguments[1:]) == 1,
+            'mpv.exe link command does not consume the exact verified dependency archive')
+    raw_links = []
+    for line in commands.decode().splitlines():
+        values = shlex.split(line)
+        if not values or absolute_link_path(values[0]) not in compilers:
+            continue
+        response = len(values) == 2 and values[1] == '@mpv.exe.rsp'
+        output = values.count('-o') == 1 and values.index('-o') + 1 < len(values) and \
+                 values[values.index('-o') + 1] == 'mpv.exe'
+        if response or output:
+            raw_links.append((values, response))
+    require(len(raw_links) == 1, 'Require one matching raw mpv.exe Ninja link command')
+    raw, response = raw_links[0]
+    require(absolute_link_path(raw[0]) == absolute_link_path(arguments[0]) and
+            (response or raw == arguments), 'Raw and expanded mpv.exe link commands disagree')
+    lines = query.decode().splitlines()
+    require(len(lines) >= 3 and lines[0] == 'mpv.exe:' and
+            re.fullmatch(r'  input: (?:c|cpp)_LINKER' + ('_RSP' if response else ''), lines[1]),
+            'Unexpected actual mpv.exe link edge or response-file rule')
+    rule_name = lines[1][9:]
+    graph_raw, graph_expanded, graph_inputs = ninja_link_arguments(graph, rule_name, response)
+    require(raw == graph_raw and arguments == graph_expanded,
+            'Actual Ninja response content and expanded mpv.exe command disagree')
+    graph_direct = [absolute_link_path(value) or absolute_link_path(build / value) for value in graph_inputs]
+    require(graph_direct.count(absolute_link_path(installed)) == 1,
+            'Actual Ninja graph lacks the verified archive as a direct input')
+    require('  outputs:' in lines, 'Missing mpv.exe query input/output boundary')
+    direct = []
+    for line in lines[2:lines.index('  outputs:')]:
+        require(line.startswith('    '), 'Malformed mpv.exe query input')
+        value = line[4:]
+        if value.startswith('|| '):
+            continue  # An order-only dependency is not a consumed archive.
+        if value.startswith('| '):
+            value = value[2:]
+        require(value and not value.startswith('|'), 'Malformed mpv.exe direct input')
+        direct.append(absolute_link_path(value) or absolute_link_path(build / value))
+    require(direct.count(absolute_link_path(installed)) == 1,
+            'mpv.exe link edge does not have the exact verified archive as a direct input')
+    return command, {'output': 'mpv.exe', 'directory': str(build),
+                     'compiler': arguments[0], 'archive': str(installed),
+                     'query_rule': rule_name, 'response_file': response}
+
+
 def phase(args):
     winbuild = args.winbuild.resolve()
     if args.phase == 'cache':
@@ -394,18 +538,18 @@ def phase(args):
         require(sha(installed) == after['installed_archive_sha256'] == sha(evidence / 'libplacebo.a'),
                 'Linked dependency archive changed')
         mpv_build = winbuild / 'build64/packages/mpv-prefix/src/mpv-build'
+        # Preserve the real graph and raw schema before any link assertion.
+        # Ninja expands rspfile_content without executing a build or binary.
+        shutil.copyfile(mpv_build / 'build.ninja', evidence / 'mpv-build.ninja')
         commands = subprocess.check_output(['ninja', '-C', str(mpv_build), '-t', 'commands', 'mpv.exe'], timeout=60)
-        links = [line for line in commands.decode().splitlines()
-                 if re.search(r'(?:^|\s)-o\s+[\'\"]?mpv\.exe(?:[\'\"]?\s|$)', line)]
-        require(len(links) == 1 and str(installed) in links[0],
-                'mpv.exe link command does not consume the verified dependency archive')
-        query = subprocess.check_output(['ninja', '-C', str(mpv_build), '-t', 'query', 'mpv.exe'], timeout=60)
-        inputs = query.decode().split('  outputs:', 1)[0]
-        require(inputs.startswith('mpv.exe:') and str(installed) in inputs,
-                'mpv.exe link edge does not have the verified archive as a direct input')
         (evidence / 'mpv-build-commands.txt').write_bytes(commands)
-        (evidence / 'mpv-link-command.txt').write_text(links[0] + '\n')
+        query = subprocess.check_output(['ninja', '-C', str(mpv_build), '-t', 'query', 'mpv.exe'], timeout=60)
         (evidence / 'mpv-link-query.txt').write_bytes(query)
+        expanded = subprocess.check_output(['ninja', '-C', str(mpv_build), '-t', 'compdb', '-x'], timeout=60)
+        (evidence / 'mpv-expanded-compdb.json').write_bytes(expanded)
+        link, binding = check_mpv_link(winbuild, commands, query, json.loads(expanded),
+                                       (evidence / 'mpv-build.ninja').read_bytes())
+        (evidence / 'mpv-link-command.txt').write_text(link + '\n')
         inventory = []
         for recipe in preparation['git_inventory']:
             entry = dict(recipe)
@@ -430,6 +574,10 @@ def phase(args):
                           'archive_sha256': sha(installed), 'binaries': binaries,
                           'mpv_link_command_sha256': sha(evidence / 'mpv-link-command.txt'),
                           'mpv_link_query_sha256': sha(evidence / 'mpv-link-query.txt'),
+                          'mpv_build_commands_sha256': sha(evidence / 'mpv-build-commands.txt'),
+                          'mpv_expanded_compdb_sha256': sha(evidence / 'mpv-expanded-compdb.json'),
+                          'mpv_build_graph_sha256': sha(evidence / 'mpv-build.ninja'),
+                          'mpv_link_binding': binding,
                           'after_receipt_sha256': sha(evidence / 'after.json'), 'git_dependency_inventory': inventory}
         write(evidence / 'final.json', report)
         write(evidence / 'evidence-index.json', {p.relative_to(evidence).as_posix(): sha(p)
