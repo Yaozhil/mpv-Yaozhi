@@ -47,16 +47,17 @@ jobs:
           evidence="$GITHUB_WORKSPACE/link-evidence"
           mkdir "$evidence"
           test -s "$build/build.ninja"
-          command -v ninja
-          ninja --version > "$evidence/ninja-version.txt"
-          ninja -C "$build" -t commands mpv.exe > "$evidence/mpv-build-commands.txt"
-          ninja -C "$build" -t query mpv.exe > "$evidence/mpv-link-query.txt"
+          cp "$build/.ninja_log" "$evidence/"
+          /usr/bin/ninja --version > "$evidence/ninja-version.txt"
+          /usr/bin/ninja -C "$build" -t commands mpv.exe > "$evidence/mpv-build-commands.txt"
+          /usr/bin/ninja -C "$build" -t query mpv.exe > "$evidence/mpv-link-query.txt"
+          /usr/bin/ninja -C "$build" -t compdb -x > "$evidence/expanded-compdb.json"
           cp "$build/build.ninja" "$evidence/"
+          cp "$build/meson-private/rules.ninja" "$evidence/"
           cp "$build/meson-info/intro-targets.json" "$evidence/"
           cp "$build/meson-info/meson-info.json" "$evidence/"
           cp "$build/meson-info/intro-buildoptions.json" "$evidence/"
           cp "$build/compile_commands.json" "$evidence/"
-          cp "$build/.ninja_log" "$evidence/"
           cp winbuild/mpv-winbuild-cmake/build64/dependency-cache-identity.json "$evidence/"
           cp winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/lib/pkgconfig/libplacebo.pc "$evidence/"
           sha256sum winbuild/mpv-winbuild-cmake/build64/install/x86_64-w64-mingw32/lib/libplacebo.a > "$evidence/installed-libplacebo.sha256"
@@ -65,6 +66,7 @@ jobs:
           printf '%s\n' 40067764397 > "$evidence/source-build-run.txt"
           (cd "$evidence" && find . -type f ! -name evidence.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence.sha256)
       - uses: actions/upload-artifact@v6
+        if: always()
         with:
           name: exact-ci4-link-${{ matrix.variant }}
           path: link-evidence/
