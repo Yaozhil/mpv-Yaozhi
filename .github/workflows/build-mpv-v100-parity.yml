@@ -1187,6 +1187,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: mpv-dependency-identity-${{ matrix.variant }}
+          include-hidden-files: true
           path: |
             dependency-gate-contract-${{ matrix.variant }}.json
             dependency-compiled-source-${{ matrix.variant }}.json

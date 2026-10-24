@@ -713,7 +713,7 @@
       "build/atmos/parity/prepare-round2-winbuild.py": "3df5e2ea4a8f188de3cfe00e09335bf8d9c79ffd16d56be32e9facbc7ba9c831",
       "build/atmos/parity/verify-round2-source.py": "f562d35c538f12da1c80d574fc5c65511e3a4a909131b2247505327a70829005",
       "build/atmos/parity/test-round2-source-gate.py": "9f0100ef9187ca1166eb105edd1909177beebc67a054921a60f07f40845582a7",
-      ".github/workflows/build-mpv-v100-parity.yml": "0c0a6362c42221c4ab0bcbcf4e4a071237993e46486b3221c3705a0ddb64c9de"
+      ".github/workflows/build-mpv-v100-parity.yml": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864"
     },
     "scope": "ASS packet state and no-position deduplication; Matroska signed padding and early seek; Lua/JavaScript integer boundaries.",
     "dependency_versions_unchanged": true,
@@ -803,7 +803,7 @@
       }
     },
     "tools_sha256": {
-      ".github/workflows/build-mpv-v100-parity.yml": "0c0a6362c42221c4ab0bcbcf4e4a071237993e46486b3221c3705a0ddb64c9de",
+      ".github/workflows/build-mpv-v100-parity.yml": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864",
       "build/atmos/parity/dependency-lock.json": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
       "build/atmos/parity/prepare-dependency-lock.py": "348079f571c794a70501e8c1efb328df850b5dfba3cd59c2406c05a2214967e1",
       "build/atmos/parity/prepare-network-winbuild.py": "6cdba6f6b443da742f46e0f30a274f45e81f2db3060544fe53e490aa4576aacc",
@@ -828,7 +828,7 @@
     },
     "historical_workflow_identity_refresh": {
       "before": "64d83a8dc48e9ff91d3b1149ecff46a44dd47dec00100cba9d760788eae53e03",
-      "after": "0c0a6362c42221c4ab0bcbcf4e4a071237993e46486b3221c3705a0ddb64c9de",
+      "after": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864",
       "historical_runtime_source_and_patch_constraints_unchanged": true
     }
   }
