@@ -145,14 +145,45 @@ def check_options(build, lock, prefix):
     return {'sha256': sha(options_path), 'values': options}
 
 
+def configured_resource_input(source, build, path, target):
+    """Recognize the pinned LP configure_file -> Windows resource input only."""
+    expected = build / 'win32/libplacebo.rc'
+    require(path == expected and path.is_file() and not path.is_symlink(),
+            'Configured source escaped locked trees: ' + str(path))
+    require(target['type'] == 'custom' and target.get('name') == 'libplacebo.rc' and
+            Path(target['defined_in']).resolve() == source / 'src/meson.build',
+            'Configured resource belongs to an unexpected target: ' + str(path))
+    declaration = (source / 'win32/meson.build').read_text()
+    require(re.search(r"libplacebo_rc\s*=\s*configure_file\(\s*input:\s*'libplacebo\.rc\.in',\s*"
+                      r"output:\s*'libplacebo\.rc',\s*configuration:\s*version_config\s*\)", declaration),
+            'Missing locked configure_file resource declaration: ' + str(path))
+    consumer = (source / 'src/meson.build').read_text()
+    require(re.search(r'windows\.compile_resources\(libplacebo_rc\s*,', consumer),
+            'Missing locked Windows resource consumer: ' + str(path))
+    template = source / 'win32/libplacebo.rc.in'
+    buildsystem = read(build / 'meson-info/intro-buildsystem_files.json')
+    require(template in [Path(name).resolve() for name in buildsystem],
+            'Resource template is not a Meson configuration input: ' + str(template))
+    project = read(build / 'meson-info/intro-projectinfo.json')
+    # These units are fixed by the already checked c9076f7 source tree. Do not
+    # accept arbitrary generated C files or arbitrary resource configuration.
+    require(project['version'] == '7.387.0', 'Unexpected locked LP resource version: ' + str(path))
+    expected_text = template.read_text()
+    for key, value in zip(('PL_MAJOR', 'PL_MINOR', 'PL_PATCH'), ('7', '387', '0')):
+        require('@' + key + '@' in expected_text, 'Missing locked resource substitution: ' + str(template))
+        expected_text = expected_text.replace('@' + key + '@', value)
+    require(path.read_text() == expected_text, 'Configured resource differs from locked template: ' + str(path))
+    return path.relative_to(build).as_posix()
+
+
 def check_build_graph(winbuild, source, build):
     source, build = source.resolve(), build.resolve()
     expected = winbuild / 'build64/packages/libplacebo-prefix/src/libplacebo-build'
-    require(build == expected, 'Wrong actual libplacebo compiler build directory')
+    require(build == expected, 'Wrong actual libplacebo compiler build directory: ' + str(build))
     info = read(build / 'meson-info/meson-info.json')
     require(Path(info['directories']['source']).resolve() == source and
             Path(info['directories']['build']).resolve() == build,
-            'Meson source/build directories differ from the locked compilation')
+            'Meson source/build directories differ from the locked compilation: ' + repr(info['directories']))
     machines = read(build / 'meson-info/intro-machines.json')
     for name in ('host', 'target'):
         machine = machines[name]
@@ -172,7 +203,7 @@ def check_build_graph(winbuild, source, build):
     cpp = Path(ast.literal_eval(cross_config['binaries']['cpp'])).absolute()
     require(compiler == winbuild / 'build64/install/bin/x86_64-w64-mingw32-gcc' and
             cpp == winbuild / 'build64/install/bin/x86_64-w64-mingw32-g++',
-            'Cross file selects an unexpected compiler')
+            'Cross file selects an unexpected compiler: ' + str(compiler) + ' / ' + str(cpp))
     machine = subprocess.check_output([str(compiler), '-dumpmachine'], timeout=60).decode().strip()
     require(machine == 'x86_64-w64-mingw32', 'Compiler target differs from Windows x86_64')
     targets = read(build / 'meson-info/intro-targets.json')
@@ -180,49 +211,53 @@ def check_build_graph(winbuild, source, build):
     placebo = [target for target in targets if target['type'] == 'static library' and
                archive in [Path(name).resolve() for name in target['filename']]]
     require(len(placebo) == 1, 'Missing unique configured libplacebo static archive target')
-    generated, declared, object_roots = set(), set(), []
+    generated, declared, object_roots, configured_inputs = set(), set(), [], set()
     roots = [(winbuild / 'src_packages' / name).resolve() for name in ('libplacebo', 'glad', 'fast_float')]
     for target in targets:
         require(Path(target['defined_in']).resolve().is_relative_to(source),
-                'Build target is defined outside the locked source')
+                'Build target is defined outside the locked source: ' + str(target['defined_in']))
         filenames = [Path(name).resolve() for name in target['filename']]
         if target['type'] == 'custom':
-            require(all(name.is_relative_to(build) for name in filenames), 'Generated target escaped the build')
+            require(all(name.is_relative_to(build) for name in filenames), 'Generated target escaped the build: ' + repr(filenames))
             generated.update(filenames)
         if target['type'] == 'static library':
             object_roots.extend(Path(str(name) + '.p') for name in filenames)
         for group in target.get('target_sources', []):
             for name in group.get('sources', []):
                 path = Path(name).resolve()
-                require(any(path.is_relative_to(root) for root in roots), 'Configured source escaped locked trees')
+                if not any(path.is_relative_to(root) for root in roots):
+                    configured_inputs.add(configured_resource_input(source, build, path, target))
                 declared.add(path)
             for name in group.get('generated_sources', []):
                 path = Path(name).resolve()
-                require(path.is_relative_to(build), 'Configured generated source escaped build')
+                require(path.is_relative_to(build), 'Configured generated source escaped build: ' + str(path))
                 generated.add(path)
     commands = read(build / 'compile_commands.json')
     require(bool(commands), 'No libplacebo compilation commands')
     actual_inputs = []
     for command in commands:
         directory = Path(command['directory']).resolve()
-        require(directory == build, 'Compilation command belongs to another build directory')
+        require(directory == build, 'Compilation command belongs to another build directory: ' + str(directory))
         path = Path(command['file'])
         path = (directory / path).resolve() if not path.is_absolute() else path.resolve()
-        require(path in declared or path in generated, 'Compilation input not declared by the locked Meson graph')
+        require(path in declared or path in generated, 'Compilation input not declared by the locked Meson graph: ' + str(path))
         output = Path(command['output'])
         output = (directory / output).resolve() if not output.is_absolute() else output.resolve()
         require(any(output.is_relative_to(root) for root in object_roots),
-                'Compilation output does not belong to a configured static archive')
+                'Compilation output does not belong to a configured static archive: ' + str(output))
         invocation = command.get('command', ' '.join(command.get('arguments', [])))
         require(str(compiler) in invocation or str(cpp) in invocation or 'windres' in invocation,
-                'Compilation command selects an unexpected compiler')
+                'Compilation command selects an unexpected compiler: ' + invocation)
         actual_inputs.append({'source': str(path), 'output': str(output)})
     return {'source_directory': str(source), 'build_directory': str(build),
             'compiler_machine': machine, 'compiler_sha256': sha(compiler),
             'cpp_compiler_sha256': sha(cpp), 'compile_inputs': actual_inputs,
+            'configured_inputs': sorted(configured_inputs),
             'metadata_sha256': {name: sha(build / name) for name in (
                 'meson-info/meson-info.json', 'meson-info/intro-machines.json',
-                'meson-info/intro-targets.json', 'meson-private/cmd_line.txt', 'compile_commands.json')}}
+                'meson-info/intro-targets.json', 'meson-private/cmd_line.txt', 'compile_commands.json',
+                *sorted(configured_inputs),
+                *(('meson-info/intro-buildsystem_files.json', 'meson-info/intro-projectinfo.json') if configured_inputs else ()))}}
 
 
 def cache(winbuild, variant):
@@ -299,10 +334,12 @@ def phase(args):
     if args.phase == 'before':
         require(os.environ.get('PYTHONDONTWRITEBYTECODE') == '1', 'Generator bytecode guard is missing')
         require(args.source.resolve() == winbuild / 'src_packages/libplacebo', 'Wrong compiler source directory')
+        require(args.build.resolve() == winbuild / 'build64/packages/libplacebo-prefix/src/libplacebo-build',
+                'Wrong actual compiler build directory: ' + str(args.build))
         options = check_options(args.build, lock, args.prefix)
-        graph = check_build_graph(winbuild, args.source, args.build)
         require(not (evidence / 'before.json').exists(), 'Dependency build receipt already exists')
-        snapshot(winbuild, manifest, evidence)
+        # Keep the raw real schema even when a new guard rejects it. These
+        # files alone never constitute a successful compiler-input receipt.
         for relative in ('build.ninja', 'compile_commands.json', 'meson-info/intro-buildoptions.json',
                          'meson-logs/meson-log.txt', 'meson-info/meson-info.json',
                          'meson-info/intro-machines.json', 'meson-info/intro-targets.json',
@@ -312,6 +349,14 @@ def phase(args):
             destination = evidence / 'configuration' / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
+        graph = check_build_graph(winbuild, args.source, args.build)
+        for relative in (*graph['configured_inputs'],
+                         *(('meson-info/intro-buildsystem_files.json', 'meson-info/intro-projectinfo.json')
+                           if graph['configured_inputs'] else ())):
+            destination = evidence / 'configuration' / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(args.build / relative, destination)
+        snapshot(winbuild, manifest, evidence)
         cross = winbuild / 'build64/meson_cross.txt'
         shutil.copyfile(cross, evidence / 'configuration/meson_cross.txt')
         write(evidence / 'before.json', common | {'status': 'PASS_DEPENDENCY_COMPILER_INPUTS',

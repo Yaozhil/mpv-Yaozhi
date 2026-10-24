@@ -234,6 +234,58 @@ def main():
         check('Compilation command uses unrelated build directory', lambda: verify.check_build_graph(winbuild, lp, build), True)
         command['directory'] = str(build)
         verify.write(build / 'compile_commands.json', [command])
+        # Meson 1.12.1 classifies configure_file -> Windows resource input
+        # under custom target `sources`, not under `generated_sources`.
+        (lp / 'win32').mkdir()
+        (lp / 'win32/meson.build').write_text(
+            "libplacebo_rc = configure_file(input: 'libplacebo.rc.in',\n"
+            "                               output: 'libplacebo.rc',\n"
+            "                               configuration: version_config)\n")
+        (lp / 'src').mkdir()
+        (lp / 'src/meson.build').write_text("sources += windows.compile_resources(libplacebo_rc, depends: version_h)\n")
+        template = lp / 'win32/libplacebo.rc.in'
+        template.write_text('FILEVERSION @PL_MAJOR@, @PL_MINOR@, @PL_PATCH@\n')
+        resource = build / 'win32/libplacebo.rc'
+        resource.parent.mkdir()
+        resource.write_text('FILEVERSION 7, 387, 0\n')
+        verify.write(build / 'meson-info/intro-projectinfo.json', {'version':'7.387.0'})
+        verify.write(build / 'meson-info/intro-buildsystem_files.json', [str(template)])
+        resource_target = {'name':'libplacebo.rc','type':'custom','defined_in':str(lp/'src/meson.build'),
+            'filename':[str(build/'src/win32_libplacebo.rc_libplacebo.o')],
+            'target_sources':[{'sources':[str(resource)],'generated_sources':[]}]}
+        target_path = build / 'meson-info/intro-targets.json'
+        original_targets = target_path.read_bytes()
+        targets = verify.read(target_path)
+        targets.append(resource_target)
+        verify.write(target_path,targets)
+        check('Meson configured resource input exact declaration and bytes',lambda:verify.check_build_graph(winbuild,lp,build))
+        resource.write_text('FILEVERSION 7, 387, 0\nint injected_code;\n')
+        check('configured resource injected bytes',lambda:verify.check_build_graph(winbuild,lp,build),True)
+        resource.write_text('FILEVERSION 7, 387, 0\n')
+        (lp / 'win32/meson.build').write_text("libplacebo_rc = 'unrelated resource'\n")
+        check('configured resource missing source declaration',lambda:verify.check_build_graph(winbuild,lp,build),True)
+        (lp / 'win32/meson.build').write_text(
+            "libplacebo_rc = configure_file(input: 'libplacebo.rc.in', output: 'libplacebo.rc', configuration: version_config)\n")
+        verify.write(build / 'meson-info/intro-buildsystem_files.json', [])
+        check('configured resource template not a configure input',lambda:verify.check_build_graph(winbuild,lp,build),True)
+        verify.write(build / 'meson-info/intro-buildsystem_files.json', [str(template)])
+        rogue = build / 'win32/unregistered.c'
+        rogue.write_text('int unregistered;\n')
+        resource_target['target_sources'][0]['sources']=[str(rogue)]
+        verify.write(target_path,targets)
+        check('unregistered C source inside fixed build rejected',lambda:verify.check_build_graph(winbuild,lp,build),True)
+        resource_target['target_sources'][0]['sources']=[str(root/'escaped.c')]
+        verify.write(target_path,targets)
+        check('configured source outside build rejected',lambda:verify.check_build_graph(winbuild,lp,build),True)
+        resource_target['target_sources'][0]['sources']=[str(resource)]
+        resource_target['defined_in']=str(root/'other-meson.build')
+        verify.write(target_path,targets)
+        check('resource definition outside locked source rejected',lambda:verify.check_build_graph(winbuild,lp,build),True)
+        target_path.write_bytes(original_targets)
+        # Remove the schema-only source fixture additions before exercising
+        # the original locked repository compiler lifecycle below.
+        shutil.rmtree(lp / 'win32')
+        shutil.rmtree(lp / 'src')
         os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
         phase = SimpleNamespace(winbuild=winbuild, variant='main', source=lp, build=build,
                                 prefix=prefix, binary=[], phase='before')
