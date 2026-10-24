@@ -75,7 +75,9 @@
     "build/bluray-menu/patches/0058-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
     "build/bluray-menu/patches/0059-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
     "build/bluray-menu/patches/0060-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
-    "build/bluray-menu/patches/0061-upstream-stability-round2.patch": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b"
+    "build/bluray-menu/patches/0061-upstream-stability-round2.patch": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+    "build/bluray-menu/patches/0062-windows-paths-and-pipes.patch": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+    "build/bluray-menu/patches/0063-http-range-boundaries.patch": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46"
   },
   "engine_cargo_lock_sha256": "7f345c3eb818f83718300fabc03c20de1d2094f8a18d8e675febc81ba5a9442e",
   "libvpl_commit": "674d015bcb294bc39fa276e99a652ea045423e82",
@@ -711,10 +713,123 @@
       "build/atmos/parity/prepare-round2-winbuild.py": "3df5e2ea4a8f188de3cfe00e09335bf8d9c79ffd16d56be32e9facbc7ba9c831",
       "build/atmos/parity/verify-round2-source.py": "f562d35c538f12da1c80d574fc5c65511e3a4a909131b2247505327a70829005",
       "build/atmos/parity/test-round2-source-gate.py": "9f0100ef9187ca1166eb105edd1909177beebc67a054921a60f07f40845582a7",
-      ".github/workflows/build-mpv-v100-parity.yml": "64d83a8dc48e9ff91d3b1149ecff46a44dd47dec00100cba9d760788eae53e03"
+      ".github/workflows/build-mpv-v100-parity.yml": "0c0a6362c42221c4ab0bcbcf4e4a071237993e46486b3221c3705a0ddb64c9de"
     },
     "scope": "ASS packet state and no-position deduplication; Matroska signed padding and early seek; Lua/JavaScript integer boundaries.",
     "dependency_versions_unchanged": true,
     "runtime_verified": false
+  },
+  "network_stability": {
+    "version": 1,
+    "patches": [
+      {
+        "path": "build/bluray-menu/patches/0062-windows-paths-and-pipes.patch",
+        "sha256": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+        "changed_files": [
+          "misc/path_utils.c",
+          "options/parse_commandline.c",
+          "osdep/io.c",
+          "test/paths.c"
+        ]
+      },
+      {
+        "path": "build/bluray-menu/patches/0063-http-range-boundaries.patch",
+        "sha256": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46",
+        "changed_files": [
+          "stream/stream_curl.c"
+        ]
+      }
+    ],
+    "variants": {
+      "main": {
+        "baseline_commit": "3021bdff0d1934f621bf957dd97da7321bd2a0c5",
+        "source_commit": "7b13e97d5ce4f93b78c001a43ecd5158a70b4fdc",
+        "baseline_tree": "8c152fe3e98eb515165fec4b4f65048706bb1d24",
+        "source_tree": "c979f78e6702fd78c5a3263cc2b752c7972c6b92",
+        "step_trees": [
+          "595e9aad00beff2dbfe75073ed3b0429eee6ff6a",
+          "c979f78e6702fd78c5a3263cc2b752c7972c6b92"
+        ],
+        "archive_baseline_tree": "6620a2a543b31caa7a068bf5f339dde1b97fb744",
+        "archive_source_tree": "d76378c8728888a4f7b2b64401a3b1a64771a3be",
+        "archive_step_trees": [
+          "46805b2f0cca3eb734861d33619efb0750a0ceb4",
+          "d76378c8728888a4f7b2b64401a3b1a64771a3be"
+        ],
+        "before_source_sha256": {
+          "misc/path_utils.c": "4f279a51859cd611186d19e16b73c9738390f727fc8d0c6b387afd218969a93a",
+          "options/parse_commandline.c": "25503037f07ae92f5bc5086ffb85ae92e4dff604eef6932d9607749029aee177",
+          "osdep/io.c": "898dfb39bde0315decf3da608459e85af661878f3815530e7a4617942a3de990",
+          "stream/stream_curl.c": "1f0d6c64427e73da2c6b220a1d9d4c77f617a0b7f31c4c80bbe480dfa9fcada7",
+          "test/paths.c": "5f38932f0e8e941f4e6a8039dc2b8a612d1c76dc6cb2f8eb9f7fb3c8311b08c5"
+        },
+        "source_sha256": {
+          "misc/path_utils.c": "90bc28c668da1b1137bf18f13e77e2a0237a4961e0771ae64cfd057acc676101",
+          "options/parse_commandline.c": "d9946574dc94e8a2af9d8ce24746918156b005c8685b44e5fba1868f333085c8",
+          "osdep/io.c": "225ac9d11b0ffb30f02f695e349e119b501a567098c2bbbceeefc201eeecb9f7",
+          "stream/stream_curl.c": "68efa6b1cc0fa48d9f522b86528059b6528d8226f9f179a9e321051a3f065e7c",
+          "test/paths.c": "8a91df9a0a5c090cf270a52ca8500b7177def357ce5bba8a193e37c544d047c9"
+        }
+      },
+      "atmos": {
+        "baseline_commit": "02b55413dad0883eee1abeb8d405befc51ffc976",
+        "source_commit": "b3a9a84261ed1810ef26e5fe0309d6de724126cb",
+        "baseline_tree": "604797cad509130af1ccda4b60dac25a76b23e53",
+        "source_tree": "a1ddecf31992defadcc62349c9daea0ab61916a4",
+        "step_trees": [
+          "74869dc83146547d0187d0dad731d76f5bf884cb",
+          "a1ddecf31992defadcc62349c9daea0ab61916a4"
+        ],
+        "archive_baseline_tree": "0be07e1bbf99a4e3b59ab298d9f68e52abfaaa53",
+        "archive_source_tree": "5806a5fe7d006d7fc567a882fd8fabcf1f7ee83f",
+        "archive_step_trees": [
+          "de6f4933f44fcf32553cc5ef75292fd913a4f40a",
+          "5806a5fe7d006d7fc567a882fd8fabcf1f7ee83f"
+        ],
+        "before_source_sha256": {
+          "misc/path_utils.c": "4f279a51859cd611186d19e16b73c9738390f727fc8d0c6b387afd218969a93a",
+          "options/parse_commandline.c": "25503037f07ae92f5bc5086ffb85ae92e4dff604eef6932d9607749029aee177",
+          "osdep/io.c": "898dfb39bde0315decf3da608459e85af661878f3815530e7a4617942a3de990",
+          "stream/stream_curl.c": "1f0d6c64427e73da2c6b220a1d9d4c77f617a0b7f31c4c80bbe480dfa9fcada7",
+          "test/paths.c": "5f38932f0e8e941f4e6a8039dc2b8a612d1c76dc6cb2f8eb9f7fb3c8311b08c5"
+        },
+        "source_sha256": {
+          "misc/path_utils.c": "90bc28c668da1b1137bf18f13e77e2a0237a4961e0771ae64cfd057acc676101",
+          "options/parse_commandline.c": "d9946574dc94e8a2af9d8ce24746918156b005c8685b44e5fba1868f333085c8",
+          "osdep/io.c": "225ac9d11b0ffb30f02f695e349e119b501a567098c2bbbceeefc201eeecb9f7",
+          "stream/stream_curl.c": "68efa6b1cc0fa48d9f522b86528059b6528d8226f9f179a9e321051a3f065e7c",
+          "test/paths.c": "8a91df9a0a5c090cf270a52ca8500b7177def357ce5bba8a193e37c544d047c9"
+        }
+      }
+    },
+    "tools_sha256": {
+      ".github/workflows/build-mpv-v100-parity.yml": "0c0a6362c42221c4ab0bcbcf4e4a071237993e46486b3221c3705a0ddb64c9de",
+      "build/atmos/parity/dependency-lock.json": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
+      "build/atmos/parity/prepare-dependency-lock.py": "348079f571c794a70501e8c1efb328df850b5dfba3cd59c2406c05a2214967e1",
+      "build/atmos/parity/prepare-network-winbuild.py": "6cdba6f6b443da742f46e0f30a274f45e81f2db3060544fe53e490aa4576aacc",
+      "build/atmos/parity/test-dependency-build-gate.py": "d07d2cdb51a9504840840bbd209a6ad4fed593ed1c6940c50c394b8c782f21d6",
+      "build/atmos/parity/test-network-source-gate.py": "26e6f07f32d4fb41df1021101f0067ecb2f085c6e633369aab25790d571c58b7",
+      "build/atmos/parity/tests/http-playback-runtime.py": "b0c41284445ebc6c2b91085beaf487ac62cffd1c4718e51301700e87de02e254",
+      "build/atmos/parity/tests/http-range-runtime.py": "f7d66320faf2cfdcdd2cdc3c7afc755e3c2e7128dfc7d107a53a8b67cdc47d99",
+      "build/atmos/parity/tests/windows-paths-runtime.lua": "ce62eb118e67ed0e23d3eb5e83e2f597a17aef382d4b8015b5d9a664198e142a",
+      "build/atmos/parity/tests/windows-paths-runtime.py": "aaf7e9993dedf53f38587dca17c2a5bcf060c81c1e6de572becf5359ce8503de",
+      "build/atmos/parity/verify-dependency-build.py": "9a02f533e3f2fdaa1a4505edc3ce65f403ab7ef11ab2948a00b32dbf2ba73b27",
+      "build/atmos/parity/verify-network-source.py": "f423b3463d0de7d9ecce530ea86af3dbdf693f9762bf29227eadb869d378a601"
+    },
+    "scope": "Windows path normalization, PWD/errno/pipe handling; bounded HTTP Range continuation and EOF validation.",
+    "dependency_lock_sha256": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
+    "runtime_verified": false,
+    "dependency_baseline_correction": {
+      "previous_libplacebo": "v7.380.0 / bb4d5a4-dirty",
+      "installed_round2_libplacebo": "v7.387.0 / c9076f7-dirty",
+      "historical_dependency_versions_unchanged_claim_incorrect_for_libplacebo": true,
+      "previous_external_glad_fast_float_exact_identity_not_retained": true,
+      "previous_sealed_evidence_unmodified": true
+    },
+    "historical_workflow_identity_refresh": {
+      "before": "64d83a8dc48e9ff91d3b1149ecff46a44dd47dec00100cba9d760788eae53e03",
+      "after": "0c0a6362c42221c4ab0bcbcf4e4a071237993e46486b3221c3705a0ddb64c9de",
+      "historical_runtime_source_and_patch_constraints_unchanged": true
+    }
   }
 }

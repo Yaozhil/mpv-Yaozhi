@@ -66,6 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
+      PYTHONDONTWRITEBYTECODE: '1'
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
       MPV_COMMIT: c318236b8882af860f16f936225430ad053a2179
@@ -699,10 +700,14 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          python3 build/atmos/parity/prepare-round2-winbuild.py \
+          python3 build/atmos/parity/prepare-network-winbuild.py \
             --winbuild winbuild/mpv-winbuild-cmake \
             --variant '${{ matrix.variant }}' \
             --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
+          python3 build/atmos/parity/prepare-dependency-lock.py \
+            --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
+          python3 build/atmos/parity/test-dependency-build-gate.py \
+            --output "dependency-gate-contract-${{ matrix.variant }}.json"
 
       - name: Preflight mpv patch chain before dependency build
         shell: bash
@@ -741,6 +746,14 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-network-source-gate.py" \
+            --output "$GITHUB_WORKSPACE/network-gate-contract-${{ matrix.variant }}"
+          network_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-network-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/network-source-${{ matrix.variant }}.json"
+          round2_parent="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/network-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$round2_parent"
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-round2-source-gate.py" \
             --output "$GITHUB_WORKSPACE/round2-gate-contract-${{ matrix.variant }}"
           round2_final_commit="$(git rev-parse HEAD)"
@@ -802,9 +815,13 @@ jobs:
           python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/round2-source-restored-${{ matrix.variant }}.json"
+          git checkout --detach "$network_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-network-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --output "$GITHUB_WORKSPACE/network-source-restored-${{ matrix.variant }}.json"
 
       - name: Upload Native ASS integration preflight evidence
-        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '' || hashFiles('round2-source-*.json') != '')
+        if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '' || hashFiles('round2-source-*.json') != '' || hashFiles('network-source-*.json') != '')
         uses: actions/upload-artifact@v6
         with:
           name: mpv-native-ass-integration-${{ matrix.variant }}
@@ -823,6 +840,9 @@ jobs:
             round2-source-${{ matrix.variant }}.json
             round2-source-restored-${{ matrix.variant }}.json
             round2-gate-contract-${{ matrix.variant }}/
+            network-source-${{ matrix.variant }}.json
+            network-source-restored-${{ matrix.variant }}.json
+            network-gate-contract-${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 7
 
@@ -835,12 +855,9 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
-          restore-keys: |
-            mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-
-            mpv-v100-main-ubuntu-gcc64-
-            mpv-v100-atmos-ubuntu-gcc64-
-            mpv-hdr-pgs-av3a-schannel-v1-ubuntu-gcc64-
+          # A dependency lock is a cache boundary. Never restore an older
+          # dependency generation or the other variant's patched source cache.
+          key: mpv-dependency-v1-${{ matrix.variant }}-${{ hashFiles('build/atmos/parity/dependency-lock.json') }}-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
 
       - name: Verify and preserve pinned GCC source archive
         id: gcc-source-archive
@@ -893,6 +910,11 @@ jobs:
           rm -f release/mpv-x86_64-*.7z \
             install/x86_64-w64-mingw32/bin/mpv.exe \
             install/x86_64-w64-mingw32/bin/mpv.com
+
+          # Reject unidentified cache contents, then rebuild the locked
+          # rendering inputs and archive even after an exact cache hit.
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-dependency-build.py" \
+            --winbuild "$PWD" --variant '${{ matrix.variant }}' --phase cache
 
           # FFmpeg's patched headers and executable can be rebuilt while an
           # older static libavformat archive remains in the shared install
@@ -976,7 +998,10 @@ jobs:
           if [ -f "$curl_done" ]; then
             echo "Reusing cached libcurl Schannel build"
           else
-            timeout --foreground 25m ninja -j2 -C build64 update
+            # All curl inputs have explicit pins. A global update would also
+            # advance unrelated branch-based dependencies behind our back.
+            timeout --foreground 25m ninja -j2 -C build64 \
+              curl-force-update libpsl-force-update libssh-force-update openssl-force-update
             if ! timeout --foreground 25m ninja -C build64 curl; then
               for log in \
                 build64/packages/curl-prefix/src/curl-stamp/curl-configure-out.log \
@@ -1139,17 +1164,43 @@ jobs:
           winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
           built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
           test -n "$built_dir"
-          python3 build/atmos/parity/verify-round2-source.py \
+          python3 build/atmos/parity/verify-network-source.py \
             --source "$winbuild/src_packages/mpv" --variant '${{ matrix.variant }}' \
             --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
-            --output "round2-compiled-source-${{ matrix.variant }}.json"
+            --output "network-compiled-source-${{ matrix.variant }}.json"
 
-      - name: Upload final compiled mpv source evidence
-        if: always() && hashFiles('round2-compiled-source-*.json') != ''
+      - name: Bind compiled rendering dependency and source snapshots
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
+          built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          python3 build/atmos/parity/verify-dependency-build.py \
+            --winbuild "$winbuild" --variant '${{ matrix.variant }}' --phase final \
+            --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
+            --output "dependency-compiled-source-${{ matrix.variant }}.json"
+
+      - name: Upload rendering dependency identity evidence
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: mpv-round2-compiled-source-${{ matrix.variant }}
-          path: round2-compiled-source-${{ matrix.variant }}.json
+          name: mpv-dependency-identity-${{ matrix.variant }}
+          path: |
+            dependency-gate-contract-${{ matrix.variant }}.json
+            dependency-compiled-source-${{ matrix.variant }}.json
+            winbuild/mpv-winbuild-cmake/dependency-preparation.json
+            winbuild/mpv-winbuild-cmake/dependency-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload final compiled mpv source evidence
+        if: always() && hashFiles('network-compiled-source-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-network-compiled-source-${{ matrix.variant }}
+          path: network-compiled-source-${{ matrix.variant }}.json
           if-no-files-found: error
           retention-days: 7
 
@@ -1274,7 +1325,7 @@ jobs:
             winbuild/mpv-winbuild-cmake/src_packages
             winbuild/mpv-winbuild-cmake/install_rustup
             .ccache
-          key: mpv-v100-${{ matrix.variant }}-ubuntu-gcc64-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
+          key: mpv-dependency-v1-${{ matrix.variant }}-${{ hashFiles('build/atmos/parity/dependency-lock.json') }}-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
 
       - name: Collect failed build logs
         if: always() && !cancelled() && (failure() || steps.build.outcome == 'failure')
