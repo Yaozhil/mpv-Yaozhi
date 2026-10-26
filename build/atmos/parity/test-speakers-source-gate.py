@@ -145,6 +145,28 @@ def main():
         binary_refuse('same-digest-different-binary-path-refused',binaries,wrong)
         wrong=copy.deepcopy(binaries);wrong[0]['sha256']='f'*64
         binary_refuse('same-path-different-binary-digest-refused',binaries,wrong)
+        # Reproduce the CI checkout layout, rather than placing legacy config
+        # outside every Git repository as the original local fixture did.
+        outer=root/'current-config-checkout';outer.mkdir();git(outer,'init','--quiet')
+        nested=outer/'uninitialized-legacy';nested.mkdir()
+        parent_gate=gate.load_parent_gate()
+        actual_patch=HERE.parents[2]/'build/bluray-menu/patches/0062-windows-paths-and-pipes.patch'
+        nested_patch=nested/'windows-paths.patch';nested_patch.write_bytes(actual_patch.read_bytes())
+        assert parent_gate.changed_paths(nested,nested_patch)==[], 'Expected outer Git prefix filtering before init'
+        results.append({'case':'nested-legacy-without-own-git-root-reproduces-empty-old-scope','passed':True})
+        git(nested,'init','--quiet')
+        expected_scope=['misc/path_utils.c','options/parse_commandline.c','osdep/io.c','test/paths.c']
+        assert parent_gate.changed_paths(nested,nested_patch)==expected_scope
+        results.append({'case':'nested-legacy-git-init-restores-exact-original-scope','passed':True})
+        actual_legacy=outer/'legacy-network-config'
+        prepared=gate.prepare_legacy_config(actual_legacy)
+        assert prepared['parent_config_commit']==gate.PARENT_CONFIG
+        assert Path(git(actual_legacy,'rev-parse','--show-toplevel').decode().strip()).resolve()==actual_legacy.resolve()
+        legacy_gate=gate.load_parent_gate(actual_legacy)
+        legacy_patch=actual_legacy/'build/bluray-menu/patches/0062-windows-paths-and-pipes.patch'
+        assert legacy_gate.changed_paths(actual_legacy,legacy_patch)==expected_scope
+        assert (actual_legacy/'build/atmos/parity/verify-preselections-source.py').read_bytes()==(HERE/'verify-preselections-source.py').read_bytes()
+        results.append({'case':'actual-legacy-archive-preparation-has-independent-nested-git-root','passed':True})
     report={'passed':True,'cases':results,'count':len(results),
         'gate_sha256':sha((HERE/'verify-speakers-source.py').read_bytes())}
     a.output.parent.mkdir(parents=True,exist_ok=True)

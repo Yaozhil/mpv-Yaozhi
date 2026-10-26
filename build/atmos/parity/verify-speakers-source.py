@@ -133,6 +133,12 @@ def prepare_legacy_config(destination,config=CONFIG):
             os.chmod(path,member.mode)
     require(sha((destination/'build/atmos/parity/source-lock.json').read_bytes())==PARENT_LOCK_SHA256,
             'Materialized legacy configuration differs')
+    # CI places this view inside the current checkout. Give it an independent
+    # Git root so the unchanged parent `git apply --numstat` commands do not
+    # inherit the outer repository's subdirectory prefix and filter all paths.
+    git(destination,'init','--quiet')
+    require(Path(git(destination,'rev-parse','--show-toplevel').decode().strip()).resolve()==destination.resolve(),
+            'Legacy configuration must have its own independent Git root')
     return {'parent_config_commit':PARENT_CONFIG,'archive_sha256':sha(archive),
             'files':sum(m.isfile() for m in members),'bytes':total,
             'parent_source_lock_sha256':PARENT_LOCK_SHA256}
