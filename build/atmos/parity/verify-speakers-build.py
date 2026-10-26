@@ -68,6 +68,26 @@ def resolve_archive(arguments,cwd,expected):
     else:require(direct[0]==expected,'Explicit speaker archive link differs')
     return {'archive':str(expected),'sha256':sha(expected),'link_kind':'search' if direct[0]=='search' else 'explicit'}
 
+def ffmpeg_link_command(raw):
+    links=[]
+    for line in raw.decode('utf-8','replace').splitlines():
+        try:args=shlex.split(line)
+        except ValueError:continue
+        if len(args)<3 or '-o' not in args:continue
+        index=args.index('-o')
+        if index+1<len(args) and args[index+1] in ('ffmpeg_g.exe','ffmpeg.exe'):
+            # FFmpeg's real verbose Make log also includes its post-link strip
+            # command. Exclude only the exact conversion observed in CI; an
+            # unknown output command or extra strip arguments remain a refusal.
+            if (Path(args[0]).name=='x86_64-w64-mingw32-strip' and
+                    args[1:]==['-o','ffmpeg.exe','ffmpeg_g.exe']):
+                continue
+            links.append(args)
+    require(len(links)==1,'Require one actual complete FFmpeg executable linker command')
+    require(Path(links[0][0]).name in ('x86_64-w64-mingw32-g++','x86_64-w64-mingw32-gcc','cross-g++','cross-gcc'),
+            'Unexpected FFmpeg linker compiler')
+    return links[0]
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--phase',choices=['before','after','final'],required=True)
@@ -142,18 +162,7 @@ def main():
         log_path=w/'build64/packages/ffmpeg-prefix/src/ffmpeg-stamp/ffmpeg-build-out.log'
         require(log_path.is_file(),'Missing actual verbose FFmpeg build log')
         raw=log_path.read_bytes();(e/'ffmpeg-build-out.log').write_bytes(raw)
-        links=[]
-        for line in raw.decode('utf-8','replace').splitlines():
-            try:args=shlex.split(line)
-            except ValueError:continue
-            if len(args)<3 or '-o' not in args:continue
-            index=args.index('-o')
-            if index+1<len(args) and args[index+1] in ('ffmpeg_g.exe','ffmpeg.exe'):
-                links.append(args)
-        require(len(links)==1,'Require one actual complete FFmpeg executable linker command')
-        require(Path(links[0][0]).name in ('x86_64-w64-mingw32-g++','x86_64-w64-mingw32-gcc','cross-g++','cross-gcc'),
-                'Unexpected FFmpeg linker compiler')
-        ffmpeg_binding=resolve_archive(links[0],ffbuild,installed)
+        ffmpeg_binding=resolve_archive(ffmpeg_link_command(raw),ffbuild,installed)
         bridge=ffbuild/'libavcodec/libarcdav3a_speakers.o'
         avcodec=ffbuild/'libavcodec/libavcodec.a'
         require(bridge.is_file() and avcodec.is_file(),'Missing actual compiled speaker bridge/archive')
