@@ -878,9 +878,9 @@
       ".github/workflows/build-mpv-v100-parity.yml": "888942a723ddfea2907b3f7faee702b90aeeee816a768576ef710e06868bb2fd",
       "build/atmos/parity/prepare-speakers-winbuild.py": "e75636eda9d7f4c3236f5fc545257775cfd2b581bb947957f3f69a740412a393",
       "build/atmos/parity/test-speakers-build-gate.py": "329436a5094a8b6c97bfa0308867b2b606d2cecc672395270b80860890df0411",
-      "build/atmos/parity/test-speakers-source-gate.py": "70bcc5364bfb16cff80f1dca3e4bb17bae33422aeb034318f92c7b4517b85dd0",
+      "build/atmos/parity/test-speakers-source-gate.py": "9b0baf689172b315d3ab049c41c6d7ed8d03d36c2d49fb2d1f5a06c8a00e4aa2",
       "build/atmos/parity/verify-speakers-build.py": "01a5de904e6c6940ecdbe0e973a857fa107a8decd9178a246336e5d28c6d2c42",
-      "build/atmos/parity/verify-speakers-source.py": "5f05c48171123510d7b2a8688edd6d03071af62fa97f128c18d69d033d0c53ef",
+      "build/atmos/parity/verify-speakers-source.py": "30d4467396b87c745c023ab36113f3b0e243b36886a865d0134c80294fd86713",
       "build/av3a/libspatialaudio.cmake": "800098e7478ed21c0714b8be7cdb401629fe9321f1bc59b5e2bced359bd6a8d3",
       "build/av3a/test-speaker-build-glue.py": "cb6a09776fbe6eec19f6e3c1e812db7a0eb040e1e3e77c70ca12f85b8f6cac16",
       "build/av3a/tests/verify-speakers-contract.py": "04cceedec2d28eeb8c006b0ac00c810c2d9fccd54ff420486b4793f88c96af84"

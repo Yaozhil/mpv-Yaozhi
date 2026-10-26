@@ -8,6 +8,10 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import contextlib
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch as mock_patch
 
 HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('speaker_gate',HERE/'verify-speakers-source.py')
@@ -39,6 +43,74 @@ def patch(config,name,before,after):
 def observe_files(source):
     return {p.relative_to(source).as_posix():p.read_bytes()
             for p in source.rglob('*') if p.is_file() and '.git' not in p.relative_to(source).parts}
+
+def check_cli_report_lifecycle(root, results):
+    # Exercise the actual CLI, including Path arguments, binary binding, report
+    # hashing and final JSON write. Source/CPU stages have separate full-tree
+    # contracts above; these stubs keep this fixture confined to the reporter.
+    config = root / 'report-config'
+    config.mkdir()
+    lock = {'av3a_preselections': {}}
+    write(config, 'source-lock.json', json.dumps(lock).encode())
+    binaries = []
+    for name in ('mpv.exe', 'mpv.com', 'ffmpeg.exe'):
+        path = root / name
+        path.write_bytes(('report fixture: ' + name).encode())
+        binaries.append({'path': str(path.resolve()), 'sha256': sha(path.read_bytes()), 'size': path.stat().st_size})
+    link = root / 'compiled-link.json'
+    build = {'status': 'PASS_SPEAKERS_ARCHIVE_BRIDGE_AND_FINAL_LINKS',
+             'source_lock_sha256': sha((config / 'source-lock.json').read_bytes()), 'binaries': binaries}
+    final = {'parent_tree': 'fixture-tree', 'base_commit': 'fixture-base'}
+    old = SimpleNamespace(verify_dependency=lambda *args: {'fixture': True},
+                          run_contracts=lambda *args: [])
+    @contextlib.contextmanager
+    def parent(*args):
+        yield root
+    with contextlib.ExitStack() as stack:
+        for name, value in {'HERE': config, 'validate_lock': lambda *args: {},
+                'load_parent_gate': lambda: old, 'verify_final_ffmpeg': lambda *args: final,
+                'verify_spatialaudio': lambda *args: {'fixture': True},
+                'materialized_parent': parent, 'run_speaker_contracts': lambda *args: []}.items():
+            stack.enter_context(mock_patch.object(gate, name, value))
+        digests = []
+        for number in range(2):
+            build['report_fixture_revision'] = number
+            link.write_text(json.dumps(build) + '\n', encoding='utf-8')
+            out = root / ('cli-report-' + str(number) + '.json')
+            parent_out = root / ('cli-parent-' + str(number) + '.json')
+            argv = ['verify-speakers-source.py', '--sdk-source', str(root), '--ffmpeg-source', str(root),
+                    '--spatialaudio-source', str(root), '--cc', 'fixture-cc', '--cxx', 'fixture-cxx',
+                    '--build-report', str(link), '--output', str(out), '--parent-output', str(parent_out)]
+            for row in binaries:
+                argv += ['--binary', row['path']]
+            with mock_patch.object(sys, 'argv', argv):
+                gate.main()
+            report = json.loads(out.read_bytes())
+            digest = sha(link.read_bytes())
+            assert report['status'] == 'EXACT_SPEAKERS_FINAL_SOURCE_AND_PARENT_CONTRACTS_PASS'
+            assert report['compiled_link_report_sha256'] == digest
+            assert report['parent_report_sha256'] == sha(parent_out.read_bytes())
+            assert report['bound_binary_artifacts'] == binaries and report['runtime_verified'] is False
+            digests.append(digest)
+        results.append({'case': 'actual-cli-path-arguments-write-bound-json-report', 'passed': True})
+        assert digests[0] != digests[1]
+        results.append({'case': 'actual-cli-report-binds-changed-link-report-bytes', 'passed': True})
+        # A report must still fail and retain its failed JSON when its binary
+        # evidence differs; fixing report writing cannot bypass this check.
+        build['binaries'][0]['sha256'] = '0' * 64
+        link.write_text(json.dumps(build), encoding='utf-8')
+        argv[argv.index('--output') + 1] = str(root / 'cli-failed.json')
+        argv[argv.index('--parent-output') + 1] = str(root / 'cli-failed-parent.json')
+        with mock_patch.object(sys, 'argv', argv):
+            try:
+                gate.main()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('Actual CLI accepted changed binary evidence')
+        failed = json.loads((root / 'cli-failed.json').read_bytes())
+        assert failed['status'] == 'SPEAKERS_SOURCE_FAILED' and failed['error']
+        results.append({'case': 'actual-cli-refuses-wrong-binary-and-retains-failure', 'passed': True})
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True)
@@ -167,6 +239,7 @@ def main():
         assert legacy_gate.changed_paths(actual_legacy,legacy_patch)==expected_scope
         assert (actual_legacy/'build/atmos/parity/verify-preselections-source.py').read_bytes()==(HERE/'verify-preselections-source.py').read_bytes()
         results.append({'case':'actual-legacy-archive-preparation-has-independent-nested-git-root','passed':True})
+        check_cli_report_lifecycle(root, results)
     report={'passed':True,'cases':results,'count':len(results),
         'gate_sha256':sha((HERE/'verify-speakers-source.py').read_bytes())}
     a.output.parent.mkdir(parents=True,exist_ok=True)

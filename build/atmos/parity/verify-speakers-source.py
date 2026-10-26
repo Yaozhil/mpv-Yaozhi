@@ -297,7 +297,7 @@ def main():
             'dependencies':{'sdk':sdk,'ffmpeg':final,'libspatialaudio':spatial},
             'parent_report_sha256':sha(a.parent_output.read_bytes()),
             'contracts':new_contracts,'bound_binary_artifacts':binaries,
-            'compiled_link_report_sha256':sha(a.build_report),
+            'compiled_link_report_sha256':sha(a.build_report.read_bytes()),
             'actual_final_sources_unchanged':True,'parent_lock_unchanged':True,
             'source_lock_sha256':sha((HERE/'source-lock.json').read_bytes()),
             'runtime_verified':False}
