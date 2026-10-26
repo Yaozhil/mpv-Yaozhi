@@ -1,0 +1,644 @@
+diff --git a/configure b/configure
+--- a/configure
++++ b/configure
+@@ -3859,7 +3859,7 @@
+ videotoolbox_deps="corefoundation coremedia corevideo VTDecompressionSessionDecodeFrame"
+ videotoolbox_encoder_deps="videotoolbox VTCompressionSessionPrepareToEncodeFrames"
+ libarcdav3a_decoder_deps="libarcdav3a"
+-libarcdav3a_decoder_extralibs="-lAVS3AudioDec -lRendererCore -lavs3_samplerate -lstdc++"
++libarcdav3a_decoder_extralibs="-lAVS3AudioDec -lRendererCore -lavs3_samplerate -lspatialaudio -lstdc++"
+ 
+ # demuxers / muxers
+ ac3_demuxer_select="ac3_parser"
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -1234,7 +1234,8 @@
+ OBJS-$(CONFIG_LIBXVID_ENCODER)            += libxvid.o
+ OBJS-$(CONFIG_LIBZVBI_TELETEXT_DECODER)   += libzvbi-teletextdec.o ass.o
+ OBJS-$(CONFIG_LIBDRA_DECODER)	       += libdradec.o dradec.o
+-OBJS-$(CONFIG_LIBARCDAV3A_DECODER)        += libarcdav3a.o
++OBJS-$(CONFIG_LIBARCDAV3A_DECODER)        += libarcdav3a.o libarcdav3a_speakers.o
++libavcodec/libarcdav3a_speakers.o: CXXFLAGS += -std=c++14
+ 
+ 
+ # parsers
+diff --git a/libavcodec/libarcdav3a.c b/libavcodec/libarcdav3a.c
+--- a/libavcodec/libarcdav3a.c
++++ b/libavcodec/libarcdav3a.c
+@@ -17,6 +17,7 @@
+ #include <avs3a/avs3_decoder_interface.h>
+ #include <avs3a/avs3_spatial_contents.h>
+ #include <avs3-renderer/avs3_audio.h>
++#include "libarcdav3a_speakers.h"
+ 
+ #define MAX_VIVID_SIZE (4096U * 64U)
+ #define AV3A_RENDER_MAX_CHANNELS 32
+@@ -24,6 +25,7 @@
+ enum AV3ARenderMode {
+ 	AV3A_RENDER_NATIVE,
+ 	AV3A_RENDER_BINAURAL,
++	AV3A_RENDER_SPEAKERS,
+ };
+ 
+ typedef struct AVS3DecoderOutput
+@@ -41,6 +43,7 @@
+ 
+ typedef struct AV3AContentFrame {
+ 	AVS3SpatialFrame spatial;
++	AVS3SpatialStreamInfo stream_info;
+ 	uint32_t pcm_mask;
+ 	int content_applied;
+ } AV3AContentFrame;
+@@ -65,6 +68,9 @@
+ 
+ 	int spatial_render;
+ 	audio_context* renderer;
++	AV3ASpeakers *speakers;
++	AVS3SpatialStreamInfo speaker_stream_info;
++	int speaker_error;
+ 	int renderer_bed_source_ids[AV3A_RENDER_MAX_CHANNELS];
+ 	int renderer_object_source_ids[AVS3_SPATIAL_MAX_OBJECTS];
+ 	int renderer_channels;
+@@ -110,7 +116,7 @@
+ 	    table->num_objects > 0 && table->num_objects <= 8 &&
+ 	    table->total_channels > 0 && table->total_channels <= 32) {
+ 		h->content_missing_frames = 0;
+-		if (h->content_id < 0 || h->spatial_render != AV3A_RENDER_BINAURAL)
++		if (h->content_id < 0 || h->spatial_render == AV3A_RENDER_NATIVE)
+ 			return 0;
+ 		for (i = 0; i < table->num_contents; i++) {
+ 			const AVS3SpatialContent *content = &table->contents[i];
+@@ -132,7 +138,7 @@
+ 		table->status = AVS3_CONTENTS_INVALID;
+ 	}
+ 	table->num_contents = table->num_objects = 0;
+-	if (h->content_id < 0 || h->spatial_render != AV3A_RENDER_BINAURAL)
++	if (h->content_id < 0 || h->spatial_render == AV3A_RENDER_NATIVE)
+ 		return 0;
+ 	/* A seek may begin between repeated static metadata frames. Never play
+ 	 * unselected sources while waiting for the first complete scene graph. */
+@@ -167,7 +173,7 @@
+ 	for (int i = 0; i < table->num_contents && i < 4; i++)
+ 		selected_present |= table->contents[i].content_id == h->content_id;
+ 	applied = applied && table->available && table->status == AVS3_CONTENTS_OK &&
+-		h->spatial_render == AV3A_RENDER_BINAURAL && selected_present;
++		h->spatial_render != AV3A_RENDER_NATIVE && selected_present;
+ 	const char *status = table->status == AVS3_CONTENTS_OK ? "ok" :
+ 		table->status == AVS3_CONTENTS_NO_METADATA ? "no-metadata" :
+ 		table->status == AVS3_CONTENTS_UNSUPPORTED ? "unsupported" : "invalid";
+@@ -179,7 +185,9 @@
+ #define ADD(...) do { if (arcdav3a_json_add(&next, &left, __VA_ARGS__) < 0) \
+ 	return AVERROR(ENOSPC); } while (0)
+ 	ADD("{\"version\":1,\"status\":\"%s\",\"render\":\"%s\","
+-	    "\"selected\":%d,\"applied\":%s,\"contents\":[", status,
++	    "\"render_modes\":[\"native\",\"binaural\",\"speakers\"],"
++	    "\"speaker_layout\":\"7.1.4\",\"selected\":%d,\"applied\":%s,\"contents\":[", status,
++	    h->spatial_render == AV3A_RENDER_SPEAKERS ? "speakers" :
+ 	    h->spatial_render == AV3A_RENDER_BINAURAL ? "binaural" : "native",
+ 	    h->content_id, applied ? "true" : "false");
+ 	for (i = 0; i < table->num_contents; i++) {
+@@ -224,6 +232,8 @@
+ 
+ static void arcdav3a_destroy_renderer(arcdav3a_context *h)
+ {
++	av3a_speakers_destroy(h->speakers);
++	h->speakers = NULL;
+ 	if (h->renderer)
+ 		audio_destroy(h->renderer);
+ 	h->renderer = NULL;
+@@ -454,14 +464,14 @@
+ }
+ 
+ static int arcdav3a_ensure_renderer_output(arcdav3a_context *h,
+-					   size_t samples)
++					   size_t samples, size_t channels)
+ {
+ 	float *output;
+ 	size_t needed;
+ 
+-	if (samples > SIZE_MAX / 2)
++	if (!channels || samples > SIZE_MAX / channels)
+ 		return AVERROR(ENOMEM);
+-	needed = samples * 2;
++	needed = samples * channels;
+ 	if (needed <= h->renderer_output_capacity)
+ 		return 0;
+ 	output = av_realloc_array(h->renderer_output, needed, sizeof(*output));
+@@ -687,7 +697,7 @@
+ 	ret = arcdav3a_init_renderer(avctx, info);
+ 	if (ret < 0)
+ 		return ret;
+-	ret = arcdav3a_ensure_renderer_output(h, samples);
++	ret = arcdav3a_ensure_renderer_output(h, samples, 2);
+ 	if (ret < 0)
+ 		goto fail;
+ 	for (i = 0; i < blocks; i++) {
+@@ -715,6 +725,90 @@
+ fail:
+ 	arcdav3a_destroy_renderer(h);
+ 	h->have_last_spatial_frame = 0;
++	return ret;
++}
++
++
++/* This opt-in path supports a validated 7.1.4 bed and point objects.
++ * The C++ boundary rejects unsupported spatial features; it never drops them.
++ * Point-source gain interpolation has no additional algorithmic latency. */
++static int arcdav3a_render_speakers(AVCodecContext *avctx,
++                                   AVS3DecoderOutput *decoder_output,
++                                   const uint8_t **data,
++                                   unsigned long *data_size)
++{
++	arcdav3a_context *h = avctx->priv_data;
++	const AVS3SpatialStreamInfo *info = &decoder_output->spatial_info;
++	const int16_t *input = (const int16_t *)decoder_output->pOutData;
++	int samples, blocks, ret, code = 0;
++
++	if (h->spatial_render != AV3A_RENDER_SPEAKERS)
++		return 0;
++	if (h->speaker_error)
++		return h->speaker_error;
++	if (!decoder_output->have_spatial_info ||
++	    info->abi_version != AVS3_SPATIAL_ABI_VERSION)
++		return AVERROR_INVALIDDATA;
++	/* Preserve the pre-existing pure-channel path, including its layout. */
++	if (info->format == AVS3_SPATIAL_FORMAT_CHANNELS)
++		return 0;
++	if (decoder_output->nBits != 16 || info->total_channels <= 0 ||
++	    info->total_channels > AV3A_RENDER_MAX_CHANNELS ||
++	    decoder_output->nChannel != info->total_channels ||
++	    decoder_output->nSamplerate != info->sample_rate ||
++	    decoder_output->nlen % (info->total_channels * sizeof(*input)))
++		return AVERROR_INVALIDDATA;
++	samples = decoder_output->nlen / (info->total_channels * sizeof(*input));
++	if (samples <= 0 || info->frame_length <= 0 ||
++	    samples % info->frame_length)
++		return AVERROR_INVALIDDATA;
++	blocks = samples / info->frame_length;
++	if (h->spatial_frame_count != blocks)
++		return AVERROR_INVALIDDATA;
++	if (!h->speakers || arcdav3a_stream_config_changed(
++	        &h->speaker_stream_info, info)) {
++		arcdav3a_destroy_renderer(h);
++		code = av3a_speakers_create(&h->speakers, info);
++		if (code < 0)
++			goto failed;
++		h->speaker_stream_info = *info;
++	}
++	ret = arcdav3a_ensure_renderer_output(h, samples, 12);
++	if (ret < 0)
++		return ret;
++	for (int i = 0; i < blocks; i++) {
++		const AVS3SpatialFrame *metadata;
++		const AVS3SpatialStreamInfo *block_info = &h->spatial_frames[i].stream_info;
++		uint32_t mask = h->spatial_frames[i].pcm_mask;
++		if (arcdav3a_stream_config_changed(info, block_info))
++			return AVERROR_INVALIDDATA;
++		ret = arcdav3a_select_object_metadata(h, block_info,
++			&h->spatial_frames[i].spatial, &metadata);
++		if (ret < 0)
++			return ret;
++		/* The content layer uses UINT32_MAX as its all-sources sentinel. */
++		if (mask == UINT32_MAX && info->total_channels < 32)
++			mask = (UINT32_C(1) << info->total_channels) - 1;
++		code = av3a_speakers_process(h->speakers, block_info, metadata,
++			input + (size_t)i * info->frame_length * info->total_channels,
++			(size_t)info->frame_length * info->total_channels,
++			info->frame_length, mask,
++			h->renderer_output + (size_t)i * info->frame_length * 12,
++			(size_t)info->frame_length * 12);
++		if (code < 0)
++			goto failed;
++	}
++	*data = (const uint8_t *)h->renderer_output;
++	*data_size = (unsigned long)((size_t)samples * 12 * sizeof(float));
++	return 1;
++failed:
++	ret = code == -3 ? AVERROR(ENOMEM) :
++		code == -2 ? AVERROR_PATCHWELCOME : AVERROR_INVALIDDATA;
++	av_log(avctx, AV_LOG_ERROR, "AV3A 7.1.4 rendering failed: %s; "
++	       "use binaural or native mode for this stream\n",
++	       av3a_speakers_error_string(code));
++	arcdav3a_destroy_renderer(h);
++	h->speaker_error = ret;
+ 	return ret;
+ }
+ 
+@@ -796,6 +890,7 @@
+ 	h->have_last_spatial_frame = 0;
+ 	h->out_frame.have_spatial_info = 0;
+ 	h->content_missing_frames = 0;
++	h->speaker_error = 0;
+ 	av_freep(&h->contents_json);
+ 	memset(&h->contents, 0, sizeof(h->contents));
+ 	h->contents.status = AVS3_CONTENTS_NO_METADATA;
+@@ -803,7 +898,8 @@
+ }
+ 
+ static int arcdav3a_append_spatial_frame(arcdav3a_context *h,
+-				 uint32_t mask, int applied)
++				 uint32_t mask, int applied,
++				 const AVS3SpatialStreamInfo *info)
+ {
+ 	AV3AContentFrame *frames;
+ 	AVS3SpatialFrame *frame;
+@@ -822,6 +918,7 @@
+ 		h->spatial_frame_capacity = capacity;
+ 	}
+ 
++	h->spatial_frames[h->spatial_frame_count].stream_info = *info;
+ 	h->spatial_frames[h->spatial_frame_count].pcm_mask = mask;
+ 	h->spatial_frames[h->spatial_frame_count].content_applied = applied;
+ 	frame = &h->spatial_frames[h->spatial_frame_count++].spatial;
+@@ -995,14 +1092,25 @@
+ 		if (ret != AVS3_DECODER_SUCCESS)
+ 			break;
+ 		if (outlen > 0) {
++			/* Static bed gains/mutes are decoded with this block. Do not
++			 * reuse the last header snapshot for earlier pending PCM. */
++			if (h->spatial_render == AV3A_RENDER_SPEAKERS) {
++				AVS3SpatialStreamInfo decoded_info = { .struct_size = sizeof(decoded_info) };
++				if (avs3_get_spatial_stream_info(h->m_hAvs3, &decoded_info) !=
++				        AVS3_DECODER_SUCCESS ||
++				    decoded_info.abi_version != AVS3_SPATIAL_ABI_VERSION ||
++				    arcdav3a_stream_config_changed(&stream_info, &decoded_info))
++					return AVERROR_INVALIDDATA;
++				stream_info = decoded_info;
++			}
+ 			uint32_t mask;
+ 			int applied;
+ 			ret = arcdav3a_content_mask(h, &mask, &applied);
+ 			if (ret < 0)
+ 				return ret;
+ 			output_contents = h->contents;
+-			if (h->spatial_render == AV3A_RENDER_BINAURAL) {
+-				ret = arcdav3a_append_spatial_frame(h, mask, applied);
++			if (h->spatial_render != AV3A_RENDER_NATIVE) {
++				ret = arcdav3a_append_spatial_frame(h, mask, applied, &stream_info);
+ 				if (ret < 0)
+ 					return ret;
+ 			}
+@@ -1172,7 +1280,10 @@
+ static int arcdav3a_set_binaural_layout(AVCodecContext *avctx,
+ 					AVFrame *frame)
+ {
+-	AVChannelLayout layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
++	arcdav3a_context *h = avctx->priv_data;
++	AVChannelLayout layout = h->spatial_render == AV3A_RENDER_SPEAKERS
++		? (AVChannelLayout)AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK
++		: (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+ 	int ret;
+ 
+ 	av_channel_layout_uninit(&frame->ch_layout);
+@@ -1186,10 +1297,14 @@
+ 
+ static int arcdav3a_decode_frame(AVCodecContext *avctx, AVFrame *frm, int *got_frame_ptr, AVPacket *avpkt)
+ {
+-    av_log(avctx, AV_LOG_DEBUG, "begin arcdav3a_receive_frame!\n");
+ 	arcdav3a_context *h = avctx->priv_data;
+ 	int ret;
+     *got_frame_ptr = 0;
++	/* A rejected optional renderer must not trigger a generic decode
++	 * error for every following packet. Flush/reinit permits retry. */
++	if (h->spatial_render == AV3A_RENDER_SPEAKERS && h->speaker_error)
++		return avpkt->size;
++    av_log(avctx, AV_LOG_DEBUG, "begin arcdav3a_receive_frame!\n");
+ 
+ 	//static int num =0;
+ 	//num ++;
+@@ -1249,7 +1364,10 @@
+ 
+ 			frame_data = (const uint8_t *)h->out_frame.pOutData;
+ 			frame_data_size = h->out_frame.nlen;
+-			rendered = arcdav3a_render_binaural(
++			rendered = h->spatial_render == AV3A_RENDER_SPEAKERS
++				? arcdav3a_render_speakers(
++					avctx, &h->out_frame, &frame_data, &frame_data_size)
++				: arcdav3a_render_binaural(
+ 				avctx, &h->out_frame, &frame_data,
+ 				&frame_data_size);
+ 			if (rendered < 0)
+@@ -1261,7 +1379,9 @@
+ 				return ret;
+ 
+ 			frm->format = rendered ? AV_SAMPLE_FMT_FLT : AV_SAMPLE_FMT_S16;
+-			sampleSize = (rendered ? 2 : h->out_frame.nChannel) *
++			sampleSize = (rendered ?
++				(h->spatial_render == AV3A_RENDER_SPEAKERS ? 12 : 2) :
++				h->out_frame.nChannel) *
+ 				av_get_bytes_per_sample(frm->format);
+ 			if (frame_data_size % sampleSize)
+ 				return AVERROR_INVALIDDATA;
+@@ -1344,7 +1464,7 @@
+ #define DEC (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_AUDIO_PARAM)
+ 
+ static const AVOption arcdav3a_options[] = {
+-	{ "av3a_content", "AV3A content ID for binaural output (-1 preserves all objects)",
++	{ "av3a_content", "AV3A content ID for rendered output (-1 preserves all objects)",
+ 	  OFFSET(content_id), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, 3, DEC },
+ 	{ "av3a_contents", "Validated AV3A scene contents and applied selection (JSON)",
+ 	  OFFSET(contents_json), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0,
+@@ -1352,7 +1472,7 @@
+ 	{ "av3a_render", "AV3A object/HOA rendering mode",
+ 	  OFFSET(spatial_render), AV_OPT_TYPE_INT,
+ 	  { .i64 = AV3A_RENDER_NATIVE }, AV3A_RENDER_NATIVE,
+-	  AV3A_RENDER_BINAURAL, DEC, .unit = "av3a_render" },
++	  AV3A_RENDER_SPEAKERS, DEC, .unit = "av3a_render" },
+ 	{ "native", "preserve decoded transport channels unchanged",
+ 	  0, AV_OPT_TYPE_CONST, { .i64 = AV3A_RENDER_NATIVE },
+ 	  0, 0, DEC, .unit = "av3a_render" },
+@@ -1361,6 +1481,9 @@
+ 	  0, 0, DEC, .unit = "av3a_render" },
+ 	{ "binaural", "force binaural rendering for spatial AV3A streams",
+ 	  0, AV_OPT_TYPE_CONST, { .i64 = AV3A_RENDER_BINAURAL },
++	  0, 0, DEC, .unit = "av3a_render" },
++	{ "speakers", "render a 7.1.4 bed and point objects to 12 speakers",
++	  0, AV_OPT_TYPE_CONST, { .i64 = AV3A_RENDER_SPEAKERS },
+ 	  0, 0, DEC, .unit = "av3a_render" },
+ 	{ NULL },
+ };
+diff --git a/libavcodec/libarcdav3a_speakers.h b/libavcodec/libarcdav3a_speakers.h
+new file mode 100644
+--- /dev/null
++++ b/libavcodec/libarcdav3a_speakers.h
+@@ -0,0 +1,52 @@
++#ifndef LIBARCDAV3A_SPEAKERS_H
++#define LIBARCDAV3A_SPEAKERS_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <avs3a/avs3_spatial_metadata.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AV3A_SPEAKERS_CHANNELS 12
++#define AV3A_SPEAKERS_MAX_FRAMES 8192
++
++typedef struct AV3ASpeakers AV3ASpeakers;
++
++enum AV3ASpeakersResult {
++    AV3A_SPEAKERS_OK = 0,
++    AV3A_SPEAKERS_INVALID = -1,
++    AV3A_SPEAKERS_UNSUPPORTED = -2,
++    AV3A_SPEAKERS_NOMEM = -3,
++    AV3A_SPEAKERS_INTERNAL = -4
++};
++
++/* Creates a point-object renderer for a standard 7.1.4 bed. No audio-device
++ * settings are changed. The implementation adds zero samples of latency.
++ * Recreate the renderer on seek, stream change, and audio reinitialization. */
++int av3a_speakers_create(AV3ASpeakers **out,
++                         const AVS3SpatialStreamInfo *info);
++void av3a_speakers_destroy(AV3ASpeakers *ctx);
++
++/* Capacities are scalar sample counts, not bytes or sample frames.
++ * Input: signed 16-bit interleaved decoder PCM in the SDK's transport order.
++ * Output: float interleaved FL FR FC LFE BL BR SL SR TFL TFR TBL TBR.
++ * Exactly frames * 12 samples are produced with no FIR tail or extra delay.
++ * The mask addresses transport PCM channels and is applied before panning;
++ * unselected tracks still advance their spatial interpolation state.
++ * Nonzero diffuseness, extent, divergence, lock, screen-reference and HOA
++ * are not supported by this deliberately bounded rendering subset. */
++int av3a_speakers_process(AV3ASpeakers *ctx,
++                          const AVS3SpatialStreamInfo *info,
++                          const AVS3SpatialFrame *metadata,
++                          const int16_t *pcm, size_t input_samples,
++                          size_t frames, uint32_t content_channel_mask,
++                          float *output, size_t output_samples);
++
++const char *av3a_speakers_error_string(int result);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/libavcodec/libarcdav3a_speakers.cpp b/libavcodec/libarcdav3a_speakers.cpp
+new file mode 100644
+--- /dev/null
++++ b/libavcodec/libarcdav3a_speakers.cpp
+@@ -0,0 +1,222 @@
++#include "libarcdav3a_speakers.h"
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <memory>
++#include <new>
++#include <vector>
++#include <spatialaudio/GainInterp.h>
++#include <spatialaudio/LoudspeakerLayouts.h>
++#include <spatialaudio/RendererMetadata.h>
++#include <spatialaudio/adm/GainCalculator.h>
++
++namespace {
++constexpr int channels = AV3A_SPEAKERS_CHANNELS;
++constexpr int max_channels = AVS3_SPATIAL_MAX_CHANNELS;
++// Sourcecodeforplayer e7d244d: ChannelNumConfig::CHANNEL_CONFIG_MC_7_1_4.
++constexpr int sdk_7_1_4 = 10;
++constexpr double radians_to_degrees = 57.2957795130823208768;
++// BS.2051 / SDK: FL FR FC LFE SL SR BL BR TFL TFR TBL TBR.
++// Windows / FFmpeg: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR.
++constexpr int canonical_to_sdk[channels] = {0, 1, 2, 3, 6, 7, 4, 5, 8, 9, 10, 11};
++
++bool bit_flag(int value) { return value == 0 || value == 1; }
++bool valid_gain(float value) { return std::isfinite(value) && value >= 0; }
++
++int validate_info(const AVS3SpatialStreamInfo *info) {
++    if (!info || info->struct_size < sizeof(*info) ||
++        info->abi_version != AVS3_SPATIAL_ABI_VERSION)
++        return AV3A_SPEAKERS_INVALID;
++    if (info->format != AVS3_SPATIAL_FORMAT_BED_OBJECTS ||
++        info->channel_config != sdk_7_1_4 || info->bed_channels != channels ||
++        info->object_channels < 1 || info->object_channels > max_channels - channels ||
++        info->total_channels != channels + info->object_channels ||
++        info->bit_depth != 16)
++        return AV3A_SPEAKERS_UNSUPPORTED;
++    if (info->sample_rate < 8000 || info->sample_rate > 192000 ||
++        info->frame_length <= 0 || info->frame_length > AV3A_SPEAKERS_MAX_FRAMES)
++        return AV3A_SPEAKERS_INVALID;
++    for (int c = 0; c < channels; ++c) {
++        if (!bit_flag(info->channel_gain_valid[c]) ||
++            !bit_flag(info->channel_muted[c]) ||
++            !bit_flag(info->channel_position_valid[c]) ||
++            (info->channel_gain_valid[c] && !valid_gain(info->channel_gain_linear[c])))
++            return AV3A_SPEAKERS_INVALID;
++        // Only the explicitly identified standard bed is handled. Do not
++        // silently discard custom DirectSpeaker positioning metadata.
++        if (info->channel_position_valid[c])
++            return AV3A_SPEAKERS_UNSUPPORTED;
++    }
++    return AV3A_SPEAKERS_OK;
++}
++
++int validate_object(const AVS3SpatialObjectFrame &object) {
++    if (!bit_flag(object.position_valid) || !bit_flag(object.muted) ||
++        !bit_flag(object.jump_position) || !bit_flag(object.gain_valid) ||
++        !bit_flag(object.extent_valid) || !bit_flag(object.divergence_valid) ||
++        !bit_flag(object.channel_lock_valid) || !bit_flag(object.screen_ref_valid) ||
++        (object.gain_valid && !valid_gain(object.gain_linear)) ||
++        !std::isfinite(object.diffuse))
++        return AV3A_SPEAKERS_INVALID;
++    if (object.diffuse != 0 || object.extent_valid || object.divergence_valid ||
++        object.channel_lock_valid || object.screen_ref_valid)
++        return AV3A_SPEAKERS_UNSUPPORTED;
++    if (!object.position_valid)
++        return object.muted ? AV3A_SPEAKERS_OK : AV3A_SPEAKERS_INVALID;
++    if (!std::isfinite(object.x) || !std::isfinite(object.y) || !std::isfinite(object.z))
++        return AV3A_SPEAKERS_INVALID;
++    const double radius = std::hypot(std::hypot(double(object.x), double(object.y)), double(object.z));
++    return radius > 1e-12 && std::isfinite(radius) ? AV3A_SPEAKERS_OK : AV3A_SPEAKERS_INVALID;
++}
++}
++
++struct AV3ASpeakers {
++    AVS3SpatialStreamInfo initial;
++    spaudio::Layout layout;
++    spaudio::adm::ObjectGainCalculator calculator;
++    std::vector<spaudio::GainInterp<double>> object_interpolation;
++    std::vector<spaudio::GainInterp<double>> bed_interpolation;
++    std::vector<double> direct, diffuse;
++    std::vector<float> mono, planar;
++    std::array<float *, channels> planes;
++
++    explicit AV3ASpeakers(const AVS3SpatialStreamInfo &info)
++        : initial(info), layout(spaudio::Layout::getMatchingLayout("4+7+0")),
++          calculator(layout), direct(channels), diffuse(channels),
++          mono(info.frame_length), planar(size_t(channels) * info.frame_length) {
++        for (int c = 0; c < info.object_channels; ++c)
++            object_interpolation.emplace_back(channels);
++        for (int c = 0; c < channels; ++c) {
++            bed_interpolation.emplace_back(1);
++            planes[c] = planar.data() + size_t(c) * info.frame_length;
++        }
++    }
++};
++
++extern "C" int av3a_speakers_create(AV3ASpeakers **out,
++                                    const AVS3SpatialStreamInfo *info) {
++    if (!out) return AV3A_SPEAKERS_INVALID;
++    *out = nullptr;
++    const int result = validate_info(info);
++    if (result) return result;
++    try {
++        *out = new AV3ASpeakers(*info);
++        return AV3A_SPEAKERS_OK;
++    } catch (const std::bad_alloc &) {
++        return AV3A_SPEAKERS_NOMEM;
++    } catch (...) {
++        return AV3A_SPEAKERS_INTERNAL;
++    }
++}
++
++extern "C" void av3a_speakers_destroy(AV3ASpeakers *ctx) {
++    delete ctx;
++}
++
++extern "C" int av3a_speakers_process(AV3ASpeakers *ctx,
++    const AVS3SpatialStreamInfo *info, const AVS3SpatialFrame *metadata,
++    const int16_t *pcm, size_t input_samples, size_t frames,
++    uint32_t content_channel_mask, float *output, size_t output_samples) {
++    if (!ctx || !output || !pcm || !frames || frames > AV3A_SPEAKERS_MAX_FRAMES ||
++        output_samples < frames * channels)
++        return AV3A_SPEAKERS_INVALID;
++    std::fill_n(output, frames * channels, 0.0f);
++    int result = validate_info(info);
++    if (result) return result;
++    if (frames != size_t(info->frame_length) || frames != size_t(ctx->initial.frame_length) ||
++        info->sample_rate != ctx->initial.sample_rate ||
++        info->total_channels != ctx->initial.total_channels ||
++        info->object_channels != ctx->initial.object_channels ||
++        input_samples < frames * size_t(info->total_channels))
++        return AV3A_SPEAKERS_INVALID;
++    if (!metadata || metadata->struct_size < sizeof(*metadata) ||
++        metadata->abi_version != AVS3_SPATIAL_ABI_VERSION ||
++        metadata->object_count != info->object_channels ||
++        !bit_flag(metadata->has_static_metadata) || !bit_flag(metadata->has_dynamic_metadata))
++        return AV3A_SPEAKERS_INVALID;
++    const uint32_t all_channels = info->total_channels == 32 ? UINT32_MAX :
++        (UINT32_C(1) << info->total_channels) - 1;
++    if (content_channel_mask & ~all_channels) return AV3A_SPEAKERS_INVALID;
++    uint32_t seen = 0;
++    for (int i = 0; i < metadata->object_count; ++i) {
++        const AVS3SpatialObjectFrame &object = metadata->objects[i];
++        if (object.pcm_channel < channels || object.pcm_channel >= info->total_channels)
++            return AV3A_SPEAKERS_INVALID;
++        const uint32_t bit = UINT32_C(1) << object.pcm_channel;
++        if (seen & bit) return AV3A_SPEAKERS_INVALID;
++        seen |= bit;
++        result = validate_object(object);
++        if (result) return result;
++    }
++    try {
++        std::fill(ctx->planar.begin(), ctx->planar.end(), 0.0f);
++        // Preserve all twelve bed tracks, including the dedicated LFE.
++        // This direct assignment is only for the validated standard bed;
++        // all Objects below are independently spatially rendered.
++        for (int c = 0; c < channels; ++c) {
++            const bool audible = !info->channel_muted[c] &&
++                (content_channel_mask & (UINT32_C(1) << c));
++            for (size_t f = 0; f < frames; ++f)
++                ctx->mono[f] = audible ? pcm[f * info->total_channels + c] / 32768.0f : 0.0f;
++            const double gain = info->channel_gain_valid[c] ? info->channel_gain_linear[c] : 1.0;
++            ctx->bed_interpolation[c].SetGainValue(gain, unsigned(frames));
++            float *plane[] = {ctx->planes[c]};
++            ctx->bed_interpolation[c].ProcessAccumul(ctx->mono.data(), plane, unsigned(frames));
++        }
++        for (int i = 0; i < metadata->object_count; ++i) {
++            const AVS3SpatialObjectFrame &object = metadata->objects[i];
++            const bool audible = !object.muted &&
++                (content_channel_mask & (UINT32_C(1) << object.pcm_channel));
++            for (size_t f = 0; f < frames; ++f)
++                ctx->mono[f] = audible ? pcm[f * info->total_channels + object.pcm_channel] / 32768.0f : 0.0f;
++            spaudio::ObjectMetadata mapped;
++            mapped.trackInd = unsigned(object.pcm_channel);
++            mapped.blockLength = unsigned(frames);
++            mapped.cartesian = false;
++            mapped.gain = object.gain_valid ? object.gain_linear : 1.0;
++            // AVS3 ABI coordinates: left/up/front. ADM polar: positive azimuth
++            // left, positive elevation up. No arbitrary axis reinterpretation.
++            auto &polar = mapped.position.polarPosition();
++            if (object.position_valid) {
++                polar.azimuth = std::atan2(double(object.x), double(object.z)) * radians_to_degrees;
++                polar.elevation = std::atan2(double(object.y),
++                    std::hypot(double(object.x), double(object.z))) * radians_to_degrees;
++                polar.distance = std::hypot(std::hypot(double(object.x), double(object.y)), double(object.z));
++            }
++            ctx->calculator.CalculateGains(mapped, ctx->direct, ctx->diffuse);
++            for (int c = 0; c < channels; ++c)
++                if (!std::isfinite(ctx->direct[c]) || ctx->diffuse[c] != 0.0)
++                    return AV3A_SPEAKERS_INTERNAL;
++            auto &interpolation = ctx->object_interpolation[object.pcm_channel - channels];
++            interpolation.SetGainVector(ctx->direct, object.jump_position ? 0u : unsigned(frames));
++            interpolation.ProcessAccumul(ctx->mono.data(), ctx->planes.data(), unsigned(frames));
++        }
++        for (size_t f = 0; f < frames; ++f)
++            for (int c = 0; c < channels; ++c) {
++                const float value = ctx->planes[canonical_to_sdk[c]][f];
++                if (!std::isfinite(value)) {
++                    std::fill_n(output, frames * channels, 0.0f);
++                    return AV3A_SPEAKERS_INTERNAL;
++                }
++                output[f * channels + c] = value;
++            }
++        return AV3A_SPEAKERS_OK;
++    } catch (const std::bad_alloc &) {
++        std::fill_n(output, frames * channels, 0.0f);
++        return AV3A_SPEAKERS_NOMEM;
++    } catch (...) {
++        std::fill_n(output, frames * channels, 0.0f);
++        return AV3A_SPEAKERS_INTERNAL;
++    }
++}
++
++extern "C" const char *av3a_speakers_error_string(int result) {
++    switch (result) {
++    case AV3A_SPEAKERS_OK: return "success";
++    case AV3A_SPEAKERS_INVALID: return "invalid AV3A speaker parameters or metadata";
++    case AV3A_SPEAKERS_UNSUPPORTED: return "AV3A speaker mode supports only standard 7.1.4 bed with point objects";
++    case AV3A_SPEAKERS_NOMEM: return "AV3A speaker renderer allocation failed";
++    default: return "AV3A speaker renderer failed";
++    }
++}

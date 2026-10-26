@@ -831,5 +831,79 @@
       "after": "8c59a689f9276d5c00af292ccc8d81807230d7759a5cb5494bc61cb7d8203864",
       "historical_runtime_source_and_patch_constraints_unchanged": true
     }
+  },
+  "av3a_speakers": {
+    "version": 1,
+    "parent_config_commit": "df1084fc3bd41d372acb789508334c95391db645",
+    "parent_source_lock_sha256": "edd4197d78438f814b51ea9284bb7f0bb08268fa5842f29da16e6ca8a605697a",
+    "patches": {
+      "ffmpeg": {
+        "path": "build/av3a/ffmpeg-libarcdav3a-speakers.patch",
+        "sha256": "90e660045cd8782a00fc6fc31a7d1f9e4c8e98a2badcf7bf4d80ed666addad86",
+        "changed_files": [
+          "configure",
+          "libavcodec/Makefile",
+          "libavcodec/libarcdav3a.c",
+          "libavcodec/libarcdav3a_speakers.cpp",
+          "libavcodec/libarcdav3a_speakers.h"
+        ]
+      }
+    },
+    "before_source_sha256": {
+      "configure": "9e71ffe090647b99f10ccf90cc899f7f8ef3667eeb563c4705ae36c5cb47f584",
+      "libavcodec/Makefile": "c2670e5d4217e04f8b52c650c4ff85e226e97b70964ea6b0c7425e99ca1e1cbf",
+      "libavcodec/libarcdav3a.c": "86c7044a0038d461d24ad2bff72a90773f70a18f2ad127af62764a3e436a2536",
+      "libavcodec/libarcdav3a_speakers.cpp": null,
+      "libavcodec/libarcdav3a_speakers.h": null
+    },
+    "source_sha256": {
+      "configure": "b9e60028e13c7df5d2b624ae68bd32e88a3de7fc8aa0e779c1e6c0046350f88a",
+      "libavcodec/Makefile": "f5bc2016b3d059f73454b2e0c558efd71e001a23a12d7559320dd3bcfab4b4f6",
+      "libavcodec/libarcdav3a.c": "1cc11d2a49d6ca01d96ce007fe1994e9a71e6eb6ac58ce25e9239a8bc16426c7",
+      "libavcodec/libarcdav3a_speakers.cpp": "7e91c4f19c563079ee6902f5e7cc92048ab1a193b0d2460368cf9d37f508bab1",
+      "libavcodec/libarcdav3a_speakers.h": "ae0a5d2ba3943658375f15fac1c71c10630cdec8802a54d901e4593b1ee564d3"
+    },
+    "libspatialaudio": {
+      "repository": "https://github.com/videolan/libspatialaudio.git",
+      "commit": "d149ed9744fd399b835c6f2920511f8cbcfce5ea",
+      "tree": "e23e9e16463cb3c2179d73de1bce220118be4950",
+      "static": true,
+      "mysofa": false,
+      "mit_hrtf": true,
+      "minimum_cpp": "c++14",
+      "license": "LGPL-2.1-or-later",
+      "sdk_spatial_abi_unchanged": 3
+    },
+    "tools_sha256": {
+      ".github/workflows/build-mpv-v100-parity.yml": "888942a723ddfea2907b3f7faee702b90aeeee816a768576ef710e06868bb2fd",
+      "build/atmos/parity/prepare-speakers-winbuild.py": "e75636eda9d7f4c3236f5fc545257775cfd2b581bb947957f3f69a740412a393",
+      "build/atmos/parity/test-speakers-build-gate.py": "c16b7a0a5bb3956e270bf6b96d0f0d2ebe29365142b0b5017a2e32e38c3be701",
+      "build/atmos/parity/test-speakers-source-gate.py": "a80a8e0b45304d96374cc3a1fd0046e64841b38b59f155963bb459408326274a",
+      "build/atmos/parity/verify-speakers-build.py": "721dc4b6c1a49ef69db3bb2be5df512a1e5178d6b343dbb0d49f56bce70c56d5",
+      "build/atmos/parity/verify-speakers-source.py": "a53d43bc2520235b4bff1544f7851713ed9d4c893ba78332338e44ed45798741",
+      "build/av3a/libspatialaudio.cmake": "800098e7478ed21c0714b8be7cdb401629fe9321f1bc59b5e2bced359bd6a8d3",
+      "build/av3a/test-speaker-build-glue.py": "cb6a09776fbe6eec19f6e3c1e812db7a0eb040e1e3e77c70ca12f85b8f6cac16",
+      "build/av3a/tests/verify-speakers-contract.py": "04cceedec2d28eeb8c006b0ac00c810c2d9fccd54ff420486b4793f88c96af84"
+    },
+    "contracts": [
+      {
+        "path": "build/av3a/tests/verify-speakers-contract.py",
+        "sha256": "04cceedec2d28eeb8c006b0ac00c810c2d9fccd54ff420486b4793f88c96af84",
+        "args": [
+          "--sdk-source",
+          "{sdk_source}",
+          "--ffmpeg-source",
+          "{ffmpeg_source}",
+          "--output",
+          "{output_dir}/speaker-c",
+          "--cc",
+          "{cc}"
+        ],
+        "timeout_seconds": 120
+      }
+    ],
+    "runtime_verified": false,
+    "scope": "Explicit AV3A 7.1.4 point-object speaker rendering with unchanged native/binaural paths; strict unsupported metadata rejection.",
+    "historical_fields_unchanged": true
   }
 }

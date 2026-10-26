@@ -700,7 +700,18 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          python3 build/atmos/parity/prepare-network-winbuild.py \
+          # Old source gates continue to use their complete original config,
+          # including its frozen workflow identity. The appended speaker layer
+          # independently binds this current workflow and new build inputs.
+          timeout --foreground --kill-after=20s 120s \
+            git fetch --no-tags --depth=1 origin df1084fc3bd41d372acb789508334c95391db645
+          python3 build/atmos/parity/test-speakers-source-gate.py \
+            --output "speakers-gate-contract-${{ matrix.variant }}.json"
+          python3 build/atmos/parity/test-speakers-build-gate.py \
+            --output "speakers-build-gate-contract-${{ matrix.variant }}.json"
+          python3 build/atmos/parity/verify-speakers-source.py \
+            --prepare-legacy-config legacy-network-config
+          python3 build/atmos/parity/prepare-speakers-winbuild.py \
             --winbuild winbuild/mpv-winbuild-cmake \
             --variant '${{ matrix.variant }}' \
             --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
@@ -746,18 +757,18 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-network-source-gate.py" \
+          python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/test-network-source-gate.py" \
             --output "$GITHUB_WORKSPACE/network-gate-contract-${{ matrix.variant }}"
           network_final_commit="$(git rev-parse HEAD)"
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-network-source.py" \
+          python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/verify-network-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/network-source-${{ matrix.variant }}.json"
           round2_parent="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/network-source-${{ matrix.variant }}.json")"
           git checkout --detach "$round2_parent"
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/test-round2-source-gate.py" \
+          python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/test-round2-source-gate.py" \
             --output "$GITHUB_WORKSPACE/round2-gate-contract-${{ matrix.variant }}"
           round2_final_commit="$(git rev-parse HEAD)"
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
+          python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/verify-round2-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/round2-source-${{ matrix.variant }}.json"
           # Historical gates retain their original complete checkout layers.
@@ -812,11 +823,11 @@ jobs:
           git checkout --detach "$round1_final_commit"
           git checkout --detach "$preselections_final_commit"
           git checkout --detach "$round2_final_commit"
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-round2-source.py" \
+          python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/verify-round2-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/round2-source-restored-${{ matrix.variant }}.json"
           git checkout --detach "$network_final_commit"
-          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-network-source.py" \
+          python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/verify-network-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/network-source-restored-${{ matrix.variant }}.json"
 
@@ -858,6 +869,11 @@ jobs:
           # A dependency lock is a cache boundary. Never restore an older
           # dependency generation or the other variant's patched source cache.
           key: mpv-dependency-v1-${{ matrix.variant }}-${{ hashFiles('build/atmos/parity/dependency-lock.json') }}-${{ hashFiles('.github/workflows/build-mpv-v100-parity.yml', 'build/atmos/**', 'build/bluray-menu/**', 'build/av3a/**', 'build/audio-layout/**', 'patches/*.patch') }}
+          # Reuse only the installed CI5 generation with the same variant and
+          # unchanged dependency lock. Patched source/install outputs are still
+          # invalidated and checked by the original steps below.
+          restore-keys: |
+            mpv-dependency-v1-${{ matrix.variant }}-${{ hashFiles('build/atmos/parity/dependency-lock.json') }}-56943bbea6e3ec85092959d1bc75df73659270469c2b573cc444bff0d2d85aae
 
       - name: Verify and preserve pinned GCC source archive
         id: gcc-source-archive
@@ -903,6 +919,10 @@ jobs:
           # workaround is upstream. Recreate it explicitly so a restored cache
           # cannot reuse a different unpinned source revision.
           rm -rf src_packages/openssl build64/packages/openssl-prefix
+          # This appended static renderer must produce a fresh compiler/archive
+          # receipt even when the expensive older dependency cache is restored.
+          rm -rf src_packages/libspatialaudio build64/packages/libspatialaudio-prefix speaker-evidence
+          rm -f build64/install/x86_64-w64-mingw32/lib/libspatialaudio.a
           rm -rf build64/packages/mpv-release-prefix \
             build64/packages/mpv-packaging-prefix \
             build64/mpv-x86_64-* \
@@ -1164,7 +1184,7 @@ jobs:
           winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
           built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
           test -n "$built_dir"
-          python3 build/atmos/parity/verify-network-source.py \
+          python3 legacy-network-config/build/atmos/parity/verify-network-source.py \
             --source "$winbuild/src_packages/mpv" --variant '${{ matrix.variant }}' \
             --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
             --output "network-compiled-source-${{ matrix.variant }}.json"
@@ -1210,11 +1230,24 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          python3 build/atmos/parity/verify-preselections-source.py \
+          winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
+          built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
+          test -n "$built_dir"
+          python3 build/atmos/parity/verify-speakers-build.py \
+            --phase final --winbuild "$winbuild" --config "$GITHUB_WORKSPACE" \
+            --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
+            --binary "$winbuild/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe" \
+            --output "speakers-build-${{ matrix.variant }}.json"
+          python3 build/atmos/parity/verify-speakers-source.py \
             --sdk-source winbuild/mpv-winbuild-cmake/src_packages/avs3-audiodec \
             --ffmpeg-source winbuild/mpv-winbuild-cmake/src_packages/ffmpeg \
-            --cc /usr/bin/cc \
-            --output "preselections-dependencies-${{ matrix.variant }}.json"
+            --spatialaudio-source winbuild/mpv-winbuild-cmake/src_packages/libspatialaudio \
+            --cc /usr/bin/cc --cxx /usr/bin/c++ \
+            --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
+            --binary "$winbuild/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe" \
+            --build-report "speakers-build-${{ matrix.variant }}.json" \
+            --parent-output "preselections-dependencies-${{ matrix.variant }}.json" \
+            --output "speakers-dependencies-${{ matrix.variant }}.json"
 
       - name: Upload AV3A preselections dependency evidence
         if: always() && hashFiles('preselections-dependencies-*.json') != ''
@@ -1226,6 +1259,22 @@ jobs:
             preselections-dependencies-${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload AV3A speaker source and contract evidence
+        if: always() && hashFiles('speakers-dependencies-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-speakers-dependencies-${{ matrix.variant }}
+          path: |
+            speakers-gate-contract-${{ matrix.variant }}.json
+            speakers-build-gate-contract-${{ matrix.variant }}.json
+            speakers-build-${{ matrix.variant }}.json
+            speakers-dependencies-${{ matrix.variant }}.json
+            speakers-dependencies-${{ matrix.variant }}/
+            winbuild/mpv-winbuild-cmake/speaker-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Verify menu command termination and late enhancement selection
         if: steps.build.outcome == 'success'
@@ -1399,6 +1448,34 @@ jobs:
             artifact-check/ffmpeg.strings
 
           mkdir artifact
+          mkdir artifact/av3a-speakers
+          speaker_source=winbuild/mpv-winbuild-cmake/src_packages/libspatialaudio
+          test "$(git -C "$speaker_source" rev-parse HEAD)" = d149ed9744fd399b835c6f2920511f8cbcfce5ea
+          test "$(git -C "$speaker_source" rev-parse 'HEAD^{tree}')" = e23e9e16463cb3c2179d73de1bce220118be4950
+          test -z "$(git -C "$speaker_source" status --porcelain --untracked-files=all)"
+          git -C "$speaker_source" archive --format=tar \
+            --prefix=libspatialaudio-d149ed9744fd399b835c6f2920511f8cbcfce5ea/ HEAD \
+            > artifact/av3a-speakers/libspatialaudio-d149ed9744fd399b835c6f2920511f8cbcfce5ea-source.tar
+          cp "$speaker_source/LICENSE" artifact/av3a-speakers/LICENSE.libspatialaudio
+          cp build/av3a/ffmpeg-libarcdav3a-speakers.patch artifact/av3a-speakers/
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('artifact/av3a-speakers')
+          sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          archive=root/'libspatialaudio-d149ed9744fd399b835c6f2920511f8cbcfce5ea-source.tar'
+          license=root/'LICENSE.libspatialaudio'
+          patch=root/'ffmpeg-libarcdav3a-speakers.patch'
+          manifest={'repository':'https://github.com/videolan/libspatialaudio.git',
+              'commit':'d149ed9744fd399b835c6f2920511f8cbcfce5ea',
+              'tree':'e23e9e16463cb3c2179d73de1bce220118be4950',
+              'source_archive':{'path':archive.name,'sha256':sha(archive),'bytes':archive.stat().st_size},
+              'license':{'path':license.name,'sha256':sha(license),'identifier':'LGPL-2.1-or-later'},
+              'ffmpeg_integration_patch':{'path':patch.name,'sha256':sha(patch)},
+              'source_lock_sha256':sha(Path('build/atmos/parity/source-lock.json')),
+              'library_source_modified':False}
+          (root/'SOURCE.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+          PY
           cp "$archive" artifact/
           cp "$ffmpeg_exe" artifact/ffmpeg-av3a-validation.exe
           cp build/dolby-vision/verify-fel.ps1 artifact/
@@ -1448,6 +1525,7 @@ jobs:
               verify-inactive-subtitle-cache.py \
               secondary-ass-clock.json \
               secondary-ass-presentation.txt \
+              av3a-speakers/* \
               > SHA256SUMS.txt
           )
 
