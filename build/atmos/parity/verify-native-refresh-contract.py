@@ -17,7 +17,7 @@ def main():
    cmd=[a.cc,'-std=c11','-O2','-Wall','-Wextra','-Werror','-I'+str(source/'video/out'),'-I'+str(source),str(contract),'-o',str(exe)]
    compiled=subprocess.run(cmd,capture_output=True,text=True,timeout=60)
    result.update(compile_exit=compiled.returncode,compile_stdout=compiled.stdout,compile_stderr=compiled.stderr)
-   if compiled.returncode:raise RuntimeError('Real source contract compile failed')
+   if compiled.returncode:raise RuntimeError('Real source contract compile failed:\n'+compiled.stderr[-8000:])
    ran=subprocess.run([str(exe)],capture_output=True,text=True,timeout=60)
    result.update(run_exit=ran.returncode,run_stdout=ran.stdout,run_stderr=ran.stderr)
    if ran.returncode:raise RuntimeError('Real source contract failed')

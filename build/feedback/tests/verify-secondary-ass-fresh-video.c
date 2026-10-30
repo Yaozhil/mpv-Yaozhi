@@ -69,9 +69,15 @@ int main(void) {
  struct secondary_ass_physical p=physical(144);
  for(int fault=0;fault<9;fault++) {
   struct secondary_ass_physical q=p;int64_t origin=200,next=203,divisor=3,ready=2000000000LL,due=1999000000LL;
-  if(fault==0)q.outlier_pending=true;if(fault==1)q.epoch=0;if(fault==2)q.epoch_exhausted=true;
-  if(fault==3)q.success_contiguous=false;if(fault==4)q.success_generation=0;
-  if(fault==5)q.sync_segment_consistent=false;if(fault==6)divisor=0;if(fault==7)origin=0;if(fault==8)next=202;
+  if(fault==0)q.outlier_pending=true;
+  if(fault==1)q.epoch=0;
+  if(fault==2)q.epoch_exhausted=true;
+  if(fault==3)q.success_contiguous=false;
+  if(fault==4)q.success_generation=0;
+  if(fault==5)q.sync_segment_consistent=false;
+  if(fault==6)divisor=0;
+  if(fault==7)origin=0;
+  if(fault==8)next=202;
   struct secondary_ass_present_plan z=secondary_ass_fresh_video_plan(&q,origin,next,divisor,1,ready,due);
   CHECK(!z.valid && z.target.slot==0 && z.base.slot==0 && z.submit==due && z.fallback_submit==due && z.lifecycle_safe_wait==due);scenarios++;
  }

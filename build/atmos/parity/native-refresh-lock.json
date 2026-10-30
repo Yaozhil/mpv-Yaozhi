@@ -43,8 +43,8 @@
     "build/atmos/parity/prepare-native-refresh-winbuild.py": "d073addb5d85736c1f1e0de90549b1133a2b3aba4b04f4212048a494891e7f80",
     "build/atmos/parity/verify-native-refresh-source.py": "0826218e54c0dfc6213183082e782a65ebfaa43ad47904fd1efb736db2362b07",
     "build/atmos/parity/test-native-refresh-source-gate.py": "9da9296e4787336315cdb7eb3ba36a0bcdd72770543bb53403f2f4d2e62d3e56",
-    "build/atmos/parity/verify-native-refresh-contract.py": "f723a81a8c325f2660fc54a18ef01b0fd15befb6b3017d4ddbb0d583d23c3489",
-    "build/feedback/tests/verify-secondary-ass-fresh-video.c": "d9166d898caeaf5d5549cf2bdc7e323c0c13180f09d6db0c428ce5b900ee728d",
+    "build/atmos/parity/verify-native-refresh-contract.py": "76b2994105ebec098c8218631982d05c11fe1d59ff71755ae94b1e83ddddfdfa",
+    "build/feedback/tests/verify-secondary-ass-fresh-video.c": "b10419317eba36a62b32c74c1c30932f35fc580053ee606fe8a8791f13be76fb",
     "build/feedback/tests/verify-danmaku-native-recovery.lua": "e3dd9dbc3d25e9e9acb8e1d31964dc599a6d8cdd8c12ab6030399c0b99a3b3cf",
     "build/feedback/tests/fixtures/native-refresh-render.lua": "06e24d3a1826ea3c93009a58867a5da4602d376541d4085b115a1a95c1a96d88",
     "build/feedback/tests/fixtures/modules/blackbar.lua": "cf1c6617bceebc43ffdc1c59f35010489a7c153f7649e8567a26776bbc89253d"
