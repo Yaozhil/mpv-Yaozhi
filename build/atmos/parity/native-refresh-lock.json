@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "parent_config_commit": "fe31dc21d2b249eea3890bad2066dc578d922d0b",
+  "parent_config_tree": "afb4f3015e3dcc057426a51e80a8757d5d42a5e8",
+  "parent_source_lock_sha256": "a1721340c1819bad1e8d10aa070c5224aa72b73d8283b346fb7186e4f0c5f4fd",
+  "dependency_lock_sha256": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
+  "patch": {
+    "path": "build/bluray-menu/patches/0064-native-refresh-video-priority.patch",
+    "sha256": "411c7687ca12dfc9afae41fe80b8c951ffa7ec48864bf5d1da44a16d95a87058",
+    "changed_files": [
+      "video/out/secondary_ass_fresh_video.h",
+      "video/out/vo.c"
+    ]
+  },
+  "variants": {
+    "main": {
+      "baseline_tree": "c979f78e6702fd78c5a3263cc2b752c7972c6b92",
+      "source_tree": "61a2676338e340c0b94e2c9ea92964edd9194b5c",
+      "before_source_sha256": {
+        "video/out/secondary_ass_fresh_video.h": null,
+        "video/out/vo.c": "ba092466641c936cfbcee28aa8525bb1b7f395f27bc0295f9627498ecab82edc"
+      },
+      "source_sha256": {
+        "video/out/secondary_ass_fresh_video.h": "fa5c2cdf93d95a938efc0279229bd2c6abce50e562621bb9cd57d540dc763579",
+        "video/out/vo.c": "a8948230bdd4be96a8578fb2d4912b6e98c70f066cbaf360ee42951d56b0ab84"
+      }
+    },
+    "atmos": {
+      "baseline_tree": "a1ddecf31992defadcc62349c9daea0ab61916a4",
+      "source_tree": "e0e82e9b934e5a356955053755914acea7e858ab",
+      "before_source_sha256": {
+        "video/out/secondary_ass_fresh_video.h": null,
+        "video/out/vo.c": "ba092466641c936cfbcee28aa8525bb1b7f395f27bc0295f9627498ecab82edc"
+      },
+      "source_sha256": {
+        "video/out/secondary_ass_fresh_video.h": "fa5c2cdf93d95a938efc0279229bd2c6abce50e562621bb9cd57d540dc763579",
+        "video/out/vo.c": "a8948230bdd4be96a8578fb2d4912b6e98c70f066cbaf360ee42951d56b0ab84"
+      }
+    }
+  },
+  "tools_sha256": {
+    ".github/workflows/build-mpv-v100-parity.yml": "8c4c9a5849b53c30ad62bc433010d03386568746e3faa46c1d0d5dd4d9a813b2",
+    "build/atmos/parity/prepare-native-refresh-winbuild.py": "d073addb5d85736c1f1e0de90549b1133a2b3aba4b04f4212048a494891e7f80",
+    "build/atmos/parity/verify-native-refresh-source.py": "0826218e54c0dfc6213183082e782a65ebfaa43ad47904fd1efb736db2362b07",
+    "build/atmos/parity/test-native-refresh-source-gate.py": "9da9296e4787336315cdb7eb3ba36a0bcdd72770543bb53403f2f4d2e62d3e56",
+    "build/atmos/parity/verify-native-refresh-contract.py": "f723a81a8c325f2660fc54a18ef01b0fd15befb6b3017d4ddbb0d583d23c3489",
+    "build/feedback/tests/verify-secondary-ass-fresh-video.c": "d9166d898caeaf5d5549cf2bdc7e323c0c13180f09d6db0c428ce5b900ee728d",
+    "build/feedback/tests/verify-danmaku-native-recovery.lua": "e3dd9dbc3d25e9e9acb8e1d31964dc599a6d8cdd8c12ab6030399c0b99a3b3cf",
+    "build/feedback/tests/fixtures/native-refresh-render.lua": "06e24d3a1826ea3c93009a58867a5da4602d376541d4085b115a1a95c1a96d88",
+    "build/feedback/tests/fixtures/modules/blackbar.lua": "cf1c6617bceebc43ffdc1c59f35010489a7c153f7649e8567a26776bbc89253d"
+  }
+}

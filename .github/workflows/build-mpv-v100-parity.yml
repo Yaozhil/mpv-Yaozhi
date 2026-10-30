@@ -67,6 +67,7 @@ jobs:
     timeout-minutes: 360
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      LEGACY_SPEAKER_CONFIG: ${{ runner.temp }}/native-refresh-parent-config
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
       MPV_COMMIT: c318236b8882af860f16f936225430ad053a2179
@@ -135,11 +136,26 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Materialize exact unchanged speaker configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          parent_config=fe31dc21d2b249eea3890bad2066dc578d922d0b
+          timeout --foreground --kill-after=20s 120s \
+            git fetch --no-tags --depth=1 origin "$parent_config"
+          test ! -e "$LEGACY_SPEAKER_CONFIG"
+          git worktree add --detach "$LEGACY_SPEAKER_CONFIG" "$parent_config"
+          test "$(git -C "$LEGACY_SPEAKER_CONFIG" rev-parse HEAD)" = "$parent_config"
+          test "$(git -C "$LEGACY_SPEAKER_CONFIG" rev-parse 'HEAD^{tree}')" = afb4f3015e3dcc057426a51e80a8757d5d42a5e8
+          test -z "$(git -C "$LEGACY_SPEAKER_CONFIG" status --porcelain --untracked-files=all)"
+
       - name: Verify Lua subtitle and danmaku policies
         shell: bash
         run: |
           set -euxo pipefail
           export LUA_PATH="portable_config/scripts/uosc_danmaku/?.lua;;"
+          luajit build/feedback/tests/verify-danmaku-native-recovery.lua \
+            build/feedback/tests/fixtures/native-refresh-render.lua
           luajit build/hdr-pgs/tests/verify-image-subs-policy.lua
           luajit build/uosc-danmaku/tests/verify-blackbar-layout.lua
           for core_range in 1000 240 missing legacy; do
@@ -709,12 +725,16 @@ jobs:
             --output "speakers-gate-contract-${{ matrix.variant }}.json"
           python3 build/atmos/parity/test-speakers-build-gate.py \
             --output "speakers-build-gate-contract-${{ matrix.variant }}.json"
-          python3 build/atmos/parity/verify-speakers-source.py \
+          python3 "$LEGACY_SPEAKER_CONFIG/build/atmos/parity/verify-speakers-source.py" \
             --prepare-legacy-config legacy-network-config
           python3 build/atmos/parity/prepare-speakers-winbuild.py \
             --winbuild winbuild/mpv-winbuild-cmake \
             --variant '${{ matrix.variant }}' \
             --asio-sdk "$GITHUB_WORKSPACE/third-party/asio"
+          python3 build/atmos/parity/prepare-native-refresh-winbuild.py \
+            --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
+          python3 build/atmos/parity/test-native-refresh-source-gate.py \
+            --output "native-refresh-gate-contract-${{ matrix.variant }}"
           python3 build/atmos/parity/prepare-dependency-lock.py \
             --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
           python3 build/atmos/parity/test-dependency-build-gate.py \
@@ -757,6 +777,16 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'Preflight passed at %s after %s patches.\n' \
             "$(git rev-parse HEAD)" "${#mpv_patches[@]}"
+          native_refresh_final_commit="$(git rev-parse HEAD)"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-refresh-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --parent-config "$LEGACY_SPEAKER_CONFIG" \
+            --output "$GITHUB_WORKSPACE/native-refresh-source-${{ matrix.variant }}.json"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-refresh-contract.py" \
+            --source "$preflight_src" --cc /usr/bin/cc \
+            --output "$GITHUB_WORKSPACE/native-refresh-contract-${{ matrix.variant }}.json"
+          native_refresh_parent="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baseline_commit"])' "$GITHUB_WORKSPACE/native-refresh-source-${{ matrix.variant }}.json")"
+          git checkout --detach "$native_refresh_parent"
           python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/test-network-source-gate.py" \
             --output "$GITHUB_WORKSPACE/network-gate-contract-${{ matrix.variant }}"
           network_final_commit="$(git rev-parse HEAD)"
@@ -830,6 +860,11 @@ jobs:
           python3 "$GITHUB_WORKSPACE/legacy-network-config/build/atmos/parity/verify-network-source.py" \
             --source "$preflight_src" --variant '${{ matrix.variant }}' \
             --output "$GITHUB_WORKSPACE/network-source-restored-${{ matrix.variant }}.json"
+          git checkout --detach "$native_refresh_final_commit"
+          python3 "$GITHUB_WORKSPACE/build/atmos/parity/verify-native-refresh-source.py" \
+            --source "$preflight_src" --variant '${{ matrix.variant }}' \
+            --parent-config "$LEGACY_SPEAKER_CONFIG" \
+            --output "$GITHUB_WORKSPACE/native-refresh-source-restored-${{ matrix.variant }}.json"
 
       - name: Upload Native ASS integration preflight evidence
         if: always() && (hashFiles('native-ass-integration-*.json') != '' || hashFiles('round1-source-*.json', 'round1-source-*/**') != '' || hashFiles('preselections-source-*.json') != '' || hashFiles('round2-source-*.json') != '' || hashFiles('network-source-*.json') != '')
@@ -856,6 +891,22 @@ jobs:
             network-gate-contract-${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload native refresh preflight evidence
+        if: always() && hashFiles('native-refresh-source-*.json') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: mpv-native-refresh-preflight-${{ matrix.variant }}
+          path: |
+            native-refresh-source-${{ matrix.variant }}.json
+            native-refresh-source-restored-${{ matrix.variant }}.json
+            native-refresh-contract-${{ matrix.variant }}.json
+            native-refresh-gate-contract-${{ matrix.variant }}/
+            winbuild/mpv-winbuild-cmake/native-refresh-preparation.json
+            build/atmos/parity/native-refresh-lock.json
+            build/bluray-menu/patches/0064-native-refresh-video-priority.patch
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Restore reusable build cache
         id: build-cache
@@ -1184,10 +1235,14 @@ jobs:
           winbuild="$GITHUB_WORKSPACE/winbuild/mpv-winbuild-cmake"
           built_dir="$(find "$winbuild/build64" -maxdepth 1 -type d -name 'mpv-x86_64-*' -print -quit)"
           test -n "$built_dir"
-          python3 legacy-network-config/build/atmos/parity/verify-network-source.py \
+          python3 build/atmos/parity/verify-native-refresh-source.py \
             --source "$winbuild/src_packages/mpv" --variant '${{ matrix.variant }}' \
+            --parent-config "$LEGACY_SPEAKER_CONFIG" --compiled \
             --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
-            --output "network-compiled-source-${{ matrix.variant }}.json"
+            --output "native-refresh-compiled-source-${{ matrix.variant }}.json"
+          python3 build/atmos/parity/verify-native-refresh-contract.py \
+            --source "$winbuild/src_packages/mpv" --cc /usr/bin/cc \
+            --output "native-refresh-compiled-contract-${{ matrix.variant }}.json"
 
       - name: Bind compiled rendering dependency and source snapshots
         if: steps.build.outcome == 'success'
@@ -1216,12 +1271,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload final compiled mpv source evidence
-        if: always() && hashFiles('network-compiled-source-*.json') != ''
+      - name: Upload final compiled native refresh source evidence
+        if: always() && hashFiles('native-refresh-compiled-source-*.json') != ''
         uses: actions/upload-artifact@v6
         with:
-          name: mpv-network-compiled-source-${{ matrix.variant }}
-          path: network-compiled-source-${{ matrix.variant }}.json
+          name: mpv-native-refresh-compiled-source-${{ matrix.variant }}
+          path: |
+            native-refresh-compiled-source-${{ matrix.variant }}.json
+            native-refresh-compiled-contract-${{ matrix.variant }}.json
           if-no-files-found: error
           retention-days: 7
 
@@ -1238,7 +1295,7 @@ jobs:
             --binary "$built_dir/mpv.exe" --binary "$built_dir/mpv.com" \
             --binary "$winbuild/build64/install/x86_64-w64-mingw32/bin/ffmpeg.exe" \
             --output "speakers-build-${{ matrix.variant }}.json"
-          python3 build/atmos/parity/verify-speakers-source.py \
+          python3 "$LEGACY_SPEAKER_CONFIG/build/atmos/parity/verify-speakers-source.py" \
             --sdk-source winbuild/mpv-winbuild-cmake/src_packages/avs3-audiodec \
             --ffmpeg-source winbuild/mpv-winbuild-cmake/src_packages/ffmpeg \
             --spatialaudio-source winbuild/mpv-winbuild-cmake/src_packages/libspatialaudio \
