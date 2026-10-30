@@ -1051,6 +1051,9 @@ jobs:
             sleep $((attempt * 15))
           done
           test "$download_complete" = yes
+          # Reproduce the prior binary's fontconfig inputs, not today's main.
+          test "$(git -C src_packages/fontconfig rev-parse HEAD)" = b25ffeabd15b76f86c0c6736f6df2f1b89858010
+          test "$(git -C src_packages/fontconfig rev-parse 'HEAD^{tree}')" = 048191d4358f4b4d57c050750a6fca8c3dda6ad2
           test "$(git -C src_packages/openssl rev-parse HEAD)" = "$OPENSSL_COMMIT"
           grep -Fq '#if defined(__MINGW32__) && !defined(SIO_UDP_NETRESET)' \
             src_packages/openssl/ssl/quic/quic_reactor.c
@@ -1222,6 +1225,8 @@ jobs:
           test -f "$built_dir/mpv.com"
           test "$built_dir/mpv.exe" -nt "$build_marker"
           test "$built_dir/mpv.com" -nt "$build_marker"
+          test "$(git -C src_packages/fontconfig rev-parse 'HEAD^{tree}')" = 4b2a40143653a0b158a374fe513e8d603e3cbe04
+          test -z "$(git -C src_packages/fontconfig status --porcelain --untracked-files=no)"
           if [ "$mpv_status" -ne 0 ]; then
             echo "mpv target returned $mpv_status after producing a complete binary; treating detached-HEAD cleanup as non-fatal"
           fi
