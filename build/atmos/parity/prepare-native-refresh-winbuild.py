@@ -26,8 +26,13 @@ def freeze_fontconfig(packages):
     anchor = b'    GIT_TAG main\n'
     if original.count(anchor) != 1:
         raise ValueError('Fontconfig source-ref anchor differs')
+    # winbuild explicitly requires GIT_REMOTE_NAME to be absent for a commit
+    # pin; otherwise its post-install cleanup resets detached HEAD to @{u}.
+    remote = b'    GIT_REMOTE_NAME origin\n'
+    if original.count(remote) != 1:
+        raise ValueError('Fontconfig remote-name anchor differs')
     recipe.write_bytes(original.replace(anchor,
-        ('    GIT_TAG '+FONTCONFIG_COMMIT+'\n').encode(), 1))
+        ('    GIT_TAG '+FONTCONFIG_COMMIT+'\n').encode(), 1).replace(remote, b'', 1))
     return dict(upstream_commit=FONTCONFIG_COMMIT,
         upstream_tree='048191d4358f4b4d57c050750a6fca8c3dda6ad2',
         previous_patched_tree='4b2a40143653a0b158a374fe513e8d603e3cbe04',

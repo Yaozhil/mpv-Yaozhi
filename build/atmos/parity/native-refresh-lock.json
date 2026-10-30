@@ -40,7 +40,7 @@
   },
   "tools_sha256": {
     ".github/workflows/build-mpv-v100-parity.yml": "bd30540d0c70904a4cbe2a2e00064b54698f07004be1133375b35bb85d7116a7",
-    "build/atmos/parity/prepare-native-refresh-winbuild.py": "02e3965313097e96830ec8c9c149781a40653d39666f95ed02f0cbcb3c445f97",
+    "build/atmos/parity/prepare-native-refresh-winbuild.py": "f4de1ecb2ccdcc82c700fc7d95f837f974e7931c26c9a24b17937c2d159bebaf",
     "build/atmos/parity/verify-native-refresh-source.py": "0826218e54c0dfc6213183082e782a65ebfaa43ad47904fd1efb736db2362b07",
     "build/atmos/parity/test-native-refresh-source-gate.py": "9da9296e4787336315cdb7eb3ba36a0bcdd72770543bb53403f2f4d2e62d3e56",
     "build/atmos/parity/verify-native-refresh-contract.py": "76b2994105ebec098c8218631982d05c11fe1d59ff71755ae94b1e83ddddfdfa",
