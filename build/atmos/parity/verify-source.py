@@ -144,6 +144,10 @@ if not args.baseline_only:
     result['observer_recovery_fix']=observer
     result['actual_source_sha256']=observer['source_sha256']
     result['actual_test_sha256']=observer['test_sha256']
+    eof=lock['demux_inactive_subtitle_cache_fix']
+    patch=here.parents[2]/eof['patch']
+    assert hashlib.sha256(patch.read_bytes()).hexdigest()==eof['patch_sha256']
+    git('am','--3way',str(patch))
     pts=lock['native_video_pts_repair']
     patch=here.parents[2]/pts['patch']
     assert hashlib.sha256(patch.read_bytes()).hexdigest()==pts['patch_sha256']
@@ -154,22 +158,9 @@ if not args.baseline_only:
     pts=gate.verify_source(source)
     result['video_pts_repair']=pts
     result['actual_video_pts_source_sha256']=pts['source_sha256']
-    neutral=lock['native_ass_neutral_ab']
-    patch=here.parents[2]/neutral['patch']
-    assert hashlib.sha256(patch.read_bytes()).hexdigest()==neutral['patch_sha256']
-    git('am','--3way',str(patch))
-    spec=spec_from_file_location('neutral_gate',here/'verify-native-ass-neutral-ab.py')
-    gate=module_from_spec(spec);spec.loader.exec_module(gate)
-    result['neutral_ab']=gate.verify_source(source)
-    result['actual_source_sha256']['video/out/vo.c']=neutral['vo_sha256']
-    fresh=lock['native_ass_fresh_window_fix']
-    patch=here.parents[2]/fresh['patch']
-    assert hashlib.sha256(patch.read_bytes()).hexdigest()==fresh['patch_sha256']
-    git('am','--3way',str(patch))
-    spec=spec_from_file_location('fresh_gate',here/'verify-native-ass-fresh-window.py')
-    gate=module_from_spec(spec);spec.loader.exec_module(gate)
-    result['fresh_window_fix']=gate.verify_source(source)
-    result['actual_source_sha256']['video/out/vo.c']=fresh['vo_sha256']
+    spec=spec_from_file_location('eof_gate',here/'verify-eof-cache-source.py')
+    eof_gate=module_from_spec(spec);spec.loader.exec_module(eof_gate)
+    result['demux_inactive_subtitle_cache_fix']=eof_gate.verify_source(source)
     result['baseline_only']=False
     (args.work/'verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 else:

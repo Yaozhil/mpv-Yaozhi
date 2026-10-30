@@ -1,0 +1,377 @@
+diff --git a/av3adecoder/CMakeLists.txt b/av3adecoder/CMakeLists.txt
+index 383c8fcafa9732e47b8486b286c1ffadbf088f0a..91a8c7c5ed9bc04413648a1af23f7f33768b9b95 100644
+--- a/av3adecoder/CMakeLists.txt
++++ b/av3adecoder/CMakeLists.txt
+@@ -108,6 +108,7 @@ if(AVS3_BUILD_RENDERER)
+ endif()
+ install(FILES
+     avs3Decoder/include/avs3_decoder_interface.h
++    avs3Decoder/include/avs3_spatial_contents.h
+     avs3Decoder/include/avs3_spatial_metadata.h
+     avs3Decoder/include/avs3_prot_dec.h
+     avs3Decoder/include/avs3_stat_dec.h
+diff --git a/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h b/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h
+index 9d4ddf98dc08be112e8bcce9f89605a1c5a6f9f3..dc193536b3fa4423ec46ccb8d73ecddba506c1f8 100644
+--- a/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h
++++ b/av3adecoder/avs3Decoder/include/avs3_decoder_interface.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "avs3_spatial_metadata.h"
++#include "avs3_spatial_contents.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -28,6 +29,9 @@ int avs3_get_spatial_stream_info(AVS3DecoderHandle hAvs3Dec,
+ int avs3_get_spatial_frame(AVS3DecoderHandle hAvs3Dec,
+                            AVS3SpatialFrame *frame);
+ 
++int avs3_get_spatial_contents(AVS3DecoderHandle hAvs3Dec,
++                              AVS3SpatialContents *contents);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/av3adecoder/avs3Decoder/include/avs3_spatial_contents.h b/av3adecoder/avs3Decoder/include/avs3_spatial_contents.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..df22ecfa4fa3cdfbcbcf09ccab1a67afeac3d229
+--- /dev/null
++++ b/av3adecoder/avs3Decoder/include/avs3_spatial_contents.h
+@@ -0,0 +1,46 @@
++#ifndef AVS3_SPATIAL_CONTENTS_H
++#define AVS3_SPATIAL_CONTENTS_H
++
++#include <stdint.h>
++
++#define AVS3_SPATIAL_CONTENTS_ABI_VERSION 1
++#define AVS3_CONTENT_MAX_CONTENTS 4
++#define AVS3_CONTENT_MAX_OBJECTS 8
++#define AVS3_CONTENT_MAX_CHANNELS 32
++#define AVS3_CONTENT_NAME_SIZE 25
++
++enum AVS3SpatialContentsStatus {
++    AVS3_CONTENTS_OK = 0,
++    AVS3_CONTENTS_NO_METADATA = 1,
++    AVS3_CONTENTS_INVALID = 2,
++    AVS3_CONTENTS_UNSUPPORTED = 3,
++};
++
++typedef struct AVS3SpatialContent {
++    int32_t content_id;
++    uint32_t pcm_channel_mask;
++    int32_t num_objects;
++    int32_t object_ids[AVS3_CONTENT_MAX_OBJECTS];
++} AVS3SpatialContent;
++
++typedef struct AVS3SpatialContentObject {
++    int32_t object_id;
++    uint32_t pcm_channel_mask;
++    /* At most 24 original name bytes followed by NUL. Encoding is unspecified. */
++    char name[AVS3_CONTENT_NAME_SIZE];
++} AVS3SpatialContentObject;
++
++typedef struct AVS3SpatialContents {
++    /* Caller supplies struct_size; undersized buffers are never written. */
++    uint32_t struct_size;
++    uint32_t abi_version;
++    int32_t available;
++    int32_t status;
++    int32_t total_channels;
++    int32_t num_contents;
++    int32_t num_objects;
++    AVS3SpatialContent contents[AVS3_CONTENT_MAX_CONTENTS];
++    AVS3SpatialContentObject objects[AVS3_CONTENT_MAX_OBJECTS];
++} AVS3SpatialContents;
++
++#endif
+diff --git a/av3adecoder/avs3Decoder/src/avs3_spatial_contents.c b/av3adecoder/avs3Decoder/src/avs3_spatial_contents.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..87e859b49274809dd6ef64ce76f89e5a8efdf35d
+--- /dev/null
++++ b/av3adecoder/avs3Decoder/src/avs3_spatial_contents.c
+@@ -0,0 +1,285 @@
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "avs3_stat_dec.h"
++#include "avs3_decoder_interface.h"
++#include "avs3_spatial_contents.h"
++
++static int content_count_valid(int count, int maximum)
++{
++    return count > 0 && count <= maximum;
++}
++
++static int content_find_object(const Avs3BasicL1 *basic, int id)
++{
++    int i;
++    for (i = 0; i < basic->numOfObjects; i++) {
++        if (basic->audioObjectData[i].objectIdx == id)
++            return i;
++    }
++    return -1;
++}
++
++static int content_find_pack(const Avs3BasicL1 *basic, int id)
++{
++    int i;
++    for (i = 0; i < basic->numOfPacks; i++) {
++        if (basic->audioPackFormatData[i].packFormatIdx == id)
++            return i;
++    }
++    return -1;
++}
++
++static int content_find_channel(const Avs3BasicL1 *basic, int id)
++{
++    int i;
++    for (i = 0; i < basic->numOfChannels; i++) {
++        if (basic->audioChannelFormatData[i].channelFormatIdx == id)
++            return i;
++    }
++    return -1;
++}
++
++static int content_find_content(const Avs3BasicL1 *basic, int id)
++{
++    int i;
++    for (i = 0; i < basic->numOfContents; i++) {
++        if (basic->audioContentData[i].contentIdx == id)
++            return i;
++    }
++    return -1;
++}
++
++static int content_reject(AVS3SpatialContents *out, int status)
++{
++    uint32_t size = out->struct_size;
++    memset(out, 0, sizeof(*out));
++    out->struct_size = size;
++    out->abi_version = AVS3_SPATIAL_CONTENTS_ABI_VERSION;
++    out->status = status;
++    return AVS3_DECODER_ERROR;
++}
++
++int avs3_get_spatial_contents(AVS3DecoderHandle decoder,
++                             AVS3SpatialContents *out)
++{
++    AVS3SpatialContents result;
++    const Avs3BasicL1 *basic;
++    const AudioProgramme *programme;
++    uint32_t pack_masks[8] = {0};
++    uint32_t object_masks[AVS3_CONTENT_MAX_OBJECTS] = {0};
++    uint32_t spatial_mask = 0;
++    uint32_t expected_spatial_mask = 0;
++    int i, j, k;
++    int total_channels;
++
++    if (!out || out->struct_size < sizeof(*out))
++        return AVS3_DECODER_ERROR;
++    memset(&result, 0, sizeof(result));
++    result.struct_size = sizeof(result);
++    result.abi_version = AVS3_SPATIAL_CONTENTS_ABI_VERSION;
++    result.status = AVS3_CONTENTS_NO_METADATA;
++    *out = result;
++    if (!decoder || !decoder->hMetadataDec)
++        return AVS3_DECODER_ERROR;
++
++    basic = &decoder->hMetadataDec->avs3MetaData
++        .avs3MetaDataStatic.avs3BasicL1;
++    programme = &basic->audioProgrammeMeta;
++    /* Static metadata persists between frames. A fresh decoder is all zero. */
++    if (!basic->numOfContents && !basic->numOfObjects &&
++        !basic->numOfPacks && !basic->numOfChannels)
++        return AVS3_DECODER_ERROR;
++    total_channels = decoder->numChansOutput;
++    if (!content_count_valid(total_channels, AVS3_CONTENT_MAX_CHANNELS) ||
++        decoder->numObjsOutput < 0 || decoder->numObjsOutput > total_channels ||
++        !content_count_valid(programme->numContents, AVS3_CONTENT_MAX_CONTENTS) ||
++        !content_count_valid(basic->numOfContents, AVS3_CONTENT_MAX_CONTENTS) ||
++        !content_count_valid(basic->numOfObjects, AVS3_CONTENT_MAX_OBJECTS) ||
++        !content_count_valid(basic->numOfPacks, 8) ||
++        !content_count_valid(basic->numOfChannels, AVS3_CONTENT_MAX_CHANNELS))
++        return content_reject(out, AVS3_CONTENTS_INVALID);
++    /* parse_header uses MONO/STEREO/MC for mixed-content transport too.
++     * isMixedContent distinguishes objects from plain speaker channels. */
++    if (!decoder->isMixedContent || !decoder->numObjsOutput ||
++        (decoder->avs3CodecFormat != AVS3_MONO_FORMAT &&
++         decoder->avs3CodecFormat != AVS3_STEREO_FORMAT &&
++         decoder->avs3CodecFormat != AVS3_MC_FORMAT) ||
++        (decoder->soundBedType != 0 && decoder->soundBedType != 1))
++        return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++    if ((!decoder->soundBedType && decoder->numObjsOutput != total_channels) ||
++        (decoder->soundBedType && decoder->numObjsOutput == total_channels))
++        return content_reject(out, AVS3_CONTENTS_INVALID);
++
++    for (i = 0; i < basic->numOfChannels; i++) {
++        int id = basic->audioChannelFormatData[i].channelFormatIdx;
++        if (id < 0 || id >= AVS3_CONTENT_MAX_CHANNELS)
++            return content_reject(out, AVS3_CONTENTS_INVALID);
++        for (j = 0; j < i; j++) {
++            if (basic->audioChannelFormatData[j].channelFormatIdx == id)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++        }
++    }
++    for (i = 0; i < basic->numOfPacks; i++) {
++        const AudioPackFormat *pack = &basic->audioPackFormatData[i];
++        if (pack->packFormatIdx < 0 || pack->packFormatIdx >= 8 ||
++            !content_count_valid(pack->numChannels, AVS3_CONTENT_MAX_CHANNELS) ||
++            (pack->hasChannelReuse != 0 && pack->hasChannelReuse != 1))
++            return content_reject(out, AVS3_CONTENTS_INVALID);
++        if (pack->typeLabel != 1 && pack->typeLabel != 3)
++            return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++        for (j = 0; j < i; j++) {
++            if (basic->audioPackFormatData[j].packFormatIdx == pack->packFormatIdx)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++        }
++        for (j = 0; j < pack->numChannels; j++) {
++            int channel_id = pack->refChannelIdx[j];
++            int pcm = pack->hasChannelReuse ? pack->transChRef[j] :
++                (int)pack->packFormatStartIdx + j;
++            uint32_t bit;
++            if (content_find_channel(basic, channel_id) < 0 ||
++                pcm < 0 || pcm >= total_channels)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++            bit = UINT32_C(1) << pcm;
++            if (pack_masks[i] & bit)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++            for (k = 0; k < j; k++) {
++                if (pack->refChannelIdx[k] == channel_id)
++                    return content_reject(out, AVS3_CONTENTS_INVALID);
++            }
++            /* The existing static gain adapter identifies a channel by PCM
++             * index. Do not claim selection support for a different identity. */
++            if (channel_id != pcm)
++                return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++            pack_masks[i] |= bit;
++        }
++        if (pack->typeLabel == 3)
++            spatial_mask |= pack_masks[i];
++    }
++    /* MIX transport stores object PCM after the bed. The renderer still uses
++     * that split for bed sources, so other static assignments are unsupported. */
++    for (i = total_channels - decoder->numObjsOutput; i < total_channels; i++)
++        expected_spatial_mask |= UINT32_C(1) << i;
++    if (spatial_mask != expected_spatial_mask)
++        return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++    if (decoder->hMetadataDec->avs3MetaData.hasDynamicMeta) {
++        const Avs3MetaDataDynamic *dynamic =
++            &decoder->hMetadataDec->avs3MetaData.avs3MetaDataDynamic;
++        uint32_t dynamic_mask = 0;
++        if (dynamic->numDmChans != decoder->numObjsOutput ||
++            dynamic->numDmChans < 0 ||
++            dynamic->numDmChans > AVS3_CONTENT_MAX_CHANNELS)
++            return content_reject(out, AVS3_CONTENTS_INVALID);
++        if (dynamic->dmLevel != 0 && dynamic->dmLevel != 1)
++            return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++        for (i = 0; i < dynamic->numDmChans; i++) {
++            int pcm = dynamic->transChRef[i];
++            uint32_t bit;
++            if (pcm < 0 || pcm >= total_channels)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++            bit = UINT32_C(1) << pcm;
++            if (dynamic_mask & bit)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++            dynamic_mask |= bit;
++        }
++        if (dynamic_mask != spatial_mask)
++            return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++    }
++    for (i = 0; i < basic->numOfObjects; i++) {
++        const AudioObject *object = &basic->audioObjectData[i];
++        AVS3SpatialContentObject *entry = &result.objects[i];
++        if (object->objectIdx < 0 || object->objectIdx >= AVS3_CONTENT_MAX_OBJECTS ||
++            !content_count_valid(object->numPacks, 8))
++            return content_reject(out, AVS3_CONTENTS_INVALID);
++        for (j = 0; j < i; j++) {
++            if (basic->audioObjectData[j].objectIdx == object->objectIdx)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++        }
++        for (j = 0; j < object->numPacks; j++) {
++            int pack_id = object->refPackFormatIdx[j];
++            int pack_index = content_find_pack(basic, pack_id);
++            if (pack_index < 0)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++            for (k = 0; k < j; k++) {
++                if (object->refPackFormatIdx[k] == pack_id)
++                    return content_reject(out, AVS3_CONTENTS_INVALID);
++            }
++            if (object_masks[i] & pack_masks[pack_index])
++                return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++            object_masks[i] |= pack_masks[pack_index];
++        }
++        /* Even different contents may give aliased objects different controls.
++         * The existing per-PCM metadata adapter cannot disambiguate them. */
++        for (j = 0; j < i; j++) {
++            if (object_masks[i] & object_masks[j])
++                return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++        }
++        entry->object_id = object->objectIdx;
++        entry->pcm_channel_mask = object_masks[i];
++        if (object->hasInteract) {
++            for (j = 0; j < AVS3_CONTENT_NAME_SIZE - 1; j++) {
++                int code = object->ObjectName[j];
++                if (code < 0 || code > 255)
++                    return content_reject(out, AVS3_CONTENTS_INVALID);
++                entry->name[j] = (char)(unsigned char)code;
++                if (!code)
++                    break;
++            }
++        }
++    }
++    for (i = 0; i < basic->numOfContents; i++) {
++        const AudioContent *content = &basic->audioContentData[i];
++        if (content->contentIdx < 0 || content->contentIdx >= AVS3_CONTENT_MAX_CONTENTS ||
++            !content_count_valid(content->numObjects, AVS3_CONTENT_MAX_OBJECTS))
++            return content_reject(out, AVS3_CONTENTS_INVALID);
++        if (content->hasNumComplementaryObjectGroup)
++            return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++        for (j = 0; j < i; j++) {
++            if (basic->audioContentData[j].contentIdx == content->contentIdx)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++        }
++        for (j = 0; j < content->numObjects; j++) {
++            int object_id = content->refObjectIdx[j];
++            if (content_find_object(basic, object_id) < 0)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++            for (k = 0; k < j; k++) {
++                if (content->refObjectIdx[k] == object_id)
++                    return content_reject(out, AVS3_CONTENTS_INVALID);
++            }
++        }
++    }
++    /* Publish only the programme's explicitly referenced contents, in order. */
++    for (i = 0; i < programme->numContents; i++) {
++        int id = programme->refContentIdx[i];
++        int index = content_find_content(basic, id);
++        const AudioContent *content;
++        AVS3SpatialContent *entry = &result.contents[i];
++        if (index < 0)
++            return content_reject(out, AVS3_CONTENTS_INVALID);
++        for (j = 0; j < i; j++) {
++            if (programme->refContentIdx[j] == id)
++                return content_reject(out, AVS3_CONTENTS_INVALID);
++        }
++        content = &basic->audioContentData[index];
++        entry->content_id = id;
++        entry->num_objects = content->numObjects;
++        for (j = 0; j < content->numObjects; j++) {
++            int object_id = content->refObjectIdx[j];
++            int object_index = content_find_object(basic, object_id);
++            uint32_t mask = object_masks[object_index];
++            /* Different objects reusing one PCM can carry different controls. */
++            if (entry->pcm_channel_mask & mask)
++                return content_reject(out, AVS3_CONTENTS_UNSUPPORTED);
++            entry->object_ids[j] = object_id;
++            entry->pcm_channel_mask |= mask;
++        }
++    }
++    result.available = 1;
++    result.status = AVS3_CONTENTS_OK;
++    result.total_channels = total_channels;
++    result.num_contents = programme->numContents;
++    result.num_objects = basic->numOfObjects;
++    *out = result;
++    return AVS3_DECODER_SUCCESS;
++}
