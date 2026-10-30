@@ -67,7 +67,6 @@ jobs:
     timeout-minutes: 360
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      LEGACY_SPEAKER_CONFIG: ${{ runner.temp }}/native-refresh-parent-config
       MPV_WINBUILD_COMMIT: b4b1088c30e8821e012fd20052de4c2d3a8eaad4
       MPV_WINBUILD_CMAKE_COMMIT: 04283f7e911149809c46bc236a834cf7134ba133
       MPV_COMMIT: c318236b8882af860f16f936225430ad053a2179
@@ -141,6 +140,8 @@ jobs:
         run: |
           set -euxo pipefail
           parent_config=fe31dc21d2b249eea3890bad2066dc578d922d0b
+          LEGACY_SPEAKER_CONFIG="$RUNNER_TEMP/native-refresh-parent-config"
+          printf 'LEGACY_SPEAKER_CONFIG=%s\n' "$LEGACY_SPEAKER_CONFIG" >> "$GITHUB_ENV"
           timeout --foreground --kill-after=20s 120s \
             git fetch --no-tags --depth=1 origin "$parent_config"
           test ! -e "$LEGACY_SPEAKER_CONFIG"
