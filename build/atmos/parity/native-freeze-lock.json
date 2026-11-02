@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "parent_config_commit": "1393dd3715ab02e87162dd541886fabb0766fb6c",
+  "parent_config_tree": "58fa116ff1e9c96268e09dae6b561a8ff1f54c84",
+  "parent_native_refresh_lock_sha256": "b1b52ee787344124e52c47712c06ae2ecada1e42e1781d4d9b54fb24adfb27c4",
+  "parent_source_lock_sha256": "a1721340c1819bad1e8d10aa070c5224aa72b73d8283b346fb7186e4f0c5f4fd",
+  "dependency_lock_sha256": "515e948e1235a2a73216d59521ad449ad6357b4a543aaabb4b2886aeb28c3a55",
+  "patch": {
+    "path": "build/bluray-menu/patches/0065-native-ass-epoch-bootstrap.patch",
+    "sha256": "acf9242587da78e3c9e32e20364a20f140ebc4618450b1984d3db77edd87f142",
+    "changed_files": [
+      "video/out/secondary_ass_physical.h",
+      "video/out/vo.c"
+    ]
+  },
+  "variants": {
+    "main": {
+      "baseline_tree": "61a2676338e340c0b94e2c9ea92964edd9194b5c",
+      "source_tree": "09d1f6d4557cd62bd9aa4154f3692b4272ba96ed",
+      "before_source_sha256": {
+        "video/out/secondary_ass_physical.h": "d9dd8817de1520d349142bf853ae40100b8c99d78a7f5c00542eb0a0980543c0",
+        "video/out/vo.c": "a8948230bdd4be96a8578fb2d4912b6e98c70f066cbaf360ee42951d56b0ab84"
+      },
+      "source_sha256": {
+        "video/out/secondary_ass_physical.h": "53d9fc70a8d9dee44e30d31dc466834fc357ec6c381cc7637c77f63f8eccfda9",
+        "video/out/vo.c": "3ab60527bbf788b145901b524c485027d11dbec62312763a6920a9b900704e32"
+      }
+    },
+    "atmos": {
+      "baseline_tree": "e0e82e9b934e5a356955053755914acea7e858ab",
+      "source_tree": "70f8359eb57ec02c90bda33044adb5f16fbf5e53",
+      "before_source_sha256": {
+        "video/out/secondary_ass_physical.h": "d9dd8817de1520d349142bf853ae40100b8c99d78a7f5c00542eb0a0980543c0",
+        "video/out/vo.c": "a8948230bdd4be96a8578fb2d4912b6e98c70f066cbaf360ee42951d56b0ab84"
+      },
+      "source_sha256": {
+        "video/out/secondary_ass_physical.h": "53d9fc70a8d9dee44e30d31dc466834fc357ec6c381cc7637c77f63f8eccfda9",
+        "video/out/vo.c": "3ab60527bbf788b145901b524c485027d11dbec62312763a6920a9b900704e32"
+      }
+    }
+  },
+  "cpu_contracts": [
+    {
+      "id": "exact-vo-osd-epoch-bootstrap",
+      "kind": "extracted-epoch",
+      "runner": "build/feedback/tests/verify-secondary-ass-epoch-bootstrap.c",
+      "expected_stdout_prefix": "PASS scenarios=",
+      "run_arguments": [],
+      "inputs": []
+    },
+    {
+      "id": "physical-phase-recovery",
+      "kind": "c",
+      "runner": "build/feedback/tests/verify-secondary-ass-phase-recovery.c",
+      "expected_stdout_prefix": "FIXED:",
+      "run_arguments": [
+        "fixed"
+      ],
+      "inputs": []
+    },
+    {
+      "id": "existing-fresh-video-and-sampler",
+      "kind": "c",
+      "runner": "build/feedback/tests/verify-secondary-ass-fresh-video.c",
+      "expected_stdout_prefix": "PASS scenarios=",
+      "run_arguments": [],
+      "inputs": []
+    }
+  ],
+  "tools_sha256": {
+    ".github/workflows/build-mpv-v100-parity.yml": "338d5fd7ca860a6798830b9ea3a885807dea6c5f9bf19fc59f2285c912a596c1",
+    "build/atmos/parity/freeze-native-freeze-layer.py": "0608ac05286ef6dae18d62c802fcc86e837f5e5de8664006704734304815c78d",
+    "build/atmos/parity/prepare-native-freeze-winbuild.py": "8d98557b40078805d67b04e4c78ae90d93a5a3b41dbc6d8947efbe57ecaf4cc0",
+    "build/atmos/parity/test-native-freeze-source-gate.py": "e8673d4e3f49d999cdf6af498cab90eacddb94d00985d4a232695e4f6ee6dc6b",
+    "build/atmos/parity/verify-native-freeze-contract.py": "32a6b3e5d8870ef71e2dba3fe3e86a2bd331a12339fd2f5b1047e38e46090b11",
+    "build/atmos/parity/verify-native-freeze-source.py": "164e61ebe889b81afee142fadde342f4ed4fcae6ee35f09496beb6a46d394c83",
+    "build/feedback/tests/verify-secondary-ass-epoch-bootstrap.c": "5e9c7a68accc94104c600cae39ba1703d53c03a6c4240261f8132b1d1f77ea8b",
+    "build/feedback/tests/verify-secondary-ass-fresh-video.c": "b10419317eba36a62b32c74c1c30932f35fc580053ee606fe8a8791f13be76fb",
+    "build/feedback/tests/verify-secondary-ass-phase-recovery.c": "8a1032b285f83ad3604e1a65e192622d141a4c06c05e8532518971985737f94b"
+  }
+}

@@ -1,0 +1,60 @@
+From 1d182c9ae3e83d95f7ac24eaf236f182e4568ce5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Mon, 2 Nov 2026 08:02:50 +0800
+Subject: [PATCH] vo: recover native ASS sampling after physical feedback
+ resets
+
+---
+ video/out/secondary_ass_physical.h | 10 ++++++++++
+ video/out/vo.c                     | 14 ++++++++++++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/video/out/secondary_ass_physical.h b/video/out/secondary_ass_physical.h
+index 554ed50..ce8dc47 100644
+--- a/video/out/secondary_ass_physical.h
++++ b/video/out/secondary_ass_physical.h
+@@ -822,6 +822,16 @@ static inline void secondary_ass_physical_update_observed(
+         (offset > 0 && p->sync_slot > INT64_MAX - offset) ||
+         (offset < 0 && p->sync_slot <= -offset))
+         return;
++    // Recovery established a count/time segment, not Present history. A real
++    // Sync observation can restore a cleared physical phase even while the
++    // previous Present belongs to the excluded gap. Keep the historical-ID,
++    // submission-coordinate and delay-learning guards below unchanged.
++    if (!p->phase && !p->phase_slot && p->history_floor_slot > 0 &&
++        p->sync_segment_consistent && !p->outlier_pending &&
++        p->sync_slot >= p->history_floor_slot) {
++        p->phase = sync_wall;
++        p->phase_slot = p->sync_slot;
++    }
+     if (offset && p->history_floor_slot) {
+         // A raw offset may only cross the newly established count segment for
+         // an identified post-recovery submission. Old/gap IDs (including an
+diff --git a/video/out/vo.c b/video/out/vo.c
+index a0b4935..114ab34 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -567,6 +567,20 @@ static struct secondary_ass_present_plan secondary_forecast_fresh_video_plan(
+ {
+     struct secondary_ass_sample_snapshot sample =
+         osd_get_secondary_sample_snapshot(vo->osd);
++    // A backend lifecycle reset creates a new physical slot namespace.
++    // The old sampler still exposes its divisor while held, but its origin
++    // cannot identify any task in that new epoch. Bootstrap one mandatory
++    // draw from recovered physical feedback, keeping the video's original F.
++    // After OSD accepts it, ordinary draws resume the retained due-G policy.
++    if (sample.epoch && vo->in->secondary_physical.epoch &&
++        sample.epoch != vo->in->secondary_physical.epoch &&
++        sample.divisor == divisor && sample.rate == rate) {
++        struct secondary_ass_present_plan bootstrap =
++            secondary_forecast_fresh_clock_plan(vo, ready, video_submit,
++                (struct secondary_ass_physical_point){0}, divisor, rate);
++        if (bootstrap.valid)
++            return bootstrap;
++    }
+     if (sample.epoch != vo->in->secondary_physical.epoch ||
+         sample.divisor != divisor || sample.rate != rate)
+         return (struct secondary_ass_present_plan){
+-- 
+2.54.0.windows.1
+
