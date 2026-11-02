@@ -25,6 +25,10 @@ ExternalProject_Add(avs3-audiodec
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-renderer-hardening.patch
         COMMAND ${EXEC} git apply
         ${CMAKE_CURRENT_SOURCE_DIR}/avs3-renderer-hardening.patch
+        COMMAND ${EXEC} git apply --check
+        ${CMAKE_CURRENT_SOURCE_DIR}/avs3-audiodec-9002-preselections.patch
+        COMMAND ${EXEC} git apply
+        ${CMAKE_CURRENT_SOURCE_DIR}/avs3-audiodec-9002-preselections.patch
     CONFIGURE_COMMAND ${EXEC} CONF=1 cmake
         -S <SOURCE_DIR>/av3adecoder
         -B <BINARY_DIR>

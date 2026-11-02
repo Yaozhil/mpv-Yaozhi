@@ -1,0 +1,165 @@
+From 31933935edc356899a02931e71a555abffb04c9e Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 23 Oct 2026 17:23:03 +0800
+Subject: [PATCH] audio: expose validated AV3A content selection metadata
+
+---
+ DOCS/man/input.rst          |  7 +++++++
+ audio/decode/ad_lavc.c      | 39 +++++++++++++++++++++++++++++++++++++
+ filters/f_decoder_wrapper.h |  2 ++
+ player/command.c            | 26 +++++++++++++++++++++++--
+ 4 files changed, 72 insertions(+), 2 deletions(-)
+
+diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
+index 8c8ccd362d808d1cb203e232ddc7bd426440aa40..7421cb2be59bcd227d4c331242f627259016b694 100644
+--- a/DOCS/man/input.rst
++++ b/DOCS/man/input.rst
+@@ -2775,6 +2775,13 @@ Property list
+     Similar to ``ao-volume``, but controls the mute state. May be unimplemented
+     even if ``ao-volume`` works.
+ 
++``audio-av3a-content-info``
++    Read-only JSON string exported by an AV3A decoder with content-selection
++    support. Unavailable for other decoders or before metadata is known.
++    The value is limited to 16384 bytes and describes the decoder's actual
++    content definitions and applied selection. It is not an instrument-name
++    database. The JSON schema is specific to the decoder build.
++
+ ``audio-params``
+     Audio format as output by the audio decoder.
+     This has a number of sub-properties:
+diff --git a/audio/decode/ad_lavc.c b/audio/decode/ad_lavc.c
+index 9c83892afddd8e001395b84ca60a493d6b62dd25..d7fdff8d13079d6dba3efe71e66807ed2e1037c2 100644
+--- a/audio/decode/ad_lavc.c
++++ b/audio/decode/ad_lavc.c
+@@ -24,6 +24,7 @@
+ #include <libavutil/opt.h>
+ #include <libavutil/common.h>
+ #include <libavutil/intreadwrite.h>
++#include <libavutil/mem.h>
+ 
+ #include "config.h"
+ 
+@@ -281,6 +282,43 @@ static void ad_lavc_process(struct mp_filter *ad)
+     lavc_process(ad, &priv->state, send_packet, receive_frame);
+ }
+ 
++static int control(struct mp_filter *ad, enum dec_ctrl cmd, void *arg)
++{
++    struct priv *priv = ad->priv;
++    if (cmd != ADCTRL_GET_AV3A_CONTENT_INFO)
++        return CONTROL_UNKNOWN;
++
++    char **result = arg;
++    *result = NULL;
++    AVCodecContext *avctx = priv->avctx;
++    // Codec private data is an AVOptions object only with a private class.
++    // PCM and other decoders can have plain fields at priv_data instead.
++    if (!avctx || !avctx->codec || !avctx->codec->priv_class || !avctx->priv_data)
++        return CONTROL_FALSE;
++    void *options = avctx->priv_data;
++
++    // Query the decoder's own read-only export, never a similarly named
++    // writable option or a child of a different codec context.
++    int flags = AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY;
++    const AVOption *opt = av_opt_find(options, "av3a_contents", NULL, flags, 0);
++    if (!opt || opt->type != AV_OPT_TYPE_STRING || (opt->flags & flags) != flags)
++        return CONTROL_FALSE;
++
++    uint8_t *value = NULL;
++    if (av_opt_get(options, "av3a_contents", 0, &value) < 0 || !value) {
++        av_free(value);
++        return CONTROL_FALSE;
++    }
++
++    size_t length = 0;
++    while (length <= 16384 && value[length])
++        length++;
++    if (length && length <= 16384)
++        *result = talloc_strndup(NULL, (char *)value, length);
++    av_free(value);
++    return *result ? CONTROL_TRUE : CONTROL_FALSE;
++}
++
+ static const struct mp_filter_info ad_lavc_filter = {
+     .name = "ad_lavc",
+     .priv_size = sizeof(struct priv),
+@@ -305,6 +343,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
+     struct priv *priv = da->priv;
+     priv->codec = codec;
+     priv->public.f = da;
++    priv->public.control = control;
+ 
+     if (!init(da, codec, decoder)) {
+         talloc_free(da);
+diff --git a/filters/f_decoder_wrapper.h b/filters/f_decoder_wrapper.h
+index c2ad95a642fc9753abb8ff42e8b6cb96231a9c4b..bf1abb55d07f1681776926c4acd8f841db8d92c3 100644
+--- a/filters/f_decoder_wrapper.h
++++ b/filters/f_decoder_wrapper.h
+@@ -81,6 +81,8 @@ enum dec_ctrl {
+     // int*: extra hw surfaces retained
+     VDCTRL_SET_EXTRA_HW_FRAMES,
+     VDCTRL_CHECK_FORCED_EOF,
++    // char **: copied AV3A content JSON, owned by caller (talloc_free).
++    ADCTRL_GET_AV3A_CONTENT_INFO,
+ };
+ 
+ int mp_decoder_wrapper_control(struct mp_decoder_wrapper *d,
+diff --git a/player/command.c b/player/command.c
+index 80b30fcab59c6472a2b926e2e3a777d20aeedea1..0b3414b2ec0efd8083b2cf35b09eea29dd1e485c 100644
+--- a/player/command.c
++++ b/player/command.c
+@@ -1983,6 +1983,25 @@ static int mp_property_audio_params(void *ctx, struct m_property *prop,
+         mpctx->ao_chain->filter->input_aformat : NULL, action, arg);
+ }
+ 
++static int mp_property_audio_av3a_content_info(void *ctx, struct m_property *prop,
++                                            int action, void *arg)
++{
++    MPContext *mpctx = ctx;
++    struct track *track = mpctx->current_track[0][STREAM_AUDIO];
++    // A merged stream group has no single AV3A content selection.
++    if (track && track->stream && track->stream->group)
++        return M_PROPERTY_UNAVAILABLE;
++    struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
++    char *value = NULL;
++    if (!dec || mp_decoder_wrapper_control(dec, ADCTRL_GET_AV3A_CONTENT_INFO,
++                                          &value) != CONTROL_TRUE)
++        return M_PROPERTY_UNAVAILABLE;
++
++    int result = m_property_strdup_ro(action, arg, value);
++    talloc_free(value);
++    return result;
++}
++
+ static int mp_property_audio_out_params(void *ctx, struct m_property *prop,
+                                         int action, void *arg)
+ {
+@@ -4783,6 +4802,7 @@ static const struct m_property mp_properties_base[] = {
+     M_PROPERTY_ALIAS("audio-codec-name", "current-tracks/audio/codec"),
+     M_PROPERTY_ALIAS("audio-codec", "current-tracks/audio/codec-desc"),
+     {"audio-params", mp_property_audio_params},
++    {"audio-av3a-content-info", mp_property_audio_av3a_content_info},
+     {"audio-out-params", mp_property_audio_out_params},
+     {"aid", mp_property_switch_track, .priv = (void *)(const int[]){0, STREAM_AUDIO}},
+     {"audio-device", mp_property_audio_device},
+@@ -4946,7 +4966,8 @@ static const char *const *const mp_event_property_change[] = {
+       "decoder-frame-drop-count", "frame-drop-count", "video-frame-info",
+       "vf-metadata", "af-metadata", "sub-start", "sub-end", "secondary-sub-start",
+       "secondary-sub-end", "sub-lines", "secondary-sub-lines", "video-out-params",
+-      "video-dec-params", "video-params", "deinterlace-active", "video-target-params"),
++      "video-dec-params", "video-params", "deinterlace-active", "video-target-params",
++      "audio-av3a-content-info"),
+     E(MP_EVENT_DURATION_UPDATE, "duration"),
+     E(MPV_EVENT_VIDEO_RECONFIG, "video-out-params", "video-params",
+       "video-format", "video-codec", "video-bitrate", "dwidth", "dheight",
+@@ -4956,7 +4977,8 @@ static const char *const *const mp_event_property_change[] = {
+     E(MPV_EVENT_AUDIO_RECONFIG, "audio-format", "audio-codec", "audio-bitrate",
+       "samplerate", "channels", "audio", "volume", "volume-gain", "mute",
+       "current-ao", "audio-codec-name", "audio-params", "track-list", "current-tracks",
+-      "audio-out-params", "volume-max", "volume-gain-min", "volume-gain-max", "mixer-active"),
++      "audio-out-params", "volume-max", "volume-gain-min", "volume-gain-max", "mixer-active",
++      "audio-av3a-content-info"),
+     E(MPV_EVENT_SEEK, "seeking", "core-idle", "eof-reached"),
+     E(MPV_EVENT_PLAYBACK_RESTART, "seeking", "core-idle", "eof-reached"),
+     E(MP_EVENT_METADATA_UPDATE, "metadata", "filtered-metadata", "media-title"),

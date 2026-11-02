@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "baseline": "2026-10-23T16:13:49Z",
+  "scope": "libplacebo and its external glad/fast_float sources; other Git dependencies are inventoried, not claimed identical to the previous binary",
+  "previous_external_source_identity": "not retained by the previous build; these are new explicit freezes at the previous CI cutoff",
+  "sources": {
+    "libplacebo": {
+      "repository": "https://github.com/haasn/libplacebo.git",
+      "commit": "c9076f7cba48443ef51638361bddd5165e9a596c",
+      "tree": "ef3ae637efa29fa6e38ac1eb033f9da1bd0b49dc"
+    },
+    "glad": {
+      "repository": "https://github.com/Dav1dde/glad.git",
+      "commit": "0a7cf1af9e25e02821587bd4095807fc90b6426a",
+      "tree": "33aa34cbd5bc7c884d484d15a3cb16fbafeea9e2"
+    },
+    "fast_float": {
+      "repository": "https://github.com/fastfloat/fast_float.git",
+      "commit": "0de7a21da582b6c84b0546772a96549882905d2b",
+      "tree": "fb1630cda06d535659c2e3a5eb4186c34de36510"
+    }
+  },
+  "libplacebo_options": {
+    "default_library": "static",
+    "d3d11": "enabled",
+    "debug": true,
+    "b_ndebug": "true",
+    "optimization": "3",
+    "demos": false
+  },
+  "allowed_source_changes": {
+    "libplacebo": [
+      "3rdparty/glad -> external locked glad",
+      "3rdparty/fast_float -> external locked fast_float"
+    ],
+    "glad": [],
+    "fast_float": []
+  },
+  "patches": [],
+  "original_recipes_sha256": {
+    "libplacebo": "64c407a343a43bfe8b372b12d5dac4621d1362f094239cfb2c215e6ce213332f",
+    "glad": "ee80b01e4fce4561f1d9dfa9f51474cc4b48ef7ef739227db6099aed36016468",
+    "fast_float": "3781c52eb992b862eed0df9ea3b03884e9d7330b39cbe5be24858b732b85c2aa"
+  }
+}

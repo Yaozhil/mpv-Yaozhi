@@ -1,0 +1,175 @@
+From c2128d12c55414a010fc4973478cf3132ced8d86 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Fri, 30 Oct 2026 23:07:19 +0800
+Subject: [PATCH] vo: keep mandatory video deadlines independent of native ASS
+ cadence
+
+---
+ video/out/secondary_ass_fresh_video.h | 64 +++++++++++++++++++++++++++
+ video/out/vo.c                        | 51 +++++++++++++++++++--
+ 2 files changed, 111 insertions(+), 4 deletions(-)
+ create mode 100644 video/out/secondary_ass_fresh_video.h
+
+diff --git a/video/out/secondary_ass_fresh_video.h b/video/out/secondary_ass_fresh_video.h
+new file mode 100644
+index 0000000..29a6d23
+--- /dev/null
++++ b/video/out/secondary_ass_fresh_video.h
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_FRESH_VIDEO_H
++#define MP_SECONDARY_ASS_FRESH_VIDEO_H
++
++#include "secondary_ass_present_plan.h"
++
++// Mandatory video owns F. Its predicted display D may advance the ASS clock
++// only to an already due G on the retained sampler lattice, never next-G just
++// because another video frame arrived. Cached ASS keeps its existing policy.
++static inline struct secondary_ass_present_plan
++secondary_ass_fresh_video_plan(const struct secondary_ass_physical *p,
++    int64_t origin_slot, int64_t next_slot, int64_t divisor, int offset,
++    int64_t ready, int64_t video_submit)
++{
++    struct secondary_ass_present_plan none = {
++        .display_forecast = true, .fresh_clock_only = true,
++        .submit = video_submit, .fallback_submit = video_submit,
++        .lifecycle_safe_wait = video_submit,
++    };
++    if (origin_slot <= 0 || next_slot < origin_slot || divisor <= 0 ||
++        (next_slot - origin_slot) % divisor || offset < 0 || offset > 4 ||
++        ready <= 0 || video_submit <= 0 || !p->epoch || p->epoch_exhausted ||
++        !p->success_generation || !p->success_contiguous ||
++        p->outlier_pending || !p->sync_segment_consistent)
++        return none;
++
++    // Do not feed retrospective G-to-D quantization into this prediction.
++    // The accepted fixed offset is independent of the changing delay learner.
++    struct secondary_ass_physical display = *p;
++    display.delay = offset;
++    // An already registered pose cannot make wall time advance. When source
++    // video is faster than scanout, repeated fresh draws must hold the tick.
++    display.last_base_slot = 0;
++    int64_t after = ready > video_submit ? ready : video_submit;
++    struct secondary_ass_physical_point actual =
++        secondary_ass_physical_predict_point(&display, after);
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(p);
++    int64_t lower = secondary_ass_physical_fifo_lower_bound(&view);
++    if (lower > actual.slot)
++        actual = secondary_ass_physical_point_at(&view, lower);
++    if (actual.slot <= offset || actual.wall <= after)
++        return none;
++    int64_t base = actual.slot - offset;
++    if (base < origin_slot)
++        return none;
++    int64_t logical_slot = base - (base - origin_slot) % divisor;
++    if (logical_slot < next_slot || logical_slot <= p->last_base_slot)
++        return none;
++    struct secondary_ass_physical_point logical =
++        secondary_ass_physical_point_at(&view, logical_slot);
++    struct secondary_ass_present_plan plan =
++        secondary_ass_present_plan_make(p, logical, actual);
++    if (!plan.valid || actual.slot - logical.slot > INT32_MAX)
++        return none;
++    plan.display_forecast = true;
++    plan.fresh_clock_only = true;
++    plan.captured_forecast = (int)(actual.slot - logical.slot);
++    plan.submit = video_submit;
++    plan.fallback_submit = video_submit;
++    plan.lifecycle_safe_wait = video_submit;
++    return plan;
++}
++
++#endif
+diff --git a/video/out/vo.c b/video/out/vo.c
+index b994099..a0b4935 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -44,6 +44,7 @@
+ #include "secondary_ass_presentation.h"
+ #include "secondary_ass_physical.h"
+ #include "secondary_ass_present_plan.h"
++#include "secondary_ass_fresh_video.h"
+ #include "secondary_ass_neutral_pose.h"
+ #include "secondary_ass_queue_lead.h"
+ #include "secondary_ass_queue_stage.h"
+@@ -560,6 +561,27 @@ static struct secondary_ass_present_plan secondary_forecast_fresh_clock_plan(
+         ready, video_submit);
+ }
+ 
++static struct secondary_ass_present_plan secondary_forecast_fresh_video_plan(
++    struct vo *vo, int64_t ready, int64_t video_submit,
++    struct secondary_ass_physical_point next, int64_t divisor, double rate)
++{
++    struct secondary_ass_sample_snapshot sample =
++        osd_get_secondary_sample_snapshot(vo->osd);
++    if (sample.epoch != vo->in->secondary_physical.epoch ||
++        sample.divisor != divisor || sample.rate != rate)
++        return (struct secondary_ass_present_plan){
++            .display_forecast = true, .fresh_clock_only = true,
++            .submit = video_submit, .fallback_submit = video_submit,
++            .lifecycle_safe_wait = video_submit,
++        };
++    // Held/forced samples remain usable identities. Requiring sample.valid
++    // here would prevent a held clock from ever accepting its next due tick.
++    return secondary_ass_fresh_video_plan(&vo->in->secondary_physical,
++        sample.origin_slot, next.slot, divisor,
++        secondary_fixed_forecast_offset(vo, next, divisor, rate),
++        ready, video_submit);
++}
++
+ static struct secondary_ass_present_plan secondary_cache_plan(struct vo *vo,
+     struct secondary_ass_physical_point logical, int64_t divisor, double rate)
+ {
+@@ -2485,6 +2507,13 @@ static bool render_frame(struct vo *vo)
+         struct secondary_ass_present_plan present_plan = {0};
+         bool planned_audio = secondary_plan_enabled(vo, frame->display_synced,
+                                                   sample_divisor);
++        // This is the accepted launcher policy, not every diagnostic mode.
++        bool accepted_day_fresh = planned_audio && native_rate > 0 &&
++            !frame->display_synced && !frame->repeat && !early_plan.valid &&
++            in->secondary_fifo_present && in->secondary_present_grid &&
++            in->secondary_present_plan && in->secondary_split_budget &&
++            in->secondary_display_forecast && in->secondary_fixed_forecast &&
++            !in->secondary_queue_lead && !in->secondary_queue_stage;
+         bool secondary_affordable = native_rate > 0 && secondary_ass_budget_affordable(
+             in->secondary_render_cost, in->secondary_redraw_cost, duration,
+             MPMAX(MP_TIME_S_TO_NS(1.0 / native_rate), in->secondary_physical.interval));
+@@ -2492,7 +2521,7 @@ static bool render_frame(struct vo *vo)
+         // is already mandatory. Keep the normal/early captured plans unchanged.
+         bool fresh_clock_only = in->secondary_fixed_forecast && !frame->repeat &&
+             secondary_forecast_enabled(vo, frame->display_synced, sample_divisor) &&
+-            !early_plan.valid && !secondary_affordable;
++            !early_plan.valid && (!secondary_affordable || accepted_day_fresh);
+         bool physical_phase = clock_rate > 0 && !frame->display_synced &&
+             in->secondary_physical.phase && native_rate > 0 &&
+             duration >= in->secondary_physical.interval &&
+@@ -2570,9 +2599,23 @@ static bool render_frame(struct vo *vo)
+                 physical_now + in->secondary_render_cost);
+             if (planned_audio) {
+                 if (fresh_clock_only) {
+-                    present_plan = secondary_forecast_fresh_clock_plan(vo,
+-                        physical_ready, original_video_target, native_point,
+-                        sample_divisor, native_rate);
++                    if (accepted_day_fresh) {
++                        present_plan = secondary_forecast_fresh_video_plan(vo,
++                            physical_ready, original_video_target, native_point,
++                            sample_divisor, native_rate);
++                        if (!present_plan.valid) {
++                            // No due ASS tick: render video at F with the last
++                            // accepted pose, without a future task or wait.
++                            physical_point = (struct secondary_ass_physical_point){0};
++                            presentation_time = 0;
++                            target = original_video_target;
++                            present_ready = target;
++                        }
++                    } else {
++                        present_plan = secondary_forecast_fresh_clock_plan(vo,
++                            physical_ready, original_video_target, native_point,
++                            sample_divisor, native_rate);
++                    }
+                 } else {
+                     present_plan = early_plan.valid ? early_plan :
+                     (secondary_forecast_enabled(vo, false, sample_divisor)
+-- 
+2.54.0.windows.1
+

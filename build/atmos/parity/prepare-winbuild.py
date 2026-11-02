@@ -15,6 +15,27 @@ root=Path(__file__).resolve().parents[3]
 here=Path(__file__).resolve().parent
 lock=json.loads((here/'source-lock.json').read_text(encoding='utf-8'))
 packages=args.winbuild.resolve()/'packages'
+# Keep the exact patched inputs available for the post-build identity gate.
+# The pinned helper otherwise restores HEAD and deletes untracked patch files
+# after install, before the gate can inspect the sources used by the compiler.
+# Retain its explicit fullclean/liteclean targets and every other package's
+# normal cleanup behavior.
+cleanup_helper=args.winbuild.resolve()/'cmake/custom_steps.cmake'
+cleanup_text=cleanup_helper.read_text()
+postremove=(
+    '    ExternalProject_Add_Step(${_name} postremovebuild\n'
+    '        DEPENDEES ${_last_step}\n'
+    '        COMMAND ${EXEC} ${remove_cmd}\n'
+    '        ${COMMAND_FORCE_UPDATE}\n'
+    '        LOG 1\n'
+    '        COMMENT "Deleting build directory of ${_name} package after install"\n'
+    '    )\n'
+)
+assert cleanup_text.count(postremove)==1, 'Review pinned post-install cleanup helper'
+cleanup_text=cleanup_text.replace(postremove,
+    '    if(NOT "${_name}" MATCHES "^(avs3-audiodec|ffmpeg)$")\n'+
+    postremove+'    endif()\n',1)
+cleanup_helper.write_text(cleanup_text)
 for name,digest in lock['patches'].items():
     assert hashlib.sha256((here/name).read_bytes()).hexdigest()==digest, name
 for name,digest in lock['common_patches'].items():
@@ -102,9 +123,23 @@ shutil.copyfile(root/'build/bluray-menu/patches/0049-native-ass-captured-submit-
 shutil.copyfile(root/'build/bluray-menu/patches/0050-native-ass-paused-bitmap.patch', packages/'mpv-9200-native-ass-paused-bitmap.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0051-native-ass-prepass-display-budget.patch', packages/'mpv-9201-native-ass-prepass-display-budget.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0052-native-ass-observer-recovery.patch', packages/'mpv-9202-native-ass-observer-recovery.patch')
+# Keep the bounded PTS patch last: its existing identity gate inspects HEAD^.
+shutil.copyfile(root/'build/bluray-menu/patches/0054-demux-inactive-subtitle-cache.patch', packages/'mpv-9202a-demux-inactive-subtitle-cache.patch')
 shutil.copyfile(root/'build/bluray-menu/patches/0053-video-bounded-duplicate-pts.patch', packages/'mpv-9203-video-bounded-duplicate-pts.patch')
-shutil.copyfile(root/'build/bluray-menu/patches/0054-native-ass-neutral-present-ab.patch', packages/'mpv-9204-native-ass-neutral-present-ab.patch')
-shutil.copyfile(root/'build/bluray-menu/patches/0055-native-ass-fresh-submit-window.patch', packages/'mpv-9205-native-ass-fresh-submit-window.patch')
+# Round-one groups follow the exact legacy HOLD/EOF/PTS baseline. Historical
+# gates check their original layer; the new exact gate checks the five additions.
+for source_name, package_name in [
+    ('0055-vc1-bounded-decoder-fallback.patch', 'mpv-9300-vc1-bounded-decoder-fallback.patch'),
+    ('0056-vc1-disc-parameter-probe.patch', 'mpv-9301-vc1-disc-parameter-probe.patch'),
+    ('0057-script-property-lookup.patch', 'mpv-9302-script-property-lookup.patch'),
+    ('0058-lua-native-api-efficiency.patch', 'mpv-9303-lua-native-api-efficiency.patch'),
+    ('0059-windows-com-lifetime.patch', 'mpv-9304-windows-com-lifetime.patch'),
+]:
+    shutil.copyfile(root/'build/bluray-menu/patches'/source_name, packages/package_name)
+# The content-selection layer is checked at its own HEAD; all older identity
+# gates still run on the exact original round-one/HOLD/EOF/PTS checkouts.
+shutil.copyfile(root/'build/bluray-menu/patches/0060-av3a-content-selection.patch',
+                packages/'mpv-9305-av3a-content-selection.patch')
 # ftp.gnu.org can be unavailable from some CI egress paths. These mirrors
 # were independently checked to have the same pinned SHA256; retaining
 # URL_HASH means a mirror cannot silently change the dependency bytes.

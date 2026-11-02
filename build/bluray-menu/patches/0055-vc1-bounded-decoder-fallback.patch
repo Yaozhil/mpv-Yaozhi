@@ -1,0 +1,171 @@
+From 51faa92a67b5d8150fe0659045697b30f92443bf Mon Sep 17 00:00:00 2001
+From: mpv-Yaozhi <yaozhi@localhost>
+Date: Thu, 22 Oct 2026 16:36:27 +0800
+Subject: [PATCH] vd_lavc: stop fallback when software initialization fails
+
+---
+ video/decode/vd_lavc.c | 81 ++++++++++++++++++++++++++----------------
+ 1 file changed, 51 insertions(+), 30 deletions(-)
+
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+index 5cd6822..9584d8a 100644
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -56,7 +56,13 @@
+ 
+ #include "options/m_option.h"
+ 
+-static void init_avctx(struct mp_filter *vd);
++enum init_avctx_result {
++    INIT_AVCTX_FAILED,
++    INIT_AVCTX_HWDEC_FAILED,
++    INIT_AVCTX_OK,
++};
++
++static enum init_avctx_result init_avctx(struct mp_filter *vd);
+ static void uninit_avctx(struct mp_filter *vd);
+ 
+ static int get_buffer2_direct(AVCodecContext *avctx, AVFrame *pic, int flags);
+@@ -680,7 +686,7 @@ static int hwdec_opt_help(struct mp_log *log, const m_option_t *opt,
+     return M_OPT_EXIT;
+ }
+ 
+-static void force_fallback(struct mp_filter *vd)
++static enum init_avctx_result force_fallback(struct mp_filter *vd)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+ 
+@@ -689,7 +695,17 @@ static void force_fallback(struct mp_filter *vd)
+     mp_msg(vd->log, lev, "Attempting next decoding method after failure of %.*s.\n",
+            BSTR_P(ctx->attempted_hwdecs[ctx->num_attempted_hwdecs - 1]));
+     select_and_set_hwdec(vd);
+-    init_avctx(vd);
++    return init_avctx(vd);
++}
++
++static bool finish_fallback(struct mp_filter *vd, enum init_avctx_result result)
++{
++    // Hardware methods are recorded before attempting them, so this makes
++    // progress through a finite list. Software initialization is the final
++    // attempt: retrying it with the same parameters cannot recover anything.
++    while (result == INIT_AVCTX_HWDEC_FAILED)
++        result = force_fallback(vd);
++    return result == INIT_AVCTX_OK;
+ }
+ 
+ static void reinit(struct mp_filter *vd)
+@@ -710,13 +726,7 @@ static void reinit(struct mp_filter *vd)
+ 
+     select_and_set_hwdec(vd);
+ 
+-    bool use_hwdec = ctx->use_hwdec;
+-    init_avctx(vd);
+-    if (!ctx->avctx && use_hwdec) {
+-        do {
+-            force_fallback(vd);
+-        } while (!ctx->avctx);
+-    }
++    finish_fallback(vd, init_avctx(vd));
+ 
+     // Wait for the first keyframe after reinit to ensure the decoder state is
+     // valid and to avoid decoding errors that could cause hwdec to fail and
+@@ -724,11 +734,13 @@ static void reinit(struct mp_filter *vd)
+     ctx->wait_for_keyframe = ctx->use_hwdec ? HWDEC_WAIT_KEYFRAME_COUNT : 0;
+ }
+ 
+-static void init_avctx(struct mp_filter *vd)
++static enum init_avctx_result init_avctx(struct mp_filter *vd)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+     struct vd_lavc_params *lavc_param = ctx->opts;
+     struct mp_codec_params *c = ctx->codec;
++    bool use_hwdec = ctx->use_hwdec;
++    int open_ret = 0;
+ 
+     m_config_cache_update(ctx->opts_cache);
+ 
+@@ -742,7 +754,7 @@ static void init_avctx(struct mp_filter *vd)
+         lavc_codec = avcodec_find_decoder_by_name(ctx->decoder);
+     }
+     if (!lavc_codec)
+-        return;
++        goto error;
+ 
+     const AVCodecDescriptor *desc = avcodec_descriptor_get(lavc_codec->id);
+     ctx->intra_only = desc && (desc->props & AV_CODEC_PROP_INTRA_ONLY);
+@@ -882,7 +894,8 @@ static void init_avctx(struct mp_filter *vd)
+ #endif
+ 
+     /* open it */
+-    if (avcodec_open2(avctx, lavc_codec, NULL) < 0)
++    open_ret = avcodec_open2(avctx, lavc_codec, NULL);
++    if (open_ret < 0)
+         goto error;
+ 
+     // Sometimes, the first packet contains information required for correct
+@@ -897,11 +910,18 @@ static void init_avctx(struct mp_filter *vd)
+         avcodec_flush_buffers(ctx->avctx);
+     }
+ 
+-    return;
++    return INIT_AVCTX_OK;
+ 
+ error:
+-    MP_ERR(vd, "Could not open codec.\n");
++    if (open_ret < 0) {
++        MP_ERR(vd, "Could not open codec %s (%s): %s (%d).\n",
++               lavc_codec->name, use_hwdec ? ctx->hwdec.method_name : "software",
++               av_err2str(open_ret), open_ret);
++    } else {
++        MP_ERR(vd, "Could not open codec.\n");
++    }
+     uninit_avctx(vd);
++    return use_hwdec ? INIT_AVCTX_HWDEC_FAILED : INIT_AVCTX_FAILED;
+ }
+ 
+ static void reset_avctx(struct mp_filter *vd)
+@@ -1374,19 +1394,20 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
+         ctx->sent_packets = NULL;
+         ctx->num_sent_packets = 0;
+ 
+-        /*
+-         * We repeatedly force_fallback until we get an avctx, because there are
+-         * certain hwdecs that are really full decoders, and so if these fail,
+-         * they also fail to give us a valid avctx, and the early return path
+-         * here will simply give up on decoding completely if there is no
+-         * decoder. We should never hit an infinite loop as the hwdec list is
+-         * finite and we will eventually exhaust it and fall back to software
+-         * decoding (and in practice, most hwdecs are hwaccels and so the
+-         * decoder will successfully init even if the hwaccel fails later.)
+-         */
+-        do {
+-            force_fallback(vd);
+-        } while (!ctx->avctx);
++        // A method can also fail while replaying packets from an earlier
++        // fallback. Preserve the packets it has not consumed yet as well.
++        for (int n = 0; n < ctx->num_requeue_packets; n++)
++            MP_TARRAY_APPEND(ctx, pkts, num_pkts, ctx->requeue_packets[n]);
++        TA_FREEP(&ctx->requeue_packets);
++        ctx->num_requeue_packets = 0;
++
++        if (!finish_fallback(vd, force_fallback(vd))) {
++            for (int n = 0; n < num_pkts; n++)
++                talloc_free(pkts[n]);
++            talloc_free(pkts);
++            MP_ERR(vd, "Hardware decoding fallback failed; no decoder available.\n");
++            return AVERROR_EOF;
++        }
+ 
+         ctx->requeue_packets = pkts;
+         ctx->num_requeue_packets = num_pkts;
+@@ -1472,8 +1493,8 @@ static int control(struct mp_filter *vd, enum dec_ctrl cmd, void *arg)
+     }
+     case VDCTRL_FORCE_HWDEC_FALLBACK:
+         if (ctx->use_hwdec) {
+-            force_fallback(vd);
+-            return ctx->avctx ? CONTROL_OK : CONTROL_ERROR;
++            return force_fallback(vd) == INIT_AVCTX_OK
++                ? CONTROL_OK : CONTROL_ERROR;
+         }
+         return CONTROL_FALSE;
+     case VDCTRL_REINIT:
