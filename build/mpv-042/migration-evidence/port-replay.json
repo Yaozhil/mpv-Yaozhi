@@ -1,0 +1,628 @@
+[
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "7b7e867374a71fc04090a78e722ce118d980da31",
+    "subject": "prepare Blu-ray menu and metadata candidate",
+    "new_before": "d11d5573fd4a3f8f0ca569b11e44aa333fae471c",
+    "new_commit": "7a07da0a9c0dd682c7cb5458518c3b701a14c3af",
+    "decision": "adapted",
+    "resolution": "WASAPI retains upstream DIRECTOUT for unknown maps and private representable >8 channels. f_swresample old native-equal-layout fix is superseded by upstream get_mix_matrix by_position identity and explicit set_channels (all-speaker copy with UNSPEC SWR layouts); retain new whole upstream resampler, other hunks preserved by merge."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "03d37be6b8d1553d78ac7d6dcf3c6009b4c0bafd",
+    "subject": "preserve subtitle cache and remote Blu-ray ISO",
+    "new_before": "7a07da0a9c0dd682c7cb5458518c3b701a14c3af",
+    "new_commit": "dd399f34c85dcaedd7b32f2485ddab6b65c8583a",
+    "decision": "adapted",
+    "resolution": "Retain new demux lazy EOF/API and segment/codec thread ownership. Reapply inactive-subtitle cache hooks at modern declared+sync registration and allow unselected subtitle packet delivery after map_packet. Keep upstream all-mapped slave selection. Remote ISO uses same bd_init ownership/config with range checks+atomic callback, preserves local keyfile/region/UO settings."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "c76c2807158cac3c82ba078d6cf84ad449484938",
+    "subject": "enable backported Dolby Vision stream groups",
+    "new_before": "dd399f34c85dcaedd7b32f2485ddab6b65c8583a",
+    "new_commit": "6e65b45f18a671e79327a2a92b8f04918d95276b",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "31f9a233f5ddc424639e2819dea59772de0a6224",
+    "subject": "expose Profile 7 metadata on paired base layer",
+    "new_before": "6e65b45f18a671e79327a2a92b8f04918d95276b",
+    "new_commit": "7d184c2477f12e2637973ac00befb8b1c3441635",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "c774487601289aeed10ec376d09c8c36733d9dd6",
+    "subject": "expose Profile 7 metadata for authored Blu-ray",
+    "new_before": "7d184c2477f12e2637973ac00befb8b1c3441635",
+    "new_commit": "0ee5253aaa672787641a73bcdba93a1919f59a8d",
+    "decision": "adapted",
+    "resolution": "Reapply authored-BD Profile7 metadata following modern demux_set_stream_group; retain modern slave selection/segments. Codec publication safety further reconciled in final review layer."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "3020f02d27467e5c0d3b1e7dde2db30e1f277f2e",
+    "subject": "preserve Profile 7 recovery for authored Blu-ray",
+    "new_before": "0ee5253aaa672787641a73bcdba93a1919f59a8d",
+    "new_commit": "7f5512f176ed60879eb4e7dc10bbc436b673a962",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "e6bf2a22f257b70bdf51fc80a642d1af4790e58a",
+    "subject": "drop corrupt Profile 7 recovery frames before pairing",
+    "new_before": "7f5512f176ed60879eb4e7dc10bbc436b673a962",
+    "new_commit": "2d3647f50f40cded01c79b060f50bf51a5654cba",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "39dd525abefc8fa26e6b29c0b2b1630ee8ae53b9",
+    "subject": "stream_bluray: wait for delayed BD-J title transitions",
+    "new_before": "2d3647f50f40cded01c79b060f50bf51a5654cba",
+    "new_commit": "f1fa958eac500b9e640256a266046a55b5fda95f",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "6e34f72e536492f9cc8e9b88000ba5da098dc43a",
+    "subject": "stream_dvdnav: activate buttons from queued NAV data",
+    "new_before": "f1fa958eac500b9e640256a266046a55b5fda95f",
+    "new_commit": "150557143434cc9bf53373b49e00010a056388fa",
+    "decision": "adapted",
+    "resolution": "Keep new bool nav API, vm_moved/release_still and new segment handling; retain cached NAV activation helper (result converted to bool in final API layer)."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "e3803faa8b2c278c8f5b152b4cc663c3f8ffeab1",
+    "subject": "stream_dvdnav: trace authored button activation",
+    "new_before": "150557143434cc9bf53373b49e00010a056388fa",
+    "new_commit": "455b1006f6ec5e27364a719357f908cdc30829ca",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "f17d636637f5283d7f9151e29cea38e907de76e4",
+    "subject": "stream_dvdnav: recover false-success LinkRSM buttons",
+    "new_before": "455b1006f6ec5e27364a719357f908cdc30829ca",
+    "new_commit": "7248bbb6f83cfe35395f706b9aac0f799c181db9",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "195c351ddafdf0818f2b24fbe952782145d4b511",
+    "subject": "demux_disc: wait for async Blu-ray destination data",
+    "new_before": "7248bbb6f83cfe35395f706b9aac0f799c181db9",
+    "new_commit": "af3cd5bc0888d8ad1d40ea85c6b808e829c70832",
+    "decision": "adapted",
+    "resolution": "Keep segment reset/modern timestamp facts while retaining cancellable bounded 5s remote BD destination reopen grace; discard obsolete TL_BACK/FWD context constants only."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "5bfdba0999c19adef46040b65a28d4fb60af4d15",
+    "subject": "demux_disc: include cancellation API",
+    "new_before": "af3cd5bc0888d8ad1d40ea85c6b808e829c70832",
+    "new_commit": "77ab37eea106ec969e1b82d02b5be1c9290e7d14",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "6dbd2294be203078a780fee335fc98e4265241c5",
+    "subject": "demux_disc: avoid nested Blu-ray reopen polling",
+    "new_before": "77ab37eea106ec969e1b82d02b5be1c9290e7d14",
+    "new_commit": "0b815230d3e7ec6622aea5ac80f4ed957b375576",
+    "decision": "adapted",
+    "resolution": "Retain current segment mapping and private single-peek/no nested polling fix; actual bounded BD-J grace remains in stream_bluray."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "62b11d50d208ecf3a069fe074c12bcc48c5c5331",
+    "subject": "discnav: handle back-to-back navigation boundaries",
+    "new_before": "0b815230d3e7ec6622aea5ac80f4ed957b375576",
+    "new_commit": "0b815230d3e7ec6622aea5ac80f4ed957b375576",
+    "decision": "upstream-equivalent",
+    "resolution": "Official resync_queued_id compares discontinuity_id under drain_pending and updates once per ID; stream BD/DVD increment before publishing pending drain. Covers same fast back-to-back boundary bug without obsolete edge/duplicate fields."
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "6131d473b5f8c352bd982174512a9afdd83588b5",
+    "subject": "vo_gpu_next: honor SDR mode for bitmap subtitles",
+    "new_before": "0b815230d3e7ec6622aea5ac80f4ed957b375576",
+    "new_commit": "8373f2ce168b88f2636380c47dce1361d2964e60",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "old_commit": "27142085bd295af771e4db9ecaebd6473c8722f2",
+    "subject": "demux: bound read-ahead during disc title playback",
+    "new_before": "8373f2ce168b88f2636380c47dce1361d2964e60",
+    "new_commit": "a35463053334b15a3734e943ac58d5f31822c4f0",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9001-hdmv-overlay-video-ready.patch",
+    "old_commit": "124cbe59171b64fd98bdfb3225c43fd350237ac0",
+    "subject": "discnav: wait for HDMV background frame at transitions",
+    "new_before": "a35463053334b15a3734e943ac58d5f31822c4f0",
+    "new_commit": "3b07a0d1b51f6feb754549a86c0c2524adac233a",
+    "decision": "adapted",
+    "resolution": "Private HDMV/video readiness gate kept; place hdmv_menu in modern b->hdmv_mode branch so plain-title navigation defaults preserved."
+  },
+  {
+    "package": "mpv-9002-bluray-title-resync-hdmv-context.patch",
+    "old_commit": "97a0431fdb77a0a6dab348c3d647e4d862792f7c",
+    "subject": "bluray: resync plain titles and retain HDMV demux context",
+    "new_before": "3b07a0d1b51f6feb754549a86c0c2524adac233a",
+    "new_commit": "0492a4876b7b7968c47eb46f1c4e2b8ec65f1488",
+    "decision": "adapted",
+    "resolution": "force_hdmv private PMT context and player plain-title resync retained; stream plain-title drain/discontinuity publication is already in official common initializer, do not duplicate old hdmv/else branches."
+  },
+  {
+    "package": "mpv-9003-select-late-video-enhancement-layer.patch",
+    "old_commit": "454bf9663ca5b4a46ed23b27ce0e5a8ba8c6ccaa",
+    "subject": "player: select enhancement layer discovered after disc navigation",
+    "new_before": "0492a4876b7b7968c47eb46f1c4e2b8ec65f1488",
+    "new_commit": "29ffc6da61e79b0a889d72335cddd5c9b954f9c3",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9004-mkv-optional-tail-tags.patch",
+    "old_commit": "08cec45e82bfab4cb623875259f9e7d3da74e988",
+    "subject": "demux_mkv: allow skipping optional tail tags on slow proxy streams",
+    "new_before": "29ffc6da61e79b0a889d72335cddd5c9b954f9c3",
+    "new_commit": "b439fe0e2427d7a191f939fba995e242427d3114",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9005-secondary-ass-full-viewport.patch",
+    "old_commit": "794765dcf47ccca7ff25aef0137c53f70befcc06",
+    "subject": "sub: opt in secondary ASS to full output viewport",
+    "new_before": "b439fe0e2427d7a191f939fba995e242427d3114",
+    "new_commit": "0b22bacc473bee191ce625f741f7ce657bd43ca6",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9006-bluray-retain-navigation-head.patch",
+    "old_commit": "4abb994651878da00e6ad849b85e1ff6df5beb8f",
+    "subject": "bluray: retain new clip head across navigation demux reopen",
+    "new_before": "0b22bacc473bee191ce625f741f7ce657bd43ca6",
+    "new_commit": "47f7f341b7fa5381d79c010001f8be9c4bfbec36",
+    "decision": "adapted",
+    "resolution": "Retain private jump-head buffer and modern pending SCR/rate/angle fields; clear retained head through new stream_seek_req API without reverting new seek contract."
+  },
+  {
+    "package": "mpv-9007-dts-hd-seek-resync.patch",
+    "old_commit": "fa57f42d8d8c791841fc23c5c24db93b3c228dd6",
+    "subject": "ad_spdif: resync orphan DTS-HD extensions after seek",
+    "new_before": "47f7f341b7fa5381d79c010001f8be9c4bfbec36",
+    "new_commit": "b415751f3bbe913a6744d7e82b00581e7f589ddc",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9008-bluray-slideshow-audio.patch",
+    "old_commit": "db555f492a426a2fdc45002241c0773a0b236745",
+    "subject": "bluray: play authored type-2 slideshow audio loops during still menus",
+    "new_before": "b415751f3bbe913a6744d7e82b00581e7f589ddc",
+    "new_commit": "b8bd39f5e399cf68200f046ab030ee649a450be8",
+    "decision": "adapted",
+    "resolution": "Menu audio retained with modern find_outer, adopt_codec_params(demuxer,...), track-info and demux_read_any_packet(...,NULL), staged codec accessor. Timeline origin now actual disc playback time/segment fact (old base_time removed). Stream audio structs coexist with modern name/track APIs; no obsolete timeline members restored."
+  },
+  {
+    "package": "mpv-9009-native-timing-diagnostics.patch",
+    "old_commit": "c9c72c22461dd0d54a3b7725a7cd098462b2103d",
+    "subject": "video: add opt-in native ASS and presentation timing diagnostics",
+    "new_before": "b8bd39f5e399cf68200f046ab030ee649a450be8",
+    "new_commit": "b65cb571ea75cdb7ae7e7778e87b5b806e759f89",
+    "decision": "adapted",
+    "resolution": "Native timing fields coexist with new upstream reference-white/sRGB state; timing hooks preserved."
+  },
+  {
+    "package": "mpv-9010-secondary-ass-refresh.patch",
+    "old_commit": "c10af5ef001e192b8413f9f950ae3242de0eaa11",
+    "subject": "sub: opt in to independent secondary ASS redraw and animation clock",
+    "new_before": "b65cb571ea75cdb7ae7e7778e87b5b806e759f89",
+    "new_commit": "ee5353e28b673603d24c9d04b7d698d9f5fd06f7",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9011-secondary-ass-replace.patch",
+    "old_commit": "ccd2697231789b3c750373500a4cb24f5dac512a",
+    "subject": "sub: replace complete secondary ASS in place without decoder churn",
+    "new_before": "ee5353e28b673603d24c9d04b7d698d9f5fd06f7",
+    "new_commit": "63c21fb5531291138294020905cd9a204607e362",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9012-secondary-ass-idle.patch",
+    "old_commit": "5aef90bb1f7e2e9fa404e0f94cd3543ac16ed0ab",
+    "subject": "sub: stop independent redraw while secondary ASS has no visible events",
+    "new_before": "63c21fb5531291138294020905cd9a204607e362",
+    "new_commit": "3b81dc84429f7cab800158a0c5cdc0cb47fabfe8",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9013-secondary-ass-video-budget.patch",
+    "old_commit": "a5fb3a5f844b4bf23aa1aaf837d58e372a16f86f",
+    "subject": "vo: reserve measured video render budget before scheduling secondary redraws",
+    "new_before": "3b81dc84429f7cab800158a0c5cdc0cb47fabfe8",
+    "new_commit": "270c3de0ea39ec9cca90607b8e6519e454972c37",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9014-secondary-ass-video-headroom.patch",
+    "old_commit": "0fbfc907cc6aa1efc225c4bf29bf5c890c7d601c",
+    "subject": "vo: yield secondary redraws when video exceeds refresh budget",
+    "new_before": "270c3de0ea39ec9cca90607b8e6519e454972c37",
+    "new_commit": "1bc7a3ba01f734bfa96b4f287653081fc56f248c",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9015-secondary-ass-budget-stability.patch",
+    "old_commit": "aa8f585a02b638bac909bdecd5a6bc0f0a186cfc",
+    "subject": "vo: reject isolated CPU stalls in secondary ASS budget",
+    "new_before": "1bc7a3ba01f734bfa96b4f287653081fc56f248c",
+    "new_commit": "3cd453e4885aaad7ad416222236b8b5132684b85",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9016-native-presentation-telemetry.patch",
+    "old_commit": "672b0176119c9b0004cc53978d131a6d7e23b223",
+    "subject": "diagnostics: measure ASS packing, OSD uploads and presentation costs",
+    "new_before": "3cd453e4885aaad7ad416222236b8b5132684b85",
+    "new_commit": "28c3cd9e1bb9acf312703130fe4048b79b1bb9c6",
+    "decision": "adapted",
+    "resolution": "Preserve new upstream texture/change_id reuse and invalidation. Private upload telemetry surrounds actual upload, cached early return correctly adds no upload."
+  },
+  {
+    "package": "mpv-9017-native-presentation-reuse.patch",
+    "old_commit": "5495e28d735d1c0a25903e3b8dc8cea6a9630650",
+    "subject": "vo: reuse video and OSD frames and idle static secondary ASS",
+    "new_before": "28c3cd9e1bb9acf312703130fe4048b79b1bb9c6",
+    "new_commit": "a48c12d58dc73c16bae3055d513e4807280a23ec",
+    "decision": "adapted",
+    "resolution": "Unify upstream non-invalidating texture resize reuse with private stronger upload cache keyed validity+change_id+format+packed dimensions and skip telemetry. Avoid two independent caches/zero-ID ambiguity; retain private video/frame reuse and static-secondary idling."
+  },
+  {
+    "package": "mpv-9018-bluray-popup-atomic-overlay.patch",
+    "old_commit": "7c0d3def226364ba5fefbfd5dbc3d66752e3be16",
+    "subject": "bluray: hold incomplete popup IG composition until page settles",
+    "new_before": "a48c12d58dc73c16bae3055d513e4807280a23ec",
+    "new_commit": "24db5c8316604fdae81cbaa9e0fb42ee1d892080",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9019-bluray-menu-audio-resume.patch",
+    "old_commit": "be5bf5ccb691e125e0039d6eb0061581cd2ec614",
+    "subject": "bluray: resume menu soundtrack from last audible position",
+    "new_before": "24db5c8316604fdae81cbaa9e0fb42ee1d892080",
+    "new_commit": "2dc39695a45fa4cbc63c579f31881b144828fd5c",
+    "decision": "adapted",
+    "resolution": "Preserve private audible menu-audio resume feedback structure beside modern name/track APIs; playback origin modernized in prior layer remains."
+  },
+  {
+    "package": "mpv-9020-bluray-popup-fragment-hold.patch",
+    "old_commit": "95773b501c2b05e8ade2fe1395e9c5e7c9af2430",
+    "subject": "bluray: hold tall popup fragments until complete IG page",
+    "new_before": "2dc39695a45fa4cbc63c579f31881b144828fd5c",
+    "new_commit": "41eda01d1230b119c3bc4bb58359736a1a1f1a36",
+    "decision": "adapted",
+    "resolution": "Retain tall-sliver popup gating beside modern current-clip/segment helpers and new colorspace calculation."
+  },
+  {
+    "package": "mpv-9021-bluray-menu-audio-diagnostics.patch",
+    "old_commit": "bd802cfb495e51d5f80e3afb4116ebe6eab3a1d5",
+    "subject": "bluray: trace menu soundtrack continuity at disc jumps",
+    "new_before": "41eda01d1230b119c3bc4bb58359736a1a1f1a36",
+    "new_commit": "d7bc56eb78e460825d8b8a634aaad42a208cd1c4",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9022-bluray-menu-audio-queue-retain.patch",
+    "old_commit": "c7b0f03d0fc9a0a4f16548eb6f5cff0d5de043f6",
+    "subject": "bluray: retain queued menu audio across same-page jumps",
+    "new_before": "d7bc56eb78e460825d8b8a634aaad42a208cd1c4",
+    "new_commit": "eee7d5e31c58f4551fae68ee78b8bdf7cebcce9b",
+    "decision": "adapted",
+    "resolution": "Same-page queue retention preserved; playlist field published via modern common nav initializer for HDMV and plain titles."
+  },
+  {
+    "package": "mpv-9023-bluray-audio-sample-rate.patch",
+    "old_commit": "9ec8880a364ea5f1da2f97796ce4a854f7a4327e",
+    "subject": "bluray: provide missing audio rates from PlayItem metadata",
+    "new_before": "eee7d5e31c58f4551fae68ee78b8bdf7cebcce9b",
+    "new_commit": "4f2df904bf041cc05e6e8ddf1342c40ee9bc4cf7",
+    "decision": "adapted",
+    "resolution": "Fill missing BD audio rate on freshly adopted codec before publication (all normal/menu and bare-declared paths), not mutate live sh->codec; preserve current stream track/segment API, add private BD audio-rate control beside it, retain current PlayItem semantics."
+  },
+  {
+    "package": "mpv-9024-secondary-ass-low-fps-budget.patch",
+    "old_commit": "87d0903d9dd12a49cc20460e97b34ea6d2756895",
+    "subject": "vo: budget cached ASS redraws against low-fps video deadlines",
+    "new_before": "4f2df904bf041cc05e6e8ddf1342c40ee9bc4cf7",
+    "new_commit": "11267af6c58b28365e78a26973dd9a8c3d93d7f3",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9025-secondary-ass-video-deadline.patch",
+    "old_commit": "c2b5e5d13be005df6fd23b74d356ca4acbd37be0",
+    "subject": "vo: reserve video deadlines for high-fps ASS redraws",
+    "new_before": "11267af6c58b28365e78a26973dd9a8c3d93d7f3",
+    "new_commit": "776d190c5b0008992ce3422d151a67a6ec7ab760",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9026-dovi-rpu-enhancement-metadata.patch",
+    "old_commit": "82b3d7175799a10d215015d9c8e049bc5f321885",
+    "subject": "player: expose decoded Dolby Vision RPU and enhancement type metadata",
+    "new_before": "776d190c5b0008992ce3422d151a67a6ec7ab760",
+    "new_commit": "c6cc70fa3d960e5c5eb8a47c5710d738a8a993e8",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9027-player-version-brand.patch",
+    "old_commit": "b2fc426dfc08c94d8a90676f348d7a25dad11357",
+    "subject": "version: identify both player cores as mpv-Yaozhi",
+    "new_before": "c6cc70fa3d960e5c5eb8a47c5710d738a8a993e8",
+    "new_commit": "6913f5d4c32b04d9346a30deae26c3d4926c5466",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9028-secondary-ass-continuous-clock.patch",
+    "old_commit": "051f20325e80ef8710c942df4db2ad2be181a003",
+    "subject": "sub: sample secondary ASS on a continuous presentation clock",
+    "new_before": "6913f5d4c32b04d9346a30deae26c3d4926c5466",
+    "new_commit": "1f3f88ae4e03ac1b0f4ebdfda23554466c1c2926",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9029-native-ass-pacing-evidence.patch",
+    "old_commit": "2f5314fe15c2892e9ab2b6bbd88f6bdc02a88f39",
+    "subject": "video: Native ASS logical sample-slot scheduling",
+    "new_before": "1f3f88ae4e03ac1b0f4ebdfda23554466c1c2926",
+    "new_commit": "9da19db76dbc85b68b74fb3c3f6ec89d295d8324",
+    "decision": "adapted",
+    "resolution": "Keep Native ASS logical scheduler/pacing/generation/submit telemetry and new DXGI fullscreen-recovery after Present. Migrate HW decode diagnostics to owner-slot map/begin/end-access lifecycle; preserve map/texture errors and add new access/owner errors, never reinstate old mapper ownership."
+  },
+  {
+    "package": "mpv-9030-secondary-ass-quiet-gap-hold.patch",
+    "old_commit": "bd513134ca18975458314a71fbbf86c2dd20534f",
+    "subject": "video: advance quiet ASS samples on the retained display grid",
+    "new_before": "9da19db76dbc85b68b74fb3c3f6ec89d295d8324",
+    "new_commit": "4e3d9efd3cd5ac49f0dc1dd5a9e1d8e03ef3f948",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9030-secondary-ass-quiet-gap-hold.patch",
+    "old_commit": "0afa84fcdd6656196a641d510c5e020c5ea83148",
+    "subject": "video: use the original ready time for quiet ASS sampling",
+    "new_before": "4e3d9efd3cd5ac49f0dc1dd5a9e1d8e03ef3f948",
+    "new_commit": "10c05f5a9191c06b7be7df35b447a1b2b03e5a4f",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9031-native-ass-wait-deadline-cpu-spans.patch",
+    "old_commit": "6828e2d4f08e6f4de16c571a9b1b303b59c54399",
+    "subject": "video: preserve absolute timer deadline and add optional CPU spans",
+    "new_before": "10c05f5a9191c06b7be7df35b447a1b2b03e5a4f",
+    "new_commit": "d7595e73c8d918a434c70ac8e987a17862195bd4",
+    "decision": "adapted",
+    "resolution": "Retain optional CPU spans 210/211 around actual texture recreation under upstream size/format guard; do not reinvalidate retained textures. Absolute deadline changes preserved."
+  },
+  {
+    "package": "mpv-9032-native-ass-coherent-queue-lead.patch",
+    "old_commit": "0599b3a6a6bccf3e2e954bad9dc40111f5bbaa23",
+    "subject": "vo: add opt-in coherent Native ASS queue admission",
+    "new_before": "d7595e73c8d918a434c70ac8e987a17862195bd4",
+    "new_commit": "baa6827f0f1feb24df7d33bf26b9af756d92dcb3",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9033-native-ass-display-forecast-staged-queue.patch",
+    "old_commit": "a3205ab9e25485b026a59129f084343814db33c7",
+    "subject": "Keep Native ASS logical cadence separate from display forecast and stage queued video",
+    "new_before": "baa6827f0f1feb24df7d33bf26b9af756d92dcb3",
+    "new_commit": "e2b0ea161d3347fbb12cbfac39231699fe6cbddc",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9034-native-ass-fixed-display-phase.patch",
+    "old_commit": "8f6aa9f4ac16850816b79514d3695681359190f7",
+    "subject": "vo: retain fixed ASS display phase and exact secondary QPC observations",
+    "new_before": "e2b0ea161d3347fbb12cbfac39231699fe6cbddc",
+    "new_commit": "7f62aa3f5ebe49ec66e1fceb3943a1d873f153f0",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9035-native-ass-ui-probe-recovery.patch",
+    "old_commit": "c613c2c51252c7c7182a7d2d9ed58b5879489118",
+    "subject": "vo: preserve ASS recovery probe deadline during manual pose reuse",
+    "new_before": "7f62aa3f5ebe49ec66e1fceb3943a1d873f153f0",
+    "new_commit": "ad061db60a467e82b7d411ac6f1de920fed137a3",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9036-native-ass-ui-lifecycle.patch",
+    "old_commit": "ac219c1915a183a6f364bc9ba18dc879fcdd2b53",
+    "subject": "vo, osd: reject stale sample epochs and reuse static ASS images",
+    "new_before": "ad061db60a467e82b7d411ac6f1de920fed137a3",
+    "new_commit": "23d2565df675aed02d0e69603171b1ccd1b85598",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9037-native-ass-fixed-budget-recovery.patch",
+    "old_commit": "a93f2cbc00c0fca5084f88dd0eb89dc75e51f4ec",
+    "subject": "Recover fixed Native ASS redraw after stale budget pressure",
+    "new_before": "23d2565df675aed02d0e69603171b1ccd1b85598",
+    "new_commit": "14cdf1c1b2421850a1fb2db67ee5f7b809a5a0ed",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9038-native-ass-fresh-clock-continuity.patch",
+    "old_commit": "9c63f6be186dab16bc593ac3cf56b02651dace72",
+    "subject": "Keep Native ASS time advancing on mandatory video draws under cache pressure",
+    "new_before": "14cdf1c1b2421850a1fb2db67ee5f7b809a5a0ed",
+    "new_commit": "d39d1e4faea6200c37007b117bf4757af78258e7",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9039-native-ass-fresh-proposal-retry.patch",
+    "old_commit": "0e8c0003442d334e4a4032b1d5215fe56c6e459f",
+    "subject": "Preserve fresh ASS progress after rejected uncaptured proposals",
+    "new_before": "d39d1e4faea6200c37007b117bf4757af78258e7",
+    "new_commit": "2294070b41ae6bb3ffab0a29d0d5f63703c3d96b",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9040-native-ass-cache-window-neutral-pose.patch",
+    "old_commit": "463ab9eaf29d27edc0ae4d0294e90eae7596ad3c",
+    "subject": "vo: reserve cache compute once and retain its submitted ASS pose",
+    "new_before": "2294070b41ae6bb3ffab0a29d0d5f63703c3d96b",
+    "new_commit": "ede3ec12d9cba97cc4803209452ceb246663c893",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9041-native-ass-captured-submit-window.patch",
+    "old_commit": "7d85c3dfafcd98d37e837d69806033bcaa424e38",
+    "subject": "vo: preserve captured display deadline for cache submission window",
+    "new_before": "ede3ec12d9cba97cc4803209452ceb246663c893",
+    "new_commit": "a90021a00eb8b4b2cbc7285af4c0d6187ce6ea69",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9200-native-ass-paused-bitmap.patch",
+    "old_commit": "a3d7435e37ddb16e819a42a3ccceba3a1525ba15",
+    "subject": "osd: keep secondary ASS visible during paused UI redraws",
+    "new_before": "a90021a00eb8b4b2cbc7285af4c0d6187ce6ea69",
+    "new_commit": "f22fc84dccbd9ef1c92753e3e25cd68acfc2c30e",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9201-native-ass-prepass-display-budget.patch",
+    "old_commit": "3596a61ace0ff89b5d14b2064369b46591c327b3",
+    "subject": "vo: budget fixed ASS prepass against display deadline",
+    "new_before": "f22fc84dccbd9ef1c92753e3e25cd68acfc2c30e",
+    "new_commit": "02702318c740a69b2f337532bce821aa7900b1df",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9202-native-ass-observer-recovery.patch",
+    "old_commit": "9f146dbbd97b8810f5924ca89d610bf86449f230",
+    "subject": "vo: recover displaced ASS physical observations from checked relative pairs",
+    "new_before": "02702318c740a69b2f337532bce821aa7900b1df",
+    "new_commit": "0c1ae22cdeca1118cf9925ddc3738024d31987ee",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9202a-demux-inactive-subtitle-cache.patch",
+    "old_commit": "8afa3e1c86a180368462120655b732337e6474b7",
+    "subject": "Bound inactive subtitle caches and refresh discarded subtitle ranges",
+    "new_before": "0c1ae22cdeca1118cf9925ddc3738024d31987ee",
+    "new_commit": "b7af60fa879309a10b6971fbf456fddac37900f1",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9203-video-bounded-duplicate-pts.patch",
+    "old_commit": "4aebcd476cd946e35fdf2f5f9cdb8eea71855817",
+    "subject": "Repair bounded duplicate video PTS with monotonic prefix recovery",
+    "new_before": "b7af60fa879309a10b6971fbf456fddac37900f1",
+    "new_commit": "d46b5a25665c4c3f340c0732af688b26f1544aa9",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9300-vc1-bounded-decoder-fallback.patch",
+    "old_commit": "35a077387a27229098d318abf70ade36fcd3cb96",
+    "subject": "vd_lavc: stop fallback when software initialization fails",
+    "new_before": "d46b5a25665c4c3f340c0732af688b26f1544aa9",
+    "new_commit": "54912fa49668626b87fcc9c3fe698f598b1acf09",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9301-vc1-disc-parameter-probe.patch",
+    "old_commit": "6b4c0ef5061a5fd83af6eeac25de4436b024ae6e",
+    "subject": "demux_lavf: bound missing Blu-ray VC-1 parameter probing",
+    "new_before": "54912fa49668626b87fcc9c3fe698f598b1acf09",
+    "new_commit": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9302-script-property-lookup.patch",
+    "old_commit": "937f9cad82c46d067851abf987e1fd80b19cbe4b",
+    "subject": "options: index option and property names for script access",
+    "new_before": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "new_commit": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "decision": "upstream-equivalent",
+    "resolution": "Official m_config_frontend has sorted_opts pointer index+bsearch and property list has qsort/bsearch/resolve_name; original functional hunks already present. Reapply would duplicate comparator functions and revert new PRINT_UNCUT signatures; skip whole package only after hunk comparison. Interface release note already consolidated upstream."
+  },
+  {
+    "package": "mpv-9303-lua-native-api-efficiency.patch",
+    "old_commit": "bc7f4c768f7e3a17ced374af495bc48a06a92d29",
+    "subject": "lua: reduce native API overhead while retaining autofree semantics",
+    "new_before": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "new_commit": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "decision": "upstream-equivalent",
+    "resolution": "Actual original changes (context upvalue, cached metatable registry refs, disabled-log early return, native node/context calls) are all present in official Lua. New official checked bool makenode/pushnode+node_error frees explicit error paths; no old autofree trampoline reinstated. Lua OOM allocation cleanup difference is explicitly tracked for root review, not silently claimed identical."
+  },
+  {
+    "package": "mpv-9304-windows-com-lifetime.patch",
+    "old_commit": "5064123a487921274ceb99eb136870998400bfcc",
+    "subject": "win32: retain MTA for SMTC and WASAPI hotplug lifetime",
+    "new_before": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "new_commit": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "decision": "upstream-equivalent",
+    "resolution": "All three file diffs already present: WASAPI hotplug CoIncrement/DecrementMTAUsage cookie and SMTC cookie/destructor/initialization; 3way cherry-pick is exactly empty."
+  },
+  {
+    "package": "mpv-9305-av3a-content-selection.patch",
+    "old_commit": "aa6aea4e2a451247d430c278f149fe6085d203bc",
+    "subject": "audio: expose validated AV3A content selection metadata",
+    "new_before": "4100452a7c724eaa812ec6eeb850a98321803e20",
+    "new_commit": "7380073127c13e56f6e74b023920f618e57aaeb8",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9306-round2-stability.patch",
+    "old_commit": "cd526ea43736a20a5beaee991ff240eaea9f52be",
+    "subject": "Fix subtitle deduplication, Matroska padding and numeric boundaries",
+    "new_before": "7380073127c13e56f6e74b023920f618e57aaeb8",
+    "new_commit": "de62845c32fe6a87019d9b09709756d7d0e2d108",
+    "decision": "adapted",
+    "resolution": "Upstream already covers signed padding, first_cluster/cue fallback, subtitle content hash and original packet bookkeeping, Lua/JS numeric limits. Preserve only private nonpositive sample-rate guard and once-only overflow warning; retain new EBML bool-read API plus official LZO padding fixes unchanged."
+  },
+  {
+    "package": "mpv-9307-windows-paths.patch",
+    "old_commit": "9f939411738fd71839973873fef6e6c575f7936f",
+    "subject": "win32: normalize paths, report lookup errors and preserve pipe opens",
+    "new_before": "de62845c32fe6a87019d9b09709756d7d0e2d108",
+    "new_commit": "de62845c32fe6a87019d9b09709756d7d0e2d108",
+    "decision": "upstream-equivalent",
+    "resolution": "All path normalizations/lookup errors/Windows pipe opens and regression cases are in official source; 3way whole package is exactly empty."
+  },
+  {
+    "package": "mpv-9308-http-range.patch",
+    "old_commit": "16196b33e0763411cde1f7d2813c5b414a512620",
+    "subject": "stream_curl: bound range continuation and validate EOF replies",
+    "new_before": "de62845c32fe6a87019d9b09709756d7d0e2d108",
+    "new_commit": "de62845c32fe6a87019d9b09709756d7d0e2d108",
+    "decision": "upstream-equivalent",
+    "resolution": "All original range/EOF/reply validation hunks already present. Preserve official curl_multi_add_handle error handling and received-progress retry reset (new benefit); old reapply only removes these two improvements."
+  },
+  {
+    "package": "mpv-9309-native-refresh-video-priority.patch",
+    "old_commit": "cc8fa89d4fcfe3fee2d62e5a63b0e8f4b4b8f17d",
+    "subject": "vo: keep mandatory video deadlines independent of native ASS cadence",
+    "new_before": "de62845c32fe6a87019d9b09709756d7d0e2d108",
+    "new_commit": "9afafe65b02cd21e4f9500bd953cd4b82edf0c48",
+    "decision": "preserved-three-way"
+  },
+  {
+    "package": "mpv-9310-native-ass-wall-progress.patch",
+    "old_commit": "d7ee904ea0d33bb5ea9228d1debc98437d765287",
+    "subject": "vo: recover native ASS sampling after physical feedback resets",
+    "new_before": "9afafe65b02cd21e4f9500bd953cd4b82edf0c48",
+    "new_commit": "fcce1144b5b93deaabf55caeddd838f5a2145d02",
+    "decision": "preserved-three-way"
+  }
+]

@@ -1,0 +1,1882 @@
+{
+  "schema": "MPV_YAOZHI_042_COMPLETE_MIGRATION_V1",
+  "upstream_commit": "b0841e8c4d156b8403dc1876c4cbd9011eb583f3",
+  "upstream_tree": "6ac447c92aaaab6bb72b1cf91f1e401a14c9e1df",
+  "historical_mpv_base": "c318236b8882af860f16f936225430ad053a2179",
+  "source_commit_date": "2026-11-05T00:56:42Z",
+  "variants": {
+    "main": {
+      "source_tree": "f1633e85477c8c7e4239af66d68eaab1cfddc3da",
+      "patch": "patches/main.patch",
+      "patch_sha256": "692a8b6453eb5ee6bb97783891d87e105773e1524db5116c5c0e16e8ec153070"
+    },
+    "atmos": {
+      "source_tree": "9543daf97cce43cae2103e468b26078b63612877",
+      "patch": "patches/atmos.patch",
+      "patch_sha256": "4bc66bb57007905a364ce41870591cc8a19ca15af4f543fd97770d33c80f5a0d"
+    }
+  },
+  "historical_package_patches": {
+    "main": {
+      "mpv-9000-candidate-c318236.patch": "75169a4a84a030bca9efb1cca627d8f643b447f81e11eee85e6fbce65c3431aa",
+      "mpv-9001-hdmv-overlay-video-ready.patch": "4273cc9b4cccf44fc286d67f04dcc4b0e8c7abd2e226fd73ae44690745a4aed8",
+      "mpv-9002-bluray-title-resync-hdmv-context.patch": "ed2375e9e95140c21bbf36fb4a22c9249c0531de41ad6876d7f6ad68f99ee3d1",
+      "mpv-9003-select-late-video-enhancement-layer.patch": "87aa097169461a68e1eda7fde7afbf31ff810b0277d38ba135af673b86dcb354",
+      "mpv-9004-mkv-optional-tail-tags.patch": "c9b5eb6802bd6b4e9526c1683fac07a71d7b12eb956e14f82c5301279608c5c5",
+      "mpv-9005-secondary-ass-full-viewport.patch": "60d1c47dd2cfd324c4f0b081527c8dabe7d9d3ffda61c31368120b1db038376a",
+      "mpv-9006-bluray-retain-navigation-head.patch": "e89946cfaf34ba69c42b20a28de78071c552871433e2b6abf44fa6302f254a3d",
+      "mpv-9007-dts-hd-seek-resync.patch": "51dc7f6e0ee1b0ca59ee9523f24f5de1ce0f5592b67cbbff78ef76f80ccfe174",
+      "mpv-9008-bluray-slideshow-audio.patch": "5af7dba3ad18e513cc8ee4b61d4e12e9b3be4381133e12c3607ad3ada9008816",
+      "mpv-9009-native-timing-diagnostics.patch": "21f7c584c3f1ebed360c2bfe5014cd102601b448bbc0216cf63f187facc33f4c",
+      "mpv-9010-secondary-ass-refresh.patch": "f2d9998f5d8780a6586c9d0aed41287624c9ec54a219c529478b837dc261f3de",
+      "mpv-9011-secondary-ass-replace.patch": "47d9a51f430114eaf610446ee542e5add28603746bead52de331d65fb2cfe01b",
+      "mpv-9012-secondary-ass-idle.patch": "228e6c44bc4a4ee985f0b1d3eb298654c0c93702ba4d4f7cfd58b939f2b1e4d7",
+      "mpv-9013-secondary-ass-video-budget.patch": "733ce59e79a3e5b3fb086e0d4c49371e49ff41841535c50e65a2f061be8a4613",
+      "mpv-9014-secondary-ass-video-headroom.patch": "9305d478ccd1c40973ef99a5dadae3a9c35aa69b18de9ccd5d32b5904eee2d59",
+      "mpv-9015-secondary-ass-budget-stability.patch": "d368e666dd367fbbea1445d49327cd8100e33f535fc1140067e4103f80f6c177",
+      "mpv-9016-native-presentation-telemetry.patch": "cddf26c758bf9f9ca9bc6e8772ccf91bf470df89a3cffa0c3143718c151bf0c9",
+      "mpv-9017-native-presentation-reuse.patch": "96652f7ceffc0ac6e74c5bb8e5ed1b6f52877b7ce078614776a7c5b1ac482865",
+      "mpv-9018-bluray-popup-atomic-overlay.patch": "39ee4167041d89aedb6a191b4f34e8fa1bc9d478b0665919b9298a4b5607d607",
+      "mpv-9019-bluray-menu-audio-resume.patch": "72eec7c664f210c46c0bc920cb011cd4e5263ca39b072e4df9d60837920199be",
+      "mpv-9020-bluray-popup-fragment-hold.patch": "536c0c931e6909309b34646a5a47c0d8a5183b93974f4d84b349fc73bba79fdb",
+      "mpv-9021-bluray-menu-audio-diagnostics.patch": "7001ebcc9ab3c13112905a2756782ce066640926ff91c980f32dc7b7498df93b",
+      "mpv-9022-bluray-menu-audio-queue-retain.patch": "5a245609cbd43cb9444e28123ccd70b1b8e6f6ba69ca64e5a740f1673c4d6f46",
+      "mpv-9023-bluray-audio-sample-rate.patch": "5d234f9c72d7264a4a7bf15359cfc737bdd5c2f38a951c4d6339868c7468a772",
+      "mpv-9024-secondary-ass-low-fps-budget.patch": "523b4bbb9f85b66e511e2a4a1a5987f2bdc9cf9c4d56f19bf11071d3cf816ff7",
+      "mpv-9025-secondary-ass-video-deadline.patch": "c213b37f875cf22e12415270426a20c31e5ddd39410266dfa608b2f0969993f1",
+      "mpv-9026-dovi-rpu-enhancement-metadata.patch": "66806a3e156c2766f2318245bbfc68ce3dbb80d84dd06f246c4814310eb99dec",
+      "mpv-9027-player-version-brand.patch": "22fb0ede7cb4db7ee22bf2856a27572d0aa31cda130fa9ff23723175cac8e34d",
+      "mpv-9028-secondary-ass-continuous-clock.patch": "3b52bb2e2484772fac6436c81f2d3a4873408a3d493c040e60dd81ac7ec4c47b",
+      "mpv-9029-native-ass-pacing-evidence.patch": "66c55615087a0c3e2b10844f79c33565ee2458afbfb06a371b8eef0d90371277",
+      "mpv-9030-secondary-ass-quiet-gap-hold.patch": "12ea5359df849fb4630dd8dee55fcc8c12fd01cbe18daad873afc9c730e8b012",
+      "mpv-9031-native-ass-wait-deadline-cpu-spans.patch": "2ec81365de143e1c9166a39f7ef984d8f79119dd03e5c83f54660ae10200217a",
+      "mpv-9032-native-ass-coherent-queue-lead.patch": "a18de8b2528d1014adce5dd95d0cc2293a011203c753eeb6b5a515df4c3b1a04",
+      "mpv-9033-native-ass-display-forecast-staged-queue.patch": "251204787206a5dc383cb7679f8eaee6fac1d2ce0505d90f0516f02a3ce2abc3",
+      "mpv-9034-native-ass-fixed-display-phase.patch": "40dfadefd8ab98c764faea2bf8e8dc54281f63ed9a87f6536773c5a5c0c16ab8",
+      "mpv-9035-native-ass-ui-probe-recovery.patch": "4c091a956ca30dad116d126927a9c84a17b34ee8875a90ba7dbc3681bd66089a",
+      "mpv-9036-native-ass-ui-lifecycle.patch": "78629c1c34c0e5c2dca4e4e1aac5edd477b45021eb91589757d3e72b6e6bdd69",
+      "mpv-9037-native-ass-fixed-budget-recovery.patch": "ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f",
+      "mpv-9038-native-ass-fresh-clock-continuity.patch": "ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28",
+      "mpv-9039-native-ass-fresh-proposal-retry.patch": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2",
+      "mpv-9040-native-ass-cache-window-neutral-pose.patch": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c",
+      "mpv-9041-native-ass-captured-submit-window.patch": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3",
+      "mpv-9200-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
+      "mpv-9201-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
+      "mpv-9202-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
+      "mpv-9202a-demux-inactive-subtitle-cache.patch": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd",
+      "mpv-9203-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
+      "mpv-9300-vc1-bounded-decoder-fallback.patch": "23bdcc03829fe39b0bc72efe8398c7959397ee8b583f971fbaa2badbf3675a9b",
+      "mpv-9301-vc1-disc-parameter-probe.patch": "f47be59435bf0df6b92ca46ec006f5ab1b7bbf068a4cb301e83a0c6a6b3224fd",
+      "mpv-9302-script-property-lookup.patch": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
+      "mpv-9303-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
+      "mpv-9304-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
+      "mpv-9305-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
+      "mpv-9306-round2-stability.patch": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+      "mpv-9307-windows-paths.patch": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+      "mpv-9308-http-range.patch": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46",
+      "mpv-9309-native-refresh-video-priority.patch": "411c7687ca12dfc9afae41fe80b8c951ffa7ec48864bf5d1da44a16d95a87058",
+      "mpv-9310-native-ass-wall-progress.patch": "acf9242587da78e3c9e32e20364a20f140ebc4618450b1984d3db77edd87f142"
+    },
+    "atmos": {
+      "mpv-9000-candidate-c318236.patch": "75169a4a84a030bca9efb1cca627d8f643b447f81e11eee85e6fbce65c3431aa",
+      "mpv-9001-hdmv-overlay-video-ready.patch": "4273cc9b4cccf44fc286d67f04dcc4b0e8c7abd2e226fd73ae44690745a4aed8",
+      "mpv-9002-bluray-title-resync-hdmv-context.patch": "ed2375e9e95140c21bbf36fb4a22c9249c0531de41ad6876d7f6ad68f99ee3d1",
+      "mpv-9003-select-late-video-enhancement-layer.patch": "87aa097169461a68e1eda7fde7afbf31ff810b0277d38ba135af673b86dcb354",
+      "mpv-9004-mkv-optional-tail-tags.patch": "c9b5eb6802bd6b4e9526c1683fac07a71d7b12eb956e14f82c5301279608c5c5",
+      "mpv-9005-secondary-ass-full-viewport.patch": "60d1c47dd2cfd324c4f0b081527c8dabe7d9d3ffda61c31368120b1db038376a",
+      "mpv-9006-bluray-retain-navigation-head.patch": "e89946cfaf34ba69c42b20a28de78071c552871433e2b6abf44fa6302f254a3d",
+      "mpv-9007-dts-hd-seek-resync.patch": "51dc7f6e0ee1b0ca59ee9523f24f5de1ce0f5592b67cbbff78ef76f80ccfe174",
+      "mpv-9008-bluray-slideshow-audio.patch": "5af7dba3ad18e513cc8ee4b61d4e12e9b3be4381133e12c3607ad3ada9008816",
+      "mpv-9009-native-timing-diagnostics.patch": "21f7c584c3f1ebed360c2bfe5014cd102601b448bbc0216cf63f187facc33f4c",
+      "mpv-9010-secondary-ass-refresh.patch": "f2d9998f5d8780a6586c9d0aed41287624c9ec54a219c529478b837dc261f3de",
+      "mpv-9011-secondary-ass-replace.patch": "47d9a51f430114eaf610446ee542e5add28603746bead52de331d65fb2cfe01b",
+      "mpv-9012-secondary-ass-idle.patch": "228e6c44bc4a4ee985f0b1d3eb298654c0c93702ba4d4f7cfd58b939f2b1e4d7",
+      "mpv-9013-secondary-ass-video-budget.patch": "733ce59e79a3e5b3fb086e0d4c49371e49ff41841535c50e65a2f061be8a4613",
+      "mpv-9014-secondary-ass-video-headroom.patch": "9305d478ccd1c40973ef99a5dadae3a9c35aa69b18de9ccd5d32b5904eee2d59",
+      "mpv-9015-secondary-ass-budget-stability.patch": "d368e666dd367fbbea1445d49327cd8100e33f535fc1140067e4103f80f6c177",
+      "mpv-9016-native-presentation-telemetry.patch": "cddf26c758bf9f9ca9bc6e8772ccf91bf470df89a3cffa0c3143718c151bf0c9",
+      "mpv-9017-native-presentation-reuse.patch": "96652f7ceffc0ac6e74c5bb8e5ed1b6f52877b7ce078614776a7c5b1ac482865",
+      "mpv-9018-bluray-popup-atomic-overlay.patch": "39ee4167041d89aedb6a191b4f34e8fa1bc9d478b0665919b9298a4b5607d607",
+      "mpv-9019-bluray-menu-audio-resume.patch": "72eec7c664f210c46c0bc920cb011cd4e5263ca39b072e4df9d60837920199be",
+      "mpv-9020-bluray-popup-fragment-hold.patch": "536c0c931e6909309b34646a5a47c0d8a5183b93974f4d84b349fc73bba79fdb",
+      "mpv-9021-bluray-menu-audio-diagnostics.patch": "7001ebcc9ab3c13112905a2756782ce066640926ff91c980f32dc7b7498df93b",
+      "mpv-9022-bluray-menu-audio-queue-retain.patch": "5a245609cbd43cb9444e28123ccd70b1b8e6f6ba69ca64e5a740f1673c4d6f46",
+      "mpv-9023-bluray-audio-sample-rate.patch": "5d234f9c72d7264a4a7bf15359cfc737bdd5c2f38a951c4d6339868c7468a772",
+      "mpv-9024-secondary-ass-low-fps-budget.patch": "523b4bbb9f85b66e511e2a4a1a5987f2bdc9cf9c4d56f19bf11071d3cf816ff7",
+      "mpv-9025-secondary-ass-video-deadline.patch": "c213b37f875cf22e12415270426a20c31e5ddd39410266dfa608b2f0969993f1",
+      "mpv-9026-dovi-rpu-enhancement-metadata.patch": "66806a3e156c2766f2318245bbfc68ce3dbb80d84dd06f246c4814310eb99dec",
+      "mpv-9027-player-version-brand.patch": "22fb0ede7cb4db7ee22bf2856a27572d0aa31cda130fa9ff23723175cac8e34d",
+      "mpv-9028-secondary-ass-continuous-clock.patch": "3b52bb2e2484772fac6436c81f2d3a4873408a3d493c040e60dd81ac7ec4c47b",
+      "mpv-9029-native-ass-pacing-evidence.patch": "66c55615087a0c3e2b10844f79c33565ee2458afbfb06a371b8eef0d90371277",
+      "mpv-9030-secondary-ass-quiet-gap-hold.patch": "12ea5359df849fb4630dd8dee55fcc8c12fd01cbe18daad873afc9c730e8b012",
+      "mpv-9031-native-ass-wait-deadline-cpu-spans.patch": "2ec81365de143e1c9166a39f7ef984d8f79119dd03e5c83f54660ae10200217a",
+      "mpv-9032-native-ass-coherent-queue-lead.patch": "a18de8b2528d1014adce5dd95d0cc2293a011203c753eeb6b5a515df4c3b1a04",
+      "mpv-9033-native-ass-display-forecast-staged-queue.patch": "251204787206a5dc383cb7679f8eaee6fac1d2ce0505d90f0516f02a3ce2abc3",
+      "mpv-9034-native-ass-fixed-display-phase.patch": "40dfadefd8ab98c764faea2bf8e8dc54281f63ed9a87f6536773c5a5c0c16ab8",
+      "mpv-9035-native-ass-ui-probe-recovery.patch": "4c091a956ca30dad116d126927a9c84a17b34ee8875a90ba7dbc3681bd66089a",
+      "mpv-9036-native-ass-ui-lifecycle.patch": "78629c1c34c0e5c2dca4e4e1aac5edd477b45021eb91589757d3e72b6e6bdd69",
+      "mpv-9037-native-ass-fixed-budget-recovery.patch": "ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f",
+      "mpv-9038-native-ass-fresh-clock-continuity.patch": "ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28",
+      "mpv-9039-native-ass-fresh-proposal-retry.patch": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2",
+      "mpv-9040-native-ass-cache-window-neutral-pose.patch": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c",
+      "mpv-9041-native-ass-captured-submit-window.patch": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3",
+      "mpv-9100-omniphony-parity.patch": "e260b59f67babd3c5a94edd98611b6ea7e37426666fcaaef9ca19a8a232cb207",
+      "mpv-9200-native-ass-paused-bitmap.patch": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
+      "mpv-9201-native-ass-prepass-display-budget.patch": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
+      "mpv-9202-native-ass-observer-recovery.patch": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
+      "mpv-9202a-demux-inactive-subtitle-cache.patch": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd",
+      "mpv-9203-video-bounded-duplicate-pts.patch": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
+      "mpv-9300-vc1-bounded-decoder-fallback.patch": "23bdcc03829fe39b0bc72efe8398c7959397ee8b583f971fbaa2badbf3675a9b",
+      "mpv-9301-vc1-disc-parameter-probe.patch": "f47be59435bf0df6b92ca46ec006f5ab1b7bbf068a4cb301e83a0c6a6b3224fd",
+      "mpv-9302-script-property-lookup.patch": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
+      "mpv-9303-lua-native-api-efficiency.patch": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
+      "mpv-9304-windows-com-lifetime.patch": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
+      "mpv-9305-av3a-content-selection.patch": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
+      "mpv-9306-round2-stability.patch": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+      "mpv-9307-windows-paths.patch": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+      "mpv-9308-http-range.patch": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46",
+      "mpv-9309-native-refresh-video-priority.patch": "411c7687ca12dfc9afae41fe80b8c951ffa7ec48864bf5d1da44a16d95a87058",
+      "mpv-9310-native-ass-wall-progress.patch": "acf9242587da78e3c9e32e20364a20f140ebc4618450b1984d3db77edd87f142"
+    }
+  },
+  "dependency_overlays": {
+    "main": [
+      {
+        "path": "dependency-overlays/main/packages/amf-headers.cmake",
+        "recipe_path": "packages/amf-headers.cmake",
+        "original_sha256": "bb0628f31bfd4e6db57ef3c5381f10e8bf8fb666acb62394558e71e34b339dca",
+        "sha256": "ca19de5aafa08bf78e96fd559722ad5a02b8e90ee89c86c2f4ae93ae41f7420b"
+      },
+      {
+        "path": "dependency-overlays/main/packages/angle-headers.cmake",
+        "recipe_path": "packages/angle-headers.cmake",
+        "original_sha256": "9a1b2255f2811337e8b3ff7e05da3944969d98652ed722281589dc640f428b06",
+        "sha256": "d924141548b90e815ae879adcfb79dbfeedb586a4fb04e123c0c991cd5ecea85"
+      },
+      {
+        "path": "dependency-overlays/main/packages/aom.cmake",
+        "recipe_path": "packages/aom.cmake",
+        "original_sha256": "73c4f6335a5be0a8fb8639cea1936faa61c861f4cdb5c129e5384e3f04441eee",
+        "sha256": "d5fe8734ee9859851858a9d8cc19afeb54e1bd1a18557ed1f070b9e15ba56f51"
+      },
+      {
+        "path": "dependency-overlays/main/packages/avisynth-headers.cmake",
+        "recipe_path": "packages/avisynth-headers.cmake",
+        "original_sha256": "4cd756ff326b00256d03d03e4f86e1554a8b1a57f7d014368b99057149ca6685",
+        "sha256": "c644f2a0b9704438c42e960b28eb40e6d228cdbccaa22459701d8caef8cb38a6"
+      },
+      {
+        "path": "dependency-overlays/main/packages/brotli.cmake",
+        "recipe_path": "packages/brotli.cmake",
+        "original_sha256": "b8554a6c7028bd3b0f1dd9361c0b7c6c6312e87d3793f3ce3dbf7f89d9fb9bc1",
+        "sha256": "4ba95df3b026304ce57e7e4fd29d717a27d05ea44fe6334978c18532b7a0281b"
+      },
+      {
+        "path": "dependency-overlays/main/packages/bzip2.cmake",
+        "recipe_path": "packages/bzip2.cmake",
+        "original_sha256": "22c06023a62280f46de2b3dd73daac92eff15e6c6ad48be32c5a101bf911d0ec",
+        "sha256": "c7a1be69093be654bdd5ddf67341abc4ecf4f91db3071c360c897e6fb055a6b1"
+      },
+      {
+        "path": "dependency-overlays/main/packages/c-ares.cmake",
+        "recipe_path": "packages/c-ares.cmake",
+        "original_sha256": "ff158ffb4add510160a78eef6473625d965ebf4bd57b0fc1e23275fcb48c6013",
+        "sha256": "b27aac0b6112551494d6c2c1317bc8f51f01edee9a652d9a83681a5331501f77"
+      },
+      {
+        "path": "dependency-overlays/main/packages/dav1d.cmake",
+        "recipe_path": "packages/dav1d.cmake",
+        "original_sha256": "c64418c6e46a296d414a4345eb8e7f61f68ae63490c573f6bcb7988e8b3782dc",
+        "sha256": "c9390e2776a9fa650922de6a7c1361220644441f22c5cb5c9f7547c8beca52a6"
+      },
+      {
+        "path": "dependency-overlays/main/packages/freetype2.cmake",
+        "recipe_path": "packages/freetype2.cmake",
+        "original_sha256": "eed687f636ec335af2e341537e089857f75a659e69d02da5176715628bf3b035",
+        "sha256": "130c9dbc4a6e9825c0180a865cffdf61b1f514a1235e791b8fe8528e33f6dacf"
+      },
+      {
+        "path": "dependency-overlays/main/packages/fribidi.cmake",
+        "recipe_path": "packages/fribidi.cmake",
+        "original_sha256": "9a220a21c07099ebc6391d828a677697c4f147a781fcb54f86e038dbbf620321",
+        "sha256": "7021a3eb19b41d381aa20be51fac9edb18c6043ee6407d51c67889c9f80e3757"
+      },
+      {
+        "path": "dependency-overlays/main/packages/game-music-emu.cmake",
+        "recipe_path": "packages/game-music-emu.cmake",
+        "original_sha256": "c023ad08da8c0c7e6ad9bf0511e0acd5dabf53591cd15492e9385d677a5b3dbc",
+        "sha256": "117abf1419c24ba8d7afddd83482dac971a518885045d7261a0b1be3e6df22a2"
+      },
+      {
+        "path": "dependency-overlays/main/packages/glslang.cmake",
+        "recipe_path": "packages/glslang.cmake",
+        "original_sha256": "164f4cef085f0224eb9b98eb7b4093880e5ad2ea4dba60bb00131f33f94a5d13",
+        "sha256": "2b6ce4695be9fa9600b746ffd19497f3764476b2fab1bc3a54678faac5268ece"
+      },
+      {
+        "path": "dependency-overlays/main/packages/graphengine.cmake",
+        "recipe_path": "packages/graphengine.cmake",
+        "original_sha256": "acfd98328265bee49b86a7ce64d6dd3e8c9201952385f3911625840a9a01869b",
+        "sha256": "93fa7d98808e0e13a69ef47afd3fc72d9b7e5e41ef3891108275ffbd549ea5a1"
+      },
+      {
+        "path": "dependency-overlays/main/packages/harfbuzz.cmake",
+        "recipe_path": "packages/harfbuzz.cmake",
+        "original_sha256": "9b8a2f9f2b7dfb440ff7f6c925489ae1cee64b3119f5556f6c103c786f653f4b",
+        "sha256": "7274b4d2921f23c8dbe318e275a7142210996cb668c000b52f01fc188c69eaa5"
+      },
+      {
+        "path": "dependency-overlays/main/packages/highway.cmake",
+        "recipe_path": "packages/highway.cmake",
+        "original_sha256": "26b46bc1f08f35d7fda6f2bab349224e39a3972942ccad7aca3b8b768954fa87",
+        "sha256": "f02161be72be65e7803220ad1523ddbdf3dcff511cb3fe242b3373717e9598b9"
+      },
+      {
+        "path": "dependency-overlays/main/packages/lame.cmake",
+        "recipe_path": "packages/lame.cmake",
+        "original_sha256": "2fc016fa58c3d768c9f872ca715309c7b94cf815a4c3352d325f4d25650c2fa3",
+        "sha256": "5678b64efbf5686f250673c81470132d84137b9d99340b1a67e85252f9a6223f"
+      },
+      {
+        "path": "dependency-overlays/main/packages/lcms2.cmake",
+        "recipe_path": "packages/lcms2.cmake",
+        "original_sha256": "78ac60adc47be993cf59f7f1d318d78558a2850755a8b4b5181f68434245edbe",
+        "sha256": "86f6a5715e7284c7d8116fbdab28956d5f199423d0ae6d78c3412f51d924088c"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libarchive.cmake",
+        "recipe_path": "packages/libarchive.cmake",
+        "original_sha256": "4f5dd14180a11f34159bb652ab536ffb3118f867fe76b2a7d312d0624491ed61",
+        "sha256": "01ef0bdbf404715febaae8769f4be53ff3a71df3a09250cd1c6410f96612ceec"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libaribcaption.cmake",
+        "recipe_path": "packages/libaribcaption.cmake",
+        "original_sha256": "85a5c061d97ff5a160f386d5d5340d8323d6a92ff131f7588574661def03d8eb",
+        "sha256": "605faac66407c5b46ead3a238a4295951b87d58b46c6b80158f208c0d8c5f971"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libass.cmake",
+        "recipe_path": "packages/libass.cmake",
+        "original_sha256": "41ec0c08160e4d0a31b2d9dc214985056ad9b61d77530c526ee77b0acc9c84b6",
+        "sha256": "64db4502ba8fc13a1df931b6e578c0044f8d6a08486ca42e170cc3feb7dd1b08"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libbs2b.cmake",
+        "recipe_path": "packages/libbs2b.cmake",
+        "original_sha256": "95c5f9d08215685a2cc367e302d6f248cfb66040d2d27f972f2e17f612a10ac9",
+        "sha256": "e323b13f7a929386d51873cb4a3cecc3dbc16f85821f641573ae6f61552cfa5d"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libdvdcss.cmake",
+        "recipe_path": "packages/libdvdcss.cmake",
+        "original_sha256": "d04294b88d2ff8444ac8ce40227b34970903d72c855d4561db902d2b304825eb",
+        "sha256": "c6f9b10eef241d923af6f4597eda508e4599ab02a3414c3ad68aba5bdda7f5c2"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libdvdnav.cmake",
+        "recipe_path": "packages/libdvdnav.cmake",
+        "original_sha256": "e1295fb2df314fca53d7a92247ee11b6592c62b49cd28dd4a79224225a1e9619",
+        "sha256": "1d358b4ea41c00703878d7fd7e0cfe4c30e58fbbcc272d6746eb4c07bee195c2"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libdvdread.cmake",
+        "recipe_path": "packages/libdvdread.cmake",
+        "original_sha256": "bc494f70ffccbc75e021def2c2f21d913161bdf2912a33d9efccd99516041676",
+        "sha256": "85695b715f4306a13eccd175a641f860b54e390d24b2a1f35be0532ed55951fd"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libjpeg.cmake",
+        "recipe_path": "packages/libjpeg.cmake",
+        "original_sha256": "8ab2b1835ec12a5db8152146b8a814b7944b69f0b8ec0d477d79cd731a7c5019",
+        "sha256": "2f031ecc10ae1944bc3e708432d9a77b92a1ab77c721b865ceed1a11d2425e36"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libjxl.cmake",
+        "recipe_path": "packages/libjxl.cmake",
+        "original_sha256": "ac5b42e265fd2949fb2ed9429ca8ce96a1784fe2e4bf908cdfdec1e7fb9e4bd7",
+        "sha256": "19c2765e429c84a817d924b3d63ee4929f7dc9142a10e953b83cb2d11da0513f"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libmodplug.cmake",
+        "recipe_path": "packages/libmodplug.cmake",
+        "original_sha256": "5c41503e29f825753f204d0e98bc2560e5d67ffbb14f4a194d8d4a0a593cf0b0",
+        "sha256": "775d858d601bb1c9181c6f2c1bbe7f7cec6a30fe5451bcd0326a84f145e8971a"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libmysofa.cmake",
+        "recipe_path": "packages/libmysofa.cmake",
+        "original_sha256": "f36dca3dece42a06f1d201d2fec621dcb37e978ef7617231787a223cb2eeb532",
+        "sha256": "c7d5abf837edca37bddfb690a8c4b32e030a3b4db20463e5cc8eebcd1b85c9b7"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libpng.cmake",
+        "recipe_path": "packages/libpng.cmake",
+        "original_sha256": "b6d7aa5b712c87b0d023e1506fefe0190eeab6849c3e63eeba9f329d65657720",
+        "sha256": "6e7cc1587f6a72f97badf0dbf2f40557c7814d9a464eb7b2452cc7262e3f730e"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libsamplerate.cmake",
+        "recipe_path": "packages/libsamplerate.cmake",
+        "original_sha256": "aec154ae791c215ef7669c30718bbc0dec7f6b727ea90145892b2ed664875b65",
+        "sha256": "a2f56526d734242bdd8cb3b358c5183e101f1023b4a212f3c742b7a50298a30d"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libsixel.cmake",
+        "recipe_path": "packages/libsixel.cmake",
+        "original_sha256": "999c757d24a44da84b37b00cc7227750f86fb10302f0179af87a59f880b1ee77",
+        "sha256": "39a33469391d8f13c65900a3d57f70ec502c8f1e7e42f1cd97f336750ecd6800"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libsoxr.cmake",
+        "recipe_path": "packages/libsoxr.cmake",
+        "original_sha256": "cec59d2ed74e2de1d3984eee656d475df047a2331d4b68219677d3a363bde38e",
+        "sha256": "d947e42e3867598518802b587731ea12fe3e20621fa02ddf92eb3dfef591294a"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libsrt.cmake",
+        "recipe_path": "packages/libsrt.cmake",
+        "original_sha256": "fb50fce0b1f67f4725cce9766550296ba7a96bef3b6d989ecc6af907d286d5a6",
+        "sha256": "d3b06742d55453e83f8f22ed4400065f22eec31e703c25ca851eb85afd2c0f9d"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libudfread.cmake",
+        "recipe_path": "packages/libudfread.cmake",
+        "original_sha256": "0607b8034ca0feaebb4caff99cfca1ed1be8108c8c35b29b85a58ec0d872112a",
+        "sha256": "c082b1a2ff1afe9f84923874061e3404725c9afa541ce6fb26ff10a114c263ee"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libunibreak.cmake",
+        "recipe_path": "packages/libunibreak.cmake",
+        "original_sha256": "049156f79446ae26709c711abc0321c38ed723f5e45815de7cd5d2a11a74c00a",
+        "sha256": "5fe2effa20fe300cd33762d26b4de85caf80e9a3985b4283c8f6c3d2334c4e6c"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libva.cmake",
+        "recipe_path": "packages/libva.cmake",
+        "original_sha256": "93ec04ce9d24844d548c69d20cc077c7c1a187901886d3956e021ed1b9aeb718",
+        "sha256": "2c4be96b4c89bd6a368700d8ed61df0a715b4ef595567442771c12693b62e004"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libvpx.cmake",
+        "recipe_path": "packages/libvpx.cmake",
+        "original_sha256": "728c41fd3b6613fb0df4025b65c2ea8bb66781441cba23569c94cb36e9342164",
+        "sha256": "18ffd53b48e0d8f529edf05c79db0a94c5b1b019b24554b7c75a5deaaea0ba55"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libwebp.cmake",
+        "recipe_path": "packages/libwebp.cmake",
+        "original_sha256": "390d3b131e2dfa8a4fa093b7d05b2d3e6967962240057f0c183d4201f045aa45",
+        "sha256": "33fe7faaed42045b2e5eb26fa7cd929c1150294a8664e738e7d57f52f9cb5632"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libxml2.cmake",
+        "recipe_path": "packages/libxml2.cmake",
+        "original_sha256": "49de5caa0199c4291564408254f830539073721286aa3c715650d2fb791706fd",
+        "sha256": "f5f75156dccbec3de2d81bc92ec9c360a3442305f4b1e5dde6a12d8f5002962f"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libzimg.cmake",
+        "recipe_path": "packages/libzimg.cmake",
+        "original_sha256": "918aac808ae4d526a9148c16735a615c6e7467ccda623afca07d34aee4b87c06",
+        "sha256": "d3a06ddd0b4b467396f0e312ebb9a04c219ff6a9d6d325f606e568647f1abe79"
+      },
+      {
+        "path": "dependency-overlays/main/packages/libzvbi.cmake",
+        "recipe_path": "packages/libzvbi.cmake",
+        "original_sha256": "a647dbfaf97d65e6cc60a0ed0c19cca2a5316f1d3ec9fadd45e368d4f66bb2e9",
+        "sha256": "1469f179f4b465ee39efd0d64a60730674fef83c9cf5ad6a3f8c0561060bfbfb"
+      },
+      {
+        "path": "dependency-overlays/main/packages/luajit.cmake",
+        "recipe_path": "packages/luajit.cmake",
+        "original_sha256": "75ffc396d502c453d4606238430fc70171aebfa3e26410a4f5b65405c7c49022",
+        "sha256": "097e087e5d4f585755debe31494a376801173e7253d174cb7a6ba79350318275"
+      },
+      {
+        "path": "dependency-overlays/main/packages/mbedtls.cmake",
+        "recipe_path": "packages/mbedtls.cmake",
+        "original_sha256": "c43469d77f50652718044e792b10f7db4ee378cb81949cdd3020e78b414083d6",
+        "sha256": "832ab354097eef4c155fee33a1649b6ba74dd3890f203cbad4ceb0c48feddbe2"
+      },
+      {
+        "path": "dependency-overlays/main/packages/mpv-packaging.cmake",
+        "recipe_path": "packages/mpv-packaging.cmake",
+        "original_sha256": "301bedf93ba5c4533d01b76139e9fc89e73085ab5050c2c3b493df93b7b8538a",
+        "sha256": "1c4b01237868a7d53703b07bc1742f1dce78783b7df682ea1f650b4c461e6ba3"
+      },
+      {
+        "path": "dependency-overlays/main/packages/mujs.cmake",
+        "recipe_path": "packages/mujs.cmake",
+        "original_sha256": "226d428b98e53dd5a1dea6609f0a273293a56951f53012408e4ee57b3a28fce4",
+        "sha256": "256c325481c39e3b8fd5b6b8fecd2b7a4affb1cc107e994510d94c98d26c2d9c"
+      },
+      {
+        "path": "dependency-overlays/main/packages/nvcodec-headers.cmake",
+        "recipe_path": "packages/nvcodec-headers.cmake",
+        "original_sha256": "ada268ec2e56867a085e66f491e4bdce80bc2ccf84e591ecef75030ee04cab9f",
+        "sha256": "3d9037cd010e0de01f69c69e563326dbdf87e1406ff658756b6d739d5a443fcd"
+      },
+      {
+        "path": "dependency-overlays/main/packages/ogg.cmake",
+        "recipe_path": "packages/ogg.cmake",
+        "original_sha256": "434cc5dd65190191772ffd44c68d10cffdb063eee3ea78f4b562b42be762bc2f",
+        "sha256": "5b32923229b33b759263ae44d7f107530a50785b00d132c55a2d225908935c97"
+      },
+      {
+        "path": "dependency-overlays/main/packages/openal-soft.cmake",
+        "recipe_path": "packages/openal-soft.cmake",
+        "original_sha256": "7dfbca2848cbba0ff98d87b3fe4b29931ed9dddef59ccc8eb531c22aea00f5ab",
+        "sha256": "766ebd9ff4eb33f565d3a3a90b26c4f6311632d79ee29f1cebdb23e9b3124cac"
+      },
+      {
+        "path": "dependency-overlays/main/packages/opus.cmake",
+        "recipe_path": "packages/opus.cmake",
+        "original_sha256": "2762c05c3e2cabf4f3959fdf60ea88bca522151be5940bd454cc5d3a106aa428",
+        "sha256": "07add87812fc45a3033babaa33048c1f90dd0aae7b00fa048c52a219d3ab2537"
+      },
+      {
+        "path": "dependency-overlays/main/packages/rubberband.cmake",
+        "recipe_path": "packages/rubberband.cmake",
+        "original_sha256": "988619a42e100de14d5c05cd65fd80b49b13334324726eb6634f56b7c4b05da0",
+        "sha256": "b46d23a2da938c1d22145123d1daba0dda5e81d48c188e5a9ab57afc22348a18"
+      },
+      {
+        "path": "dependency-overlays/main/packages/shaderc.cmake",
+        "recipe_path": "packages/shaderc.cmake",
+        "original_sha256": "03ed509d0509a611c6b8a343f70a6ff27025b2abc938d1916be141baa7737715",
+        "sha256": "2014efa8a25839374d54af781e6258f293c68d3c67bdfd73e0838a03452e9576"
+      },
+      {
+        "path": "dependency-overlays/main/packages/speex.cmake",
+        "recipe_path": "packages/speex.cmake",
+        "original_sha256": "75a53b5a46f60bb1c09805c712fc8522e9ddeea55c02bdc033f07795d0541038",
+        "sha256": "a7e083860d0d044cad12276bb86b53fa210308779e603aa0fe3f8a56379e9493"
+      },
+      {
+        "path": "dependency-overlays/main/packages/spirv-cross.cmake",
+        "recipe_path": "packages/spirv-cross.cmake",
+        "original_sha256": "5179f92a69e342466c6098a84c8eb0531728a97dca17f87dca0ce677ee5aef79",
+        "sha256": "a73975bb19b609726229d37765ba388abe1d828695c9b335cf26ed1d6c4084d3"
+      },
+      {
+        "path": "dependency-overlays/main/packages/spirv-headers.cmake",
+        "recipe_path": "packages/spirv-headers.cmake",
+        "original_sha256": "55f35846e4bac576a88351eba0d4e141b6786e0988004a3b1fdff111ac0ca173",
+        "sha256": "cd9006d47c1842fe09e973d01838d389b5a0a055dfce1c42090a8538849161d9"
+      },
+      {
+        "path": "dependency-overlays/main/packages/spirv-tools.cmake",
+        "recipe_path": "packages/spirv-tools.cmake",
+        "original_sha256": "3feb4110baa93cabded6564caba08bdce883fba93797fa40860bd3713271bfc8",
+        "sha256": "60bc8af46186c56308a8b435c12bd52af95552823d3b1336156139e4c9c7f5cf"
+      },
+      {
+        "path": "dependency-overlays/main/packages/subrandr.cmake",
+        "recipe_path": "packages/subrandr.cmake",
+        "original_sha256": "cbf83815bc10a86c38151633826e413d34167410bc9569ee22c045c53a01f477",
+        "sha256": "a27b3cc77a29860fea13d85a4dbb3a7bdf6092bff7a2a824f9187b3393e026e1"
+      },
+      {
+        "path": "dependency-overlays/main/packages/svtav1.cmake",
+        "recipe_path": "packages/svtav1.cmake",
+        "original_sha256": "4649b91fa340471263d52ef23fcd5dd0ff520dc60e91df564ce1059c4be27c9e",
+        "sha256": "8da08b6270baf8d7c0a7ad95960a3253e5f7eff3345251825204d5e6979b2c9b"
+      },
+      {
+        "path": "dependency-overlays/main/packages/uavs3d.cmake",
+        "recipe_path": "packages/uavs3d.cmake",
+        "original_sha256": "d3d8b5282f9b0a82041cb702415eabdb1e762d1fae36d0203609c08546cc3714",
+        "sha256": "82dcde5f1f02abbe3622363fb47f85056b4b35e4d1aedde3d0e3c7e7708192a9"
+      },
+      {
+        "path": "dependency-overlays/main/packages/uchardet.cmake",
+        "recipe_path": "packages/uchardet.cmake",
+        "original_sha256": "8f47694c5e80817a39e78d60710b2d16a2e462b237af9a5a662e289060f104f8",
+        "sha256": "c7080bb25c8174f11458f0dd26d9cf1b4c4b45c2575d31a8a15c2ae28d9e1d54"
+      },
+      {
+        "path": "dependency-overlays/main/packages/vapoursynth.cmake",
+        "recipe_path": "packages/vapoursynth.cmake",
+        "original_sha256": "af684ecd93f7c8a7b33d65e727c6de42c5dcd8492e558d0d8b6cedcc8fbc0dc6",
+        "sha256": "fd009a189ad8cfa8dbd1f8936a05151a85777afcbb89931920f11b656c304dc2"
+      },
+      {
+        "path": "dependency-overlays/main/packages/vorbis.cmake",
+        "recipe_path": "packages/vorbis.cmake",
+        "original_sha256": "398d8290d23fbf27eedee4a39d435c061a5fe51b20a1d67cc22e063ace9a057d",
+        "sha256": "0dabe8a7385181ac2cb6bb099ccd96be0ab3566d368a32c9dd3a74f19e916643"
+      },
+      {
+        "path": "dependency-overlays/main/packages/vulkan-header.cmake",
+        "recipe_path": "packages/vulkan-header.cmake",
+        "original_sha256": "b8a40525e3c781c51663ed3dadd3bf837035b94cfac1c1c2589679b21567fe36",
+        "sha256": "03463093faa6531eec4db8d946301f42f8295cf0e4dc0865b798f38b67616abc"
+      },
+      {
+        "path": "dependency-overlays/main/packages/vulkan.cmake",
+        "recipe_path": "packages/vulkan.cmake",
+        "original_sha256": "d904d9ffb4a86d14849824f34a932fadf0b18c9fe58619c83392a339943a0bef",
+        "sha256": "4eeb4505b71ec29fe228b9748283fe6e7bf4c8a612c89e2b0327d15af1b2bab9"
+      },
+      {
+        "path": "dependency-overlays/main/packages/x264.cmake",
+        "recipe_path": "packages/x264.cmake",
+        "original_sha256": "bc49bd473b91620a8a71f9b88bd28b85a3cc8f680cb283a6f8e1808f5f737ec7",
+        "sha256": "5d2108fcfd28b52de95edfef586f700a1ca0a36a08f4626b94826c255282f2de"
+      },
+      {
+        "path": "dependency-overlays/main/packages/x265.cmake",
+        "recipe_path": "packages/x265.cmake",
+        "original_sha256": "1e85d352aeda1b77378f00e691b2dc8cd3c350f8f33968f6b147c062043a142a",
+        "sha256": "393fd04a76a9ffabdacfc0ad176fe66a72cc09d80caa7981c31278761c656451"
+      },
+      {
+        "path": "dependency-overlays/main/packages/xxhash.cmake",
+        "recipe_path": "packages/xxhash.cmake",
+        "original_sha256": "0e732aa5a163749cc3876e34309f48cea3fb60464f5d6c229b4ce03e5eb647bb",
+        "sha256": "acbdd260574022e2d5e466407be548733cf7f5a408a3135f7906938dc089c268"
+      },
+      {
+        "path": "dependency-overlays/main/packages/xz.cmake",
+        "recipe_path": "packages/xz.cmake",
+        "original_sha256": "d7c809cfae2f7bb73bd3b216ee412dc8155f9fef481ea367fc87e87da3ce71b7",
+        "sha256": "0b06cb7366194c0d4e3098f46809128c4d3d97cab17e405f7c0967f6465aa3e9"
+      },
+      {
+        "path": "dependency-overlays/main/packages/zlib.cmake",
+        "recipe_path": "packages/zlib.cmake",
+        "original_sha256": "1946f0b75dcb229abe0323644e9453c0868fef1264c28a64f2f02fb4b0f0369d",
+        "sha256": "4a08b4baba1970ca86bcd71f01ef2cb1e6586b065c3da1eb059203fdda95c571"
+      },
+      {
+        "path": "dependency-overlays/main/packages/zstd.cmake",
+        "recipe_path": "packages/zstd.cmake",
+        "original_sha256": "84c3e98c148ab52579c99106ac5f1256e842d3dd51369ad222c1d9f71fb716cb",
+        "sha256": "b5b0f949f403b1742be2e5c8e3c253cd291676aab915da32d8df9e98d661931f"
+      },
+      {
+        "path": "dependency-overlays/main/toolchain/mingw-w64.cmake",
+        "recipe_path": "toolchain/mingw-w64.cmake",
+        "original_sha256": "55f2a2bb49ef17de05985beb0395c7a1acb44d613c50e048fce1e5a2c2fab8a3",
+        "sha256": "bced3952b82ea84dc1eeb0d3dc40573e74c9cb4bd3d930bf6b7a2cedbe0c4bb0"
+      }
+    ],
+    "atmos": [
+      {
+        "path": "dependency-overlays/atmos/packages/amf-headers.cmake",
+        "recipe_path": "packages/amf-headers.cmake",
+        "original_sha256": "bb0628f31bfd4e6db57ef3c5381f10e8bf8fb666acb62394558e71e34b339dca",
+        "sha256": "ca19de5aafa08bf78e96fd559722ad5a02b8e90ee89c86c2f4ae93ae41f7420b"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/angle-headers.cmake",
+        "recipe_path": "packages/angle-headers.cmake",
+        "original_sha256": "9a1b2255f2811337e8b3ff7e05da3944969d98652ed722281589dc640f428b06",
+        "sha256": "d924141548b90e815ae879adcfb79dbfeedb586a4fb04e123c0c991cd5ecea85"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/aom.cmake",
+        "recipe_path": "packages/aom.cmake",
+        "original_sha256": "73c4f6335a5be0a8fb8639cea1936faa61c861f4cdb5c129e5384e3f04441eee",
+        "sha256": "d5fe8734ee9859851858a9d8cc19afeb54e1bd1a18557ed1f070b9e15ba56f51"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/avisynth-headers.cmake",
+        "recipe_path": "packages/avisynth-headers.cmake",
+        "original_sha256": "4cd756ff326b00256d03d03e4f86e1554a8b1a57f7d014368b99057149ca6685",
+        "sha256": "c644f2a0b9704438c42e960b28eb40e6d228cdbccaa22459701d8caef8cb38a6"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/brotli.cmake",
+        "recipe_path": "packages/brotli.cmake",
+        "original_sha256": "b8554a6c7028bd3b0f1dd9361c0b7c6c6312e87d3793f3ce3dbf7f89d9fb9bc1",
+        "sha256": "4ba95df3b026304ce57e7e4fd29d717a27d05ea44fe6334978c18532b7a0281b"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/bzip2.cmake",
+        "recipe_path": "packages/bzip2.cmake",
+        "original_sha256": "22c06023a62280f46de2b3dd73daac92eff15e6c6ad48be32c5a101bf911d0ec",
+        "sha256": "c7a1be69093be654bdd5ddf67341abc4ecf4f91db3071c360c897e6fb055a6b1"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/c-ares.cmake",
+        "recipe_path": "packages/c-ares.cmake",
+        "original_sha256": "ff158ffb4add510160a78eef6473625d965ebf4bd57b0fc1e23275fcb48c6013",
+        "sha256": "b27aac0b6112551494d6c2c1317bc8f51f01edee9a652d9a83681a5331501f77"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/dav1d.cmake",
+        "recipe_path": "packages/dav1d.cmake",
+        "original_sha256": "c64418c6e46a296d414a4345eb8e7f61f68ae63490c573f6bcb7988e8b3782dc",
+        "sha256": "c9390e2776a9fa650922de6a7c1361220644441f22c5cb5c9f7547c8beca52a6"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/freetype2.cmake",
+        "recipe_path": "packages/freetype2.cmake",
+        "original_sha256": "eed687f636ec335af2e341537e089857f75a659e69d02da5176715628bf3b035",
+        "sha256": "130c9dbc4a6e9825c0180a865cffdf61b1f514a1235e791b8fe8528e33f6dacf"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/fribidi.cmake",
+        "recipe_path": "packages/fribidi.cmake",
+        "original_sha256": "9a220a21c07099ebc6391d828a677697c4f147a781fcb54f86e038dbbf620321",
+        "sha256": "7021a3eb19b41d381aa20be51fac9edb18c6043ee6407d51c67889c9f80e3757"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/game-music-emu.cmake",
+        "recipe_path": "packages/game-music-emu.cmake",
+        "original_sha256": "c023ad08da8c0c7e6ad9bf0511e0acd5dabf53591cd15492e9385d677a5b3dbc",
+        "sha256": "117abf1419c24ba8d7afddd83482dac971a518885045d7261a0b1be3e6df22a2"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/glslang.cmake",
+        "recipe_path": "packages/glslang.cmake",
+        "original_sha256": "164f4cef085f0224eb9b98eb7b4093880e5ad2ea4dba60bb00131f33f94a5d13",
+        "sha256": "2b6ce4695be9fa9600b746ffd19497f3764476b2fab1bc3a54678faac5268ece"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/graphengine.cmake",
+        "recipe_path": "packages/graphengine.cmake",
+        "original_sha256": "acfd98328265bee49b86a7ce64d6dd3e8c9201952385f3911625840a9a01869b",
+        "sha256": "93fa7d98808e0e13a69ef47afd3fc72d9b7e5e41ef3891108275ffbd549ea5a1"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/harfbuzz.cmake",
+        "recipe_path": "packages/harfbuzz.cmake",
+        "original_sha256": "9b8a2f9f2b7dfb440ff7f6c925489ae1cee64b3119f5556f6c103c786f653f4b",
+        "sha256": "7274b4d2921f23c8dbe318e275a7142210996cb668c000b52f01fc188c69eaa5"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/highway.cmake",
+        "recipe_path": "packages/highway.cmake",
+        "original_sha256": "26b46bc1f08f35d7fda6f2bab349224e39a3972942ccad7aca3b8b768954fa87",
+        "sha256": "f02161be72be65e7803220ad1523ddbdf3dcff511cb3fe242b3373717e9598b9"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/lame.cmake",
+        "recipe_path": "packages/lame.cmake",
+        "original_sha256": "2fc016fa58c3d768c9f872ca715309c7b94cf815a4c3352d325f4d25650c2fa3",
+        "sha256": "5678b64efbf5686f250673c81470132d84137b9d99340b1a67e85252f9a6223f"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/lcms2.cmake",
+        "recipe_path": "packages/lcms2.cmake",
+        "original_sha256": "78ac60adc47be993cf59f7f1d318d78558a2850755a8b4b5181f68434245edbe",
+        "sha256": "86f6a5715e7284c7d8116fbdab28956d5f199423d0ae6d78c3412f51d924088c"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libarchive.cmake",
+        "recipe_path": "packages/libarchive.cmake",
+        "original_sha256": "4f5dd14180a11f34159bb652ab536ffb3118f867fe76b2a7d312d0624491ed61",
+        "sha256": "01ef0bdbf404715febaae8769f4be53ff3a71df3a09250cd1c6410f96612ceec"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libaribcaption.cmake",
+        "recipe_path": "packages/libaribcaption.cmake",
+        "original_sha256": "85a5c061d97ff5a160f386d5d5340d8323d6a92ff131f7588574661def03d8eb",
+        "sha256": "605faac66407c5b46ead3a238a4295951b87d58b46c6b80158f208c0d8c5f971"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libass.cmake",
+        "recipe_path": "packages/libass.cmake",
+        "original_sha256": "41ec0c08160e4d0a31b2d9dc214985056ad9b61d77530c526ee77b0acc9c84b6",
+        "sha256": "64db4502ba8fc13a1df931b6e578c0044f8d6a08486ca42e170cc3feb7dd1b08"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libbs2b.cmake",
+        "recipe_path": "packages/libbs2b.cmake",
+        "original_sha256": "95c5f9d08215685a2cc367e302d6f248cfb66040d2d27f972f2e17f612a10ac9",
+        "sha256": "e323b13f7a929386d51873cb4a3cecc3dbc16f85821f641573ae6f61552cfa5d"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libdvdcss.cmake",
+        "recipe_path": "packages/libdvdcss.cmake",
+        "original_sha256": "d04294b88d2ff8444ac8ce40227b34970903d72c855d4561db902d2b304825eb",
+        "sha256": "c6f9b10eef241d923af6f4597eda508e4599ab02a3414c3ad68aba5bdda7f5c2"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libdvdnav.cmake",
+        "recipe_path": "packages/libdvdnav.cmake",
+        "original_sha256": "e1295fb2df314fca53d7a92247ee11b6592c62b49cd28dd4a79224225a1e9619",
+        "sha256": "1d358b4ea41c00703878d7fd7e0cfe4c30e58fbbcc272d6746eb4c07bee195c2"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libdvdread.cmake",
+        "recipe_path": "packages/libdvdread.cmake",
+        "original_sha256": "bc494f70ffccbc75e021def2c2f21d913161bdf2912a33d9efccd99516041676",
+        "sha256": "85695b715f4306a13eccd175a641f860b54e390d24b2a1f35be0532ed55951fd"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libjpeg.cmake",
+        "recipe_path": "packages/libjpeg.cmake",
+        "original_sha256": "8ab2b1835ec12a5db8152146b8a814b7944b69f0b8ec0d477d79cd731a7c5019",
+        "sha256": "2f031ecc10ae1944bc3e708432d9a77b92a1ab77c721b865ceed1a11d2425e36"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libjxl.cmake",
+        "recipe_path": "packages/libjxl.cmake",
+        "original_sha256": "ac5b42e265fd2949fb2ed9429ca8ce96a1784fe2e4bf908cdfdec1e7fb9e4bd7",
+        "sha256": "19c2765e429c84a817d924b3d63ee4929f7dc9142a10e953b83cb2d11da0513f"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libmodplug.cmake",
+        "recipe_path": "packages/libmodplug.cmake",
+        "original_sha256": "5c41503e29f825753f204d0e98bc2560e5d67ffbb14f4a194d8d4a0a593cf0b0",
+        "sha256": "775d858d601bb1c9181c6f2c1bbe7f7cec6a30fe5451bcd0326a84f145e8971a"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libmysofa.cmake",
+        "recipe_path": "packages/libmysofa.cmake",
+        "original_sha256": "f36dca3dece42a06f1d201d2fec621dcb37e978ef7617231787a223cb2eeb532",
+        "sha256": "c7d5abf837edca37bddfb690a8c4b32e030a3b4db20463e5cc8eebcd1b85c9b7"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libpng.cmake",
+        "recipe_path": "packages/libpng.cmake",
+        "original_sha256": "b6d7aa5b712c87b0d023e1506fefe0190eeab6849c3e63eeba9f329d65657720",
+        "sha256": "6e7cc1587f6a72f97badf0dbf2f40557c7814d9a464eb7b2452cc7262e3f730e"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libsamplerate.cmake",
+        "recipe_path": "packages/libsamplerate.cmake",
+        "original_sha256": "aec154ae791c215ef7669c30718bbc0dec7f6b727ea90145892b2ed664875b65",
+        "sha256": "a2f56526d734242bdd8cb3b358c5183e101f1023b4a212f3c742b7a50298a30d"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libsixel.cmake",
+        "recipe_path": "packages/libsixel.cmake",
+        "original_sha256": "999c757d24a44da84b37b00cc7227750f86fb10302f0179af87a59f880b1ee77",
+        "sha256": "39a33469391d8f13c65900a3d57f70ec502c8f1e7e42f1cd97f336750ecd6800"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libsoxr.cmake",
+        "recipe_path": "packages/libsoxr.cmake",
+        "original_sha256": "cec59d2ed74e2de1d3984eee656d475df047a2331d4b68219677d3a363bde38e",
+        "sha256": "d947e42e3867598518802b587731ea12fe3e20621fa02ddf92eb3dfef591294a"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libsrt.cmake",
+        "recipe_path": "packages/libsrt.cmake",
+        "original_sha256": "fb50fce0b1f67f4725cce9766550296ba7a96bef3b6d989ecc6af907d286d5a6",
+        "sha256": "d3b06742d55453e83f8f22ed4400065f22eec31e703c25ca851eb85afd2c0f9d"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libudfread.cmake",
+        "recipe_path": "packages/libudfread.cmake",
+        "original_sha256": "0607b8034ca0feaebb4caff99cfca1ed1be8108c8c35b29b85a58ec0d872112a",
+        "sha256": "c082b1a2ff1afe9f84923874061e3404725c9afa541ce6fb26ff10a114c263ee"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libunibreak.cmake",
+        "recipe_path": "packages/libunibreak.cmake",
+        "original_sha256": "049156f79446ae26709c711abc0321c38ed723f5e45815de7cd5d2a11a74c00a",
+        "sha256": "5fe2effa20fe300cd33762d26b4de85caf80e9a3985b4283c8f6c3d2334c4e6c"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libva.cmake",
+        "recipe_path": "packages/libva.cmake",
+        "original_sha256": "93ec04ce9d24844d548c69d20cc077c7c1a187901886d3956e021ed1b9aeb718",
+        "sha256": "2c4be96b4c89bd6a368700d8ed61df0a715b4ef595567442771c12693b62e004"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libvpx.cmake",
+        "recipe_path": "packages/libvpx.cmake",
+        "original_sha256": "728c41fd3b6613fb0df4025b65c2ea8bb66781441cba23569c94cb36e9342164",
+        "sha256": "18ffd53b48e0d8f529edf05c79db0a94c5b1b019b24554b7c75a5deaaea0ba55"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libwebp.cmake",
+        "recipe_path": "packages/libwebp.cmake",
+        "original_sha256": "390d3b131e2dfa8a4fa093b7d05b2d3e6967962240057f0c183d4201f045aa45",
+        "sha256": "33fe7faaed42045b2e5eb26fa7cd929c1150294a8664e738e7d57f52f9cb5632"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libxml2.cmake",
+        "recipe_path": "packages/libxml2.cmake",
+        "original_sha256": "49de5caa0199c4291564408254f830539073721286aa3c715650d2fb791706fd",
+        "sha256": "f5f75156dccbec3de2d81bc92ec9c360a3442305f4b1e5dde6a12d8f5002962f"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libzimg.cmake",
+        "recipe_path": "packages/libzimg.cmake",
+        "original_sha256": "918aac808ae4d526a9148c16735a615c6e7467ccda623afca07d34aee4b87c06",
+        "sha256": "d3a06ddd0b4b467396f0e312ebb9a04c219ff6a9d6d325f606e568647f1abe79"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/libzvbi.cmake",
+        "recipe_path": "packages/libzvbi.cmake",
+        "original_sha256": "a647dbfaf97d65e6cc60a0ed0c19cca2a5316f1d3ec9fadd45e368d4f66bb2e9",
+        "sha256": "1469f179f4b465ee39efd0d64a60730674fef83c9cf5ad6a3f8c0561060bfbfb"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/luajit.cmake",
+        "recipe_path": "packages/luajit.cmake",
+        "original_sha256": "75ffc396d502c453d4606238430fc70171aebfa3e26410a4f5b65405c7c49022",
+        "sha256": "097e087e5d4f585755debe31494a376801173e7253d174cb7a6ba79350318275"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/mbedtls.cmake",
+        "recipe_path": "packages/mbedtls.cmake",
+        "original_sha256": "c43469d77f50652718044e792b10f7db4ee378cb81949cdd3020e78b414083d6",
+        "sha256": "832ab354097eef4c155fee33a1649b6ba74dd3890f203cbad4ceb0c48feddbe2"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/mpv-packaging.cmake",
+        "recipe_path": "packages/mpv-packaging.cmake",
+        "original_sha256": "301bedf93ba5c4533d01b76139e9fc89e73085ab5050c2c3b493df93b7b8538a",
+        "sha256": "1c4b01237868a7d53703b07bc1742f1dce78783b7df682ea1f650b4c461e6ba3"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/mujs.cmake",
+        "recipe_path": "packages/mujs.cmake",
+        "original_sha256": "226d428b98e53dd5a1dea6609f0a273293a56951f53012408e4ee57b3a28fce4",
+        "sha256": "256c325481c39e3b8fd5b6b8fecd2b7a4affb1cc107e994510d94c98d26c2d9c"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/nvcodec-headers.cmake",
+        "recipe_path": "packages/nvcodec-headers.cmake",
+        "original_sha256": "ada268ec2e56867a085e66f491e4bdce80bc2ccf84e591ecef75030ee04cab9f",
+        "sha256": "3d9037cd010e0de01f69c69e563326dbdf87e1406ff658756b6d739d5a443fcd"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/ogg.cmake",
+        "recipe_path": "packages/ogg.cmake",
+        "original_sha256": "434cc5dd65190191772ffd44c68d10cffdb063eee3ea78f4b562b42be762bc2f",
+        "sha256": "5b32923229b33b759263ae44d7f107530a50785b00d132c55a2d225908935c97"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/openal-soft.cmake",
+        "recipe_path": "packages/openal-soft.cmake",
+        "original_sha256": "7dfbca2848cbba0ff98d87b3fe4b29931ed9dddef59ccc8eb531c22aea00f5ab",
+        "sha256": "766ebd9ff4eb33f565d3a3a90b26c4f6311632d79ee29f1cebdb23e9b3124cac"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/opus.cmake",
+        "recipe_path": "packages/opus.cmake",
+        "original_sha256": "2762c05c3e2cabf4f3959fdf60ea88bca522151be5940bd454cc5d3a106aa428",
+        "sha256": "07add87812fc45a3033babaa33048c1f90dd0aae7b00fa048c52a219d3ab2537"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/rubberband.cmake",
+        "recipe_path": "packages/rubberband.cmake",
+        "original_sha256": "988619a42e100de14d5c05cd65fd80b49b13334324726eb6634f56b7c4b05da0",
+        "sha256": "b46d23a2da938c1d22145123d1daba0dda5e81d48c188e5a9ab57afc22348a18"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/shaderc.cmake",
+        "recipe_path": "packages/shaderc.cmake",
+        "original_sha256": "03ed509d0509a611c6b8a343f70a6ff27025b2abc938d1916be141baa7737715",
+        "sha256": "2014efa8a25839374d54af781e6258f293c68d3c67bdfd73e0838a03452e9576"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/speex.cmake",
+        "recipe_path": "packages/speex.cmake",
+        "original_sha256": "75a53b5a46f60bb1c09805c712fc8522e9ddeea55c02bdc033f07795d0541038",
+        "sha256": "a7e083860d0d044cad12276bb86b53fa210308779e603aa0fe3f8a56379e9493"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/spirv-cross.cmake",
+        "recipe_path": "packages/spirv-cross.cmake",
+        "original_sha256": "5179f92a69e342466c6098a84c8eb0531728a97dca17f87dca0ce677ee5aef79",
+        "sha256": "a73975bb19b609726229d37765ba388abe1d828695c9b335cf26ed1d6c4084d3"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/spirv-headers.cmake",
+        "recipe_path": "packages/spirv-headers.cmake",
+        "original_sha256": "55f35846e4bac576a88351eba0d4e141b6786e0988004a3b1fdff111ac0ca173",
+        "sha256": "cd9006d47c1842fe09e973d01838d389b5a0a055dfce1c42090a8538849161d9"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/spirv-tools.cmake",
+        "recipe_path": "packages/spirv-tools.cmake",
+        "original_sha256": "3feb4110baa93cabded6564caba08bdce883fba93797fa40860bd3713271bfc8",
+        "sha256": "60bc8af46186c56308a8b435c12bd52af95552823d3b1336156139e4c9c7f5cf"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/subrandr.cmake",
+        "recipe_path": "packages/subrandr.cmake",
+        "original_sha256": "cbf83815bc10a86c38151633826e413d34167410bc9569ee22c045c53a01f477",
+        "sha256": "a27b3cc77a29860fea13d85a4dbb3a7bdf6092bff7a2a824f9187b3393e026e1"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/svtav1.cmake",
+        "recipe_path": "packages/svtav1.cmake",
+        "original_sha256": "4649b91fa340471263d52ef23fcd5dd0ff520dc60e91df564ce1059c4be27c9e",
+        "sha256": "8da08b6270baf8d7c0a7ad95960a3253e5f7eff3345251825204d5e6979b2c9b"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/uavs3d.cmake",
+        "recipe_path": "packages/uavs3d.cmake",
+        "original_sha256": "d3d8b5282f9b0a82041cb702415eabdb1e762d1fae36d0203609c08546cc3714",
+        "sha256": "82dcde5f1f02abbe3622363fb47f85056b4b35e4d1aedde3d0e3c7e7708192a9"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/uchardet.cmake",
+        "recipe_path": "packages/uchardet.cmake",
+        "original_sha256": "8f47694c5e80817a39e78d60710b2d16a2e462b237af9a5a662e289060f104f8",
+        "sha256": "c7080bb25c8174f11458f0dd26d9cf1b4c4b45c2575d31a8a15c2ae28d9e1d54"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/vapoursynth.cmake",
+        "recipe_path": "packages/vapoursynth.cmake",
+        "original_sha256": "af684ecd93f7c8a7b33d65e727c6de42c5dcd8492e558d0d8b6cedcc8fbc0dc6",
+        "sha256": "fd009a189ad8cfa8dbd1f8936a05151a85777afcbb89931920f11b656c304dc2"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/vorbis.cmake",
+        "recipe_path": "packages/vorbis.cmake",
+        "original_sha256": "398d8290d23fbf27eedee4a39d435c061a5fe51b20a1d67cc22e063ace9a057d",
+        "sha256": "0dabe8a7385181ac2cb6bb099ccd96be0ab3566d368a32c9dd3a74f19e916643"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/vulkan-header.cmake",
+        "recipe_path": "packages/vulkan-header.cmake",
+        "original_sha256": "b8a40525e3c781c51663ed3dadd3bf837035b94cfac1c1c2589679b21567fe36",
+        "sha256": "03463093faa6531eec4db8d946301f42f8295cf0e4dc0865b798f38b67616abc"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/vulkan.cmake",
+        "recipe_path": "packages/vulkan.cmake",
+        "original_sha256": "d904d9ffb4a86d14849824f34a932fadf0b18c9fe58619c83392a339943a0bef",
+        "sha256": "4eeb4505b71ec29fe228b9748283fe6e7bf4c8a612c89e2b0327d15af1b2bab9"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/x264.cmake",
+        "recipe_path": "packages/x264.cmake",
+        "original_sha256": "bc49bd473b91620a8a71f9b88bd28b85a3cc8f680cb283a6f8e1808f5f737ec7",
+        "sha256": "5d2108fcfd28b52de95edfef586f700a1ca0a36a08f4626b94826c255282f2de"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/x265.cmake",
+        "recipe_path": "packages/x265.cmake",
+        "original_sha256": "1e85d352aeda1b77378f00e691b2dc8cd3c350f8f33968f6b147c062043a142a",
+        "sha256": "393fd04a76a9ffabdacfc0ad176fe66a72cc09d80caa7981c31278761c656451"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/xxhash.cmake",
+        "recipe_path": "packages/xxhash.cmake",
+        "original_sha256": "0e732aa5a163749cc3876e34309f48cea3fb60464f5d6c229b4ce03e5eb647bb",
+        "sha256": "acbdd260574022e2d5e466407be548733cf7f5a408a3135f7906938dc089c268"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/xz.cmake",
+        "recipe_path": "packages/xz.cmake",
+        "original_sha256": "d7c809cfae2f7bb73bd3b216ee412dc8155f9fef481ea367fc87e87da3ce71b7",
+        "sha256": "0b06cb7366194c0d4e3098f46809128c4d3d97cab17e405f7c0967f6465aa3e9"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/zlib.cmake",
+        "recipe_path": "packages/zlib.cmake",
+        "original_sha256": "1946f0b75dcb229abe0323644e9453c0868fef1264c28a64f2f02fb4b0f0369d",
+        "sha256": "4a08b4baba1970ca86bcd71f01ef2cb1e6586b065c3da1eb059203fdda95c571"
+      },
+      {
+        "path": "dependency-overlays/atmos/packages/zstd.cmake",
+        "recipe_path": "packages/zstd.cmake",
+        "original_sha256": "84c3e98c148ab52579c99106ac5f1256e842d3dd51369ad222c1d9f71fb716cb",
+        "sha256": "b5b0f949f403b1742be2e5c8e3c253cd291676aab915da32d8df9e98d661931f"
+      },
+      {
+        "path": "dependency-overlays/atmos/toolchain/mingw-w64.cmake",
+        "recipe_path": "toolchain/mingw-w64.cmake",
+        "original_sha256": "55f2a2bb49ef17de05985beb0395c7a1acb44d613c50e048fce1e5a2c2fab8a3",
+        "sha256": "bced3952b82ea84dc1eeb0d3dc40573e74c9cb4bd3d930bf6b7a2cedbe0c4bb0"
+      }
+    ]
+  },
+  "source_contracts": [
+    {
+      "id": "native-ass:video/out/vo.c",
+      "path": "video/out/vo.c",
+      "required": [
+        "secondary_forecast_fresh_clock_plan",
+        "secondary_next_sample",
+        "reset_secondary_ass_budget",
+        "secondary_stage_cache_current"
+      ]
+    },
+    {
+      "id": "native-ass:sub/osd.c",
+      "path": "sub/osd.c",
+      "required": [
+        "osd_set_secondary_physical_forecast_time",
+        "osd_hold_secondary_sample"
+      ]
+    },
+    {
+      "id": "native-ass:video/out/d3d11/context.c",
+      "path": "video/out/d3d11/context.c",
+      "required": [
+        "d3d11_present_generation_invalidate",
+        "mp_ass_pacing_record",
+        "IDXGISwapChain_Present"
+      ]
+    },
+    {
+      "id": "av3a:audio/decode/ad_lavc.c",
+      "path": "audio/decode/ad_lavc.c",
+      "required": [
+        "ADCTRL_GET_AV3A_CONTENT_INFO",
+        "av3a_contents"
+      ]
+    },
+    {
+      "id": "av3a:player/command.c",
+      "path": "player/command.c",
+      "required": [
+        "audio-av3a-content-info"
+      ]
+    },
+    {
+      "id": "av3a:audio/chmap_avchannel.c",
+      "path": "audio/chmap_avchannel.c",
+      "required": [
+        "AV_CHANNEL_ORDER_CUSTOM",
+        "AV_CHANNEL_ORDER_AMBISONIC"
+      ]
+    },
+    {
+      "id": "av3a:audio/out/ao_wasapi_utils.c",
+      "path": "audio/out/ao_wasapi_utils.c",
+      "required": [
+        "if (!unknown && wformat->dwChannelMask != chans)"
+      ]
+    },
+    {
+      "id": "vc1:demux/demux_lavf.c",
+      "path": "demux/demux_lavf.c",
+      "required": [
+        "DISC_VC1_PROBE_BYTES",
+        "DISC_VC1_PROBE_SECONDS",
+        "disc_vc1_probe_deadline"
+      ]
+    },
+    {
+      "id": "vc1:video/decode/vd_lavc.c",
+      "path": "video/decode/vd_lavc.c",
+      "required": [
+        "finish_fallback",
+        "INIT_AVCTX_FAILED",
+        "while (result == INIT_AVCTX_HWDEC_FAILED)"
+      ]
+    },
+    {
+      "id": "pgs-hdr:video/out/vo_gpu_next.c",
+      "path": "video/out/vo_gpu_next.c",
+      "required": [
+        "image-subs-colorspace",
+        "IMAGE_SUBS_COLORSPACE_SDR",
+        "tone-mapping-knee-offset",
+        "slot_acquire",
+        "ra_hwdec_mapper_begin_access",
+        "ra_hwdec_mapper_end_access"
+      ]
+    },
+    {
+      "id": "disc-dovi:stream/stream_bluray.c",
+      "path": "stream/stream_bluray.c",
+      "required": [
+        "remote_read_blocks",
+        "jump_head",
+        "mp_bluray_audio_sample_rate",
+        "bd_overlay_tall_sliver"
+      ],
+      "exact_counts": {
+        "case BD_EVENT_PLAYITEM:": 1
+      }
+    },
+    {
+      "id": "disc-dovi:demux/demux_disc.c",
+      "path": "demux/demux_disc.c",
+      "required": [
+        "set_bd_profile7",
+        "demux_set_stream_codec",
+        "read_menu_audio",
+        "demuxer_set_stream_cache_inactive"
+      ]
+    },
+    {
+      "id": "disc-dovi:stream/stream_dvdnav.c",
+      "path": "stream/stream_dvdnav.c",
+      "required": [
+        "is_link_rsm_command",
+        "static bool activate_current_button",
+        "acted = activate_current_button",
+        "int num_buttons = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));",
+        "pci->hli.hl_gi.btn_ns = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));"
+      ]
+    },
+    {
+      "id": "network:stream/stream_curl.c",
+      "path": "stream/stream_curl.c",
+      "required": [
+        "if (received)",
+        "p->retry_count = 0;",
+        "check_http_reply",
+        "curl_multi_add_handle"
+      ]
+    },
+    {
+      "id": "atmos:audio/decode/ad_orender.c",
+      "path": "audio/decode/ad_orender.c",
+      "required": [
+        "orender"
+      ],
+      "variants": [
+        "atmos"
+      ]
+    },
+    {
+      "id": "atmos:audio/out/ao_asio.c",
+      "path": "audio/out/ao_asio.c",
+      "required": [
+        "ASIO"
+      ],
+      "variants": [
+        "atmos"
+      ]
+    },
+    {
+      "id": "atmos:common/orender_dl.c",
+      "path": "common/orender_dl.c",
+      "required": [
+        "orender"
+      ],
+      "variants": [
+        "atmos"
+      ]
+    },
+    {
+      "id": "atmos:meson.build",
+      "path": "meson.build",
+      "required": [
+        "features += {'orender'",
+        "features += {'asio'"
+      ],
+      "variants": [
+        "atmos"
+      ]
+    },
+    {
+      "id": "disc-dovi:demux/demux.c",
+      "path": "demux/demux.c",
+      "required": [
+        "void demux_set_stream_still_image(",
+        "sh->still_image = still_image;"
+      ]
+    },
+    {
+      "id": "disc-dovi:demux/demux.h",
+      "path": "demux/demux.h",
+      "required": [
+        "void demux_set_stream_still_image("
+      ]
+    },
+    {
+      "id": "atmos-overlay:player/orender_overlay.c",
+      "path": "player/orender_overlay.c",
+      "variants": [
+        "atmos"
+      ],
+      "required": [
+        "mp_new_weak_client(mpctx->clients, \"omniphony_overlay\")",
+        "mpv_destroy(client);"
+      ]
+    }
+  ],
+  "policy": "Preserve custom features; enable only verified playback and image-quality improvements. No new renderer defaults.",
+  "input_files": [
+    {
+      "path": "apply-reviewed-mpv.py",
+      "sha256": "c961d69d954414429a91110eb8adb182604530192d71e038a270efffe4eb6f0a"
+    },
+    {
+      "path": "cpu/cpu-tests/verify-secondary-ass-epoch-bootstrap.c",
+      "sha256": "5e9c7a68accc94104c600cae39ba1703d53c03a6c4240261f8132b1d1f77ea8b"
+    },
+    {
+      "path": "cpu/cpu-tests/verify-secondary-ass-fresh-video.c",
+      "sha256": "b10419317eba36a62b32c74c1c30932f35fc580053ee606fe8a8791f13be76fb"
+    },
+    {
+      "path": "cpu/cpu-tests/verify-secondary-ass-phase-recovery.c",
+      "sha256": "8a1032b285f83ad3604e1a65e192622d141a4c06c05e8532518971985737f94b"
+    },
+    {
+      "path": "cpu/port-ready.json",
+      "sha256": "4d98dd95b4e1ea667bc36c59c5afbc0a161466b70b63772b9dc7720f184dd284"
+    },
+    {
+      "path": "cpu/run_cpu_contracts.py",
+      "sha256": "75c2dd40e5ac005bb87d18a154582a729e70b30f5a56348c99343c9d99e27cf9"
+    },
+    {
+      "path": "dependencies/apply_ffmpeg_fix.py",
+      "sha256": "fd6c27ec5f485eaaeb77aff0c40574c33efe80866a200bf3bf9d4f9af63e2f06"
+    },
+    {
+      "path": "dependencies/bind_compiled_dependencies.py",
+      "sha256": "f0cc69a82352581d120444a5d93284d05761b966048c035f6108c1208f5a97f6"
+    },
+    {
+      "path": "dependencies/build_custom_io_probe.sh",
+      "sha256": "7e9cf088c78f962c90160725faee508bcd106fa27354752f8448b794d6ece4b5"
+    },
+    {
+      "path": "dependencies/check_candidate_dependencies.py",
+      "sha256": "2a327ed81f73a51d500cca81d4eb21e64daa7fdb9fc5314cc653a11387290856"
+    },
+    {
+      "path": "dependencies/dependency-provenance.json",
+      "sha256": "173db8cd446c4d1433b05a7b205eb8a86b64ac3af40e0396385f742c4bf66e58"
+    },
+    {
+      "path": "dependencies/ffmpeg-9012-custom-io-failure-close.patch",
+      "sha256": "97d2f4c5cc7774cab510724abd4599614fca3f63ddd033e3a9f1dc3a20c8d9f7"
+    },
+    {
+      "path": "dependencies/source-proof.json",
+      "sha256": "60de8297ffeb17240f195d9114f33f8a157b61825ae830ad835456ff73a71f0b"
+    },
+    {
+      "path": "dependencies/source_gate.py",
+      "sha256": "84f9e0c3bbdb45959fcedbdc322d172c74b9651589867e5f1f4434e26b3c55a6"
+    },
+    {
+      "path": "dependencies/test_custom_io_cleanup.c",
+      "sha256": "a0e691fb55ac3d3a6700e26c53ac3a3bfa8aca5d4d5187991f4dd53fd35b94f4"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/amf-headers.cmake",
+      "sha256": "ca19de5aafa08bf78e96fd559722ad5a02b8e90ee89c86c2f4ae93ae41f7420b"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/angle-headers.cmake",
+      "sha256": "d924141548b90e815ae879adcfb79dbfeedb586a4fb04e123c0c991cd5ecea85"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/aom.cmake",
+      "sha256": "d5fe8734ee9859851858a9d8cc19afeb54e1bd1a18557ed1f070b9e15ba56f51"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/avisynth-headers.cmake",
+      "sha256": "c644f2a0b9704438c42e960b28eb40e6d228cdbccaa22459701d8caef8cb38a6"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/brotli.cmake",
+      "sha256": "4ba95df3b026304ce57e7e4fd29d717a27d05ea44fe6334978c18532b7a0281b"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/bzip2.cmake",
+      "sha256": "c7a1be69093be654bdd5ddf67341abc4ecf4f91db3071c360c897e6fb055a6b1"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/c-ares.cmake",
+      "sha256": "b27aac0b6112551494d6c2c1317bc8f51f01edee9a652d9a83681a5331501f77"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/dav1d.cmake",
+      "sha256": "c9390e2776a9fa650922de6a7c1361220644441f22c5cb5c9f7547c8beca52a6"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/freetype2.cmake",
+      "sha256": "130c9dbc4a6e9825c0180a865cffdf61b1f514a1235e791b8fe8528e33f6dacf"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/fribidi.cmake",
+      "sha256": "7021a3eb19b41d381aa20be51fac9edb18c6043ee6407d51c67889c9f80e3757"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/game-music-emu.cmake",
+      "sha256": "117abf1419c24ba8d7afddd83482dac971a518885045d7261a0b1be3e6df22a2"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/glslang.cmake",
+      "sha256": "2b6ce4695be9fa9600b746ffd19497f3764476b2fab1bc3a54678faac5268ece"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/graphengine.cmake",
+      "sha256": "93fa7d98808e0e13a69ef47afd3fc72d9b7e5e41ef3891108275ffbd549ea5a1"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/harfbuzz.cmake",
+      "sha256": "7274b4d2921f23c8dbe318e275a7142210996cb668c000b52f01fc188c69eaa5"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/highway.cmake",
+      "sha256": "f02161be72be65e7803220ad1523ddbdf3dcff511cb3fe242b3373717e9598b9"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/lame.cmake",
+      "sha256": "5678b64efbf5686f250673c81470132d84137b9d99340b1a67e85252f9a6223f"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/lcms2.cmake",
+      "sha256": "86f6a5715e7284c7d8116fbdab28956d5f199423d0ae6d78c3412f51d924088c"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libarchive.cmake",
+      "sha256": "01ef0bdbf404715febaae8769f4be53ff3a71df3a09250cd1c6410f96612ceec"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libaribcaption.cmake",
+      "sha256": "605faac66407c5b46ead3a238a4295951b87d58b46c6b80158f208c0d8c5f971"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libass.cmake",
+      "sha256": "64db4502ba8fc13a1df931b6e578c0044f8d6a08486ca42e170cc3feb7dd1b08"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libbs2b.cmake",
+      "sha256": "e323b13f7a929386d51873cb4a3cecc3dbc16f85821f641573ae6f61552cfa5d"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libdvdcss.cmake",
+      "sha256": "c6f9b10eef241d923af6f4597eda508e4599ab02a3414c3ad68aba5bdda7f5c2"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libdvdnav.cmake",
+      "sha256": "1d358b4ea41c00703878d7fd7e0cfe4c30e58fbbcc272d6746eb4c07bee195c2"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libdvdread.cmake",
+      "sha256": "85695b715f4306a13eccd175a641f860b54e390d24b2a1f35be0532ed55951fd"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libjpeg.cmake",
+      "sha256": "2f031ecc10ae1944bc3e708432d9a77b92a1ab77c721b865ceed1a11d2425e36"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libjxl.cmake",
+      "sha256": "19c2765e429c84a817d924b3d63ee4929f7dc9142a10e953b83cb2d11da0513f"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libmodplug.cmake",
+      "sha256": "775d858d601bb1c9181c6f2c1bbe7f7cec6a30fe5451bcd0326a84f145e8971a"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libmysofa.cmake",
+      "sha256": "c7d5abf837edca37bddfb690a8c4b32e030a3b4db20463e5cc8eebcd1b85c9b7"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libpng.cmake",
+      "sha256": "6e7cc1587f6a72f97badf0dbf2f40557c7814d9a464eb7b2452cc7262e3f730e"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libsamplerate.cmake",
+      "sha256": "a2f56526d734242bdd8cb3b358c5183e101f1023b4a212f3c742b7a50298a30d"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libsixel.cmake",
+      "sha256": "39a33469391d8f13c65900a3d57f70ec502c8f1e7e42f1cd97f336750ecd6800"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libsoxr.cmake",
+      "sha256": "d947e42e3867598518802b587731ea12fe3e20621fa02ddf92eb3dfef591294a"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libsrt.cmake",
+      "sha256": "d3b06742d55453e83f8f22ed4400065f22eec31e703c25ca851eb85afd2c0f9d"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libudfread.cmake",
+      "sha256": "c082b1a2ff1afe9f84923874061e3404725c9afa541ce6fb26ff10a114c263ee"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libunibreak.cmake",
+      "sha256": "5fe2effa20fe300cd33762d26b4de85caf80e9a3985b4283c8f6c3d2334c4e6c"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libva.cmake",
+      "sha256": "2c4be96b4c89bd6a368700d8ed61df0a715b4ef595567442771c12693b62e004"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libvpx.cmake",
+      "sha256": "18ffd53b48e0d8f529edf05c79db0a94c5b1b019b24554b7c75a5deaaea0ba55"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libwebp.cmake",
+      "sha256": "33fe7faaed42045b2e5eb26fa7cd929c1150294a8664e738e7d57f52f9cb5632"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libxml2.cmake",
+      "sha256": "f5f75156dccbec3de2d81bc92ec9c360a3442305f4b1e5dde6a12d8f5002962f"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libzimg.cmake",
+      "sha256": "d3a06ddd0b4b467396f0e312ebb9a04c219ff6a9d6d325f606e568647f1abe79"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/libzvbi.cmake",
+      "sha256": "1469f179f4b465ee39efd0d64a60730674fef83c9cf5ad6a3f8c0561060bfbfb"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/luajit.cmake",
+      "sha256": "097e087e5d4f585755debe31494a376801173e7253d174cb7a6ba79350318275"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/mbedtls.cmake",
+      "sha256": "832ab354097eef4c155fee33a1649b6ba74dd3890f203cbad4ceb0c48feddbe2"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/mpv-packaging.cmake",
+      "sha256": "1c4b01237868a7d53703b07bc1742f1dce78783b7df682ea1f650b4c461e6ba3"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/mujs.cmake",
+      "sha256": "256c325481c39e3b8fd5b6b8fecd2b7a4affb1cc107e994510d94c98d26c2d9c"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/nvcodec-headers.cmake",
+      "sha256": "3d9037cd010e0de01f69c69e563326dbdf87e1406ff658756b6d739d5a443fcd"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/ogg.cmake",
+      "sha256": "5b32923229b33b759263ae44d7f107530a50785b00d132c55a2d225908935c97"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/openal-soft.cmake",
+      "sha256": "766ebd9ff4eb33f565d3a3a90b26c4f6311632d79ee29f1cebdb23e9b3124cac"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/opus.cmake",
+      "sha256": "07add87812fc45a3033babaa33048c1f90dd0aae7b00fa048c52a219d3ab2537"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/rubberband.cmake",
+      "sha256": "b46d23a2da938c1d22145123d1daba0dda5e81d48c188e5a9ab57afc22348a18"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/shaderc.cmake",
+      "sha256": "2014efa8a25839374d54af781e6258f293c68d3c67bdfd73e0838a03452e9576"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/speex.cmake",
+      "sha256": "a7e083860d0d044cad12276bb86b53fa210308779e603aa0fe3f8a56379e9493"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/spirv-cross.cmake",
+      "sha256": "a73975bb19b609726229d37765ba388abe1d828695c9b335cf26ed1d6c4084d3"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/spirv-headers.cmake",
+      "sha256": "cd9006d47c1842fe09e973d01838d389b5a0a055dfce1c42090a8538849161d9"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/spirv-tools.cmake",
+      "sha256": "60bc8af46186c56308a8b435c12bd52af95552823d3b1336156139e4c9c7f5cf"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/subrandr.cmake",
+      "sha256": "a27b3cc77a29860fea13d85a4dbb3a7bdf6092bff7a2a824f9187b3393e026e1"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/svtav1.cmake",
+      "sha256": "8da08b6270baf8d7c0a7ad95960a3253e5f7eff3345251825204d5e6979b2c9b"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/uavs3d.cmake",
+      "sha256": "82dcde5f1f02abbe3622363fb47f85056b4b35e4d1aedde3d0e3c7e7708192a9"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/uchardet.cmake",
+      "sha256": "c7080bb25c8174f11458f0dd26d9cf1b4c4b45c2575d31a8a15c2ae28d9e1d54"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/vapoursynth.cmake",
+      "sha256": "fd009a189ad8cfa8dbd1f8936a05151a85777afcbb89931920f11b656c304dc2"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/vorbis.cmake",
+      "sha256": "0dabe8a7385181ac2cb6bb099ccd96be0ab3566d368a32c9dd3a74f19e916643"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/vulkan-header.cmake",
+      "sha256": "03463093faa6531eec4db8d946301f42f8295cf0e4dc0865b798f38b67616abc"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/vulkan.cmake",
+      "sha256": "4eeb4505b71ec29fe228b9748283fe6e7bf4c8a612c89e2b0327d15af1b2bab9"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/x264.cmake",
+      "sha256": "5d2108fcfd28b52de95edfef586f700a1ca0a36a08f4626b94826c255282f2de"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/x265.cmake",
+      "sha256": "393fd04a76a9ffabdacfc0ad176fe66a72cc09d80caa7981c31278761c656451"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/xxhash.cmake",
+      "sha256": "acbdd260574022e2d5e466407be548733cf7f5a408a3135f7906938dc089c268"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/xz.cmake",
+      "sha256": "0b06cb7366194c0d4e3098f46809128c4d3d97cab17e405f7c0967f6465aa3e9"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/zlib.cmake",
+      "sha256": "4a08b4baba1970ca86bcd71f01ef2cb1e6586b065c3da1eb059203fdda95c571"
+    },
+    {
+      "path": "dependency-overlays/atmos/packages/zstd.cmake",
+      "sha256": "b5b0f949f403b1742be2e5c8e3c253cd291676aab915da32d8df9e98d661931f"
+    },
+    {
+      "path": "dependency-overlays/atmos/toolchain/mingw-w64.cmake",
+      "sha256": "bced3952b82ea84dc1eeb0d3dc40573e74c9cb4bd3d930bf6b7a2cedbe0c4bb0"
+    },
+    {
+      "path": "dependency-overlays/main/packages/amf-headers.cmake",
+      "sha256": "ca19de5aafa08bf78e96fd559722ad5a02b8e90ee89c86c2f4ae93ae41f7420b"
+    },
+    {
+      "path": "dependency-overlays/main/packages/angle-headers.cmake",
+      "sha256": "d924141548b90e815ae879adcfb79dbfeedb586a4fb04e123c0c991cd5ecea85"
+    },
+    {
+      "path": "dependency-overlays/main/packages/aom.cmake",
+      "sha256": "d5fe8734ee9859851858a9d8cc19afeb54e1bd1a18557ed1f070b9e15ba56f51"
+    },
+    {
+      "path": "dependency-overlays/main/packages/avisynth-headers.cmake",
+      "sha256": "c644f2a0b9704438c42e960b28eb40e6d228cdbccaa22459701d8caef8cb38a6"
+    },
+    {
+      "path": "dependency-overlays/main/packages/brotli.cmake",
+      "sha256": "4ba95df3b026304ce57e7e4fd29d717a27d05ea44fe6334978c18532b7a0281b"
+    },
+    {
+      "path": "dependency-overlays/main/packages/bzip2.cmake",
+      "sha256": "c7a1be69093be654bdd5ddf67341abc4ecf4f91db3071c360c897e6fb055a6b1"
+    },
+    {
+      "path": "dependency-overlays/main/packages/c-ares.cmake",
+      "sha256": "b27aac0b6112551494d6c2c1317bc8f51f01edee9a652d9a83681a5331501f77"
+    },
+    {
+      "path": "dependency-overlays/main/packages/dav1d.cmake",
+      "sha256": "c9390e2776a9fa650922de6a7c1361220644441f22c5cb5c9f7547c8beca52a6"
+    },
+    {
+      "path": "dependency-overlays/main/packages/freetype2.cmake",
+      "sha256": "130c9dbc4a6e9825c0180a865cffdf61b1f514a1235e791b8fe8528e33f6dacf"
+    },
+    {
+      "path": "dependency-overlays/main/packages/fribidi.cmake",
+      "sha256": "7021a3eb19b41d381aa20be51fac9edb18c6043ee6407d51c67889c9f80e3757"
+    },
+    {
+      "path": "dependency-overlays/main/packages/game-music-emu.cmake",
+      "sha256": "117abf1419c24ba8d7afddd83482dac971a518885045d7261a0b1be3e6df22a2"
+    },
+    {
+      "path": "dependency-overlays/main/packages/glslang.cmake",
+      "sha256": "2b6ce4695be9fa9600b746ffd19497f3764476b2fab1bc3a54678faac5268ece"
+    },
+    {
+      "path": "dependency-overlays/main/packages/graphengine.cmake",
+      "sha256": "93fa7d98808e0e13a69ef47afd3fc72d9b7e5e41ef3891108275ffbd549ea5a1"
+    },
+    {
+      "path": "dependency-overlays/main/packages/harfbuzz.cmake",
+      "sha256": "7274b4d2921f23c8dbe318e275a7142210996cb668c000b52f01fc188c69eaa5"
+    },
+    {
+      "path": "dependency-overlays/main/packages/highway.cmake",
+      "sha256": "f02161be72be65e7803220ad1523ddbdf3dcff511cb3fe242b3373717e9598b9"
+    },
+    {
+      "path": "dependency-overlays/main/packages/lame.cmake",
+      "sha256": "5678b64efbf5686f250673c81470132d84137b9d99340b1a67e85252f9a6223f"
+    },
+    {
+      "path": "dependency-overlays/main/packages/lcms2.cmake",
+      "sha256": "86f6a5715e7284c7d8116fbdab28956d5f199423d0ae6d78c3412f51d924088c"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libarchive.cmake",
+      "sha256": "01ef0bdbf404715febaae8769f4be53ff3a71df3a09250cd1c6410f96612ceec"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libaribcaption.cmake",
+      "sha256": "605faac66407c5b46ead3a238a4295951b87d58b46c6b80158f208c0d8c5f971"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libass.cmake",
+      "sha256": "64db4502ba8fc13a1df931b6e578c0044f8d6a08486ca42e170cc3feb7dd1b08"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libbs2b.cmake",
+      "sha256": "e323b13f7a929386d51873cb4a3cecc3dbc16f85821f641573ae6f61552cfa5d"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libdvdcss.cmake",
+      "sha256": "c6f9b10eef241d923af6f4597eda508e4599ab02a3414c3ad68aba5bdda7f5c2"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libdvdnav.cmake",
+      "sha256": "1d358b4ea41c00703878d7fd7e0cfe4c30e58fbbcc272d6746eb4c07bee195c2"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libdvdread.cmake",
+      "sha256": "85695b715f4306a13eccd175a641f860b54e390d24b2a1f35be0532ed55951fd"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libjpeg.cmake",
+      "sha256": "2f031ecc10ae1944bc3e708432d9a77b92a1ab77c721b865ceed1a11d2425e36"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libjxl.cmake",
+      "sha256": "19c2765e429c84a817d924b3d63ee4929f7dc9142a10e953b83cb2d11da0513f"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libmodplug.cmake",
+      "sha256": "775d858d601bb1c9181c6f2c1bbe7f7cec6a30fe5451bcd0326a84f145e8971a"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libmysofa.cmake",
+      "sha256": "c7d5abf837edca37bddfb690a8c4b32e030a3b4db20463e5cc8eebcd1b85c9b7"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libpng.cmake",
+      "sha256": "6e7cc1587f6a72f97badf0dbf2f40557c7814d9a464eb7b2452cc7262e3f730e"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libsamplerate.cmake",
+      "sha256": "a2f56526d734242bdd8cb3b358c5183e101f1023b4a212f3c742b7a50298a30d"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libsixel.cmake",
+      "sha256": "39a33469391d8f13c65900a3d57f70ec502c8f1e7e42f1cd97f336750ecd6800"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libsoxr.cmake",
+      "sha256": "d947e42e3867598518802b587731ea12fe3e20621fa02ddf92eb3dfef591294a"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libsrt.cmake",
+      "sha256": "d3b06742d55453e83f8f22ed4400065f22eec31e703c25ca851eb85afd2c0f9d"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libudfread.cmake",
+      "sha256": "c082b1a2ff1afe9f84923874061e3404725c9afa541ce6fb26ff10a114c263ee"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libunibreak.cmake",
+      "sha256": "5fe2effa20fe300cd33762d26b4de85caf80e9a3985b4283c8f6c3d2334c4e6c"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libva.cmake",
+      "sha256": "2c4be96b4c89bd6a368700d8ed61df0a715b4ef595567442771c12693b62e004"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libvpx.cmake",
+      "sha256": "18ffd53b48e0d8f529edf05c79db0a94c5b1b019b24554b7c75a5deaaea0ba55"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libwebp.cmake",
+      "sha256": "33fe7faaed42045b2e5eb26fa7cd929c1150294a8664e738e7d57f52f9cb5632"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libxml2.cmake",
+      "sha256": "f5f75156dccbec3de2d81bc92ec9c360a3442305f4b1e5dde6a12d8f5002962f"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libzimg.cmake",
+      "sha256": "d3a06ddd0b4b467396f0e312ebb9a04c219ff6a9d6d325f606e568647f1abe79"
+    },
+    {
+      "path": "dependency-overlays/main/packages/libzvbi.cmake",
+      "sha256": "1469f179f4b465ee39efd0d64a60730674fef83c9cf5ad6a3f8c0561060bfbfb"
+    },
+    {
+      "path": "dependency-overlays/main/packages/luajit.cmake",
+      "sha256": "097e087e5d4f585755debe31494a376801173e7253d174cb7a6ba79350318275"
+    },
+    {
+      "path": "dependency-overlays/main/packages/mbedtls.cmake",
+      "sha256": "832ab354097eef4c155fee33a1649b6ba74dd3890f203cbad4ceb0c48feddbe2"
+    },
+    {
+      "path": "dependency-overlays/main/packages/mpv-packaging.cmake",
+      "sha256": "1c4b01237868a7d53703b07bc1742f1dce78783b7df682ea1f650b4c461e6ba3"
+    },
+    {
+      "path": "dependency-overlays/main/packages/mujs.cmake",
+      "sha256": "256c325481c39e3b8fd5b6b8fecd2b7a4affb1cc107e994510d94c98d26c2d9c"
+    },
+    {
+      "path": "dependency-overlays/main/packages/nvcodec-headers.cmake",
+      "sha256": "3d9037cd010e0de01f69c69e563326dbdf87e1406ff658756b6d739d5a443fcd"
+    },
+    {
+      "path": "dependency-overlays/main/packages/ogg.cmake",
+      "sha256": "5b32923229b33b759263ae44d7f107530a50785b00d132c55a2d225908935c97"
+    },
+    {
+      "path": "dependency-overlays/main/packages/openal-soft.cmake",
+      "sha256": "766ebd9ff4eb33f565d3a3a90b26c4f6311632d79ee29f1cebdb23e9b3124cac"
+    },
+    {
+      "path": "dependency-overlays/main/packages/opus.cmake",
+      "sha256": "07add87812fc45a3033babaa33048c1f90dd0aae7b00fa048c52a219d3ab2537"
+    },
+    {
+      "path": "dependency-overlays/main/packages/rubberband.cmake",
+      "sha256": "b46d23a2da938c1d22145123d1daba0dda5e81d48c188e5a9ab57afc22348a18"
+    },
+    {
+      "path": "dependency-overlays/main/packages/shaderc.cmake",
+      "sha256": "2014efa8a25839374d54af781e6258f293c68d3c67bdfd73e0838a03452e9576"
+    },
+    {
+      "path": "dependency-overlays/main/packages/speex.cmake",
+      "sha256": "a7e083860d0d044cad12276bb86b53fa210308779e603aa0fe3f8a56379e9493"
+    },
+    {
+      "path": "dependency-overlays/main/packages/spirv-cross.cmake",
+      "sha256": "a73975bb19b609726229d37765ba388abe1d828695c9b335cf26ed1d6c4084d3"
+    },
+    {
+      "path": "dependency-overlays/main/packages/spirv-headers.cmake",
+      "sha256": "cd9006d47c1842fe09e973d01838d389b5a0a055dfce1c42090a8538849161d9"
+    },
+    {
+      "path": "dependency-overlays/main/packages/spirv-tools.cmake",
+      "sha256": "60bc8af46186c56308a8b435c12bd52af95552823d3b1336156139e4c9c7f5cf"
+    },
+    {
+      "path": "dependency-overlays/main/packages/subrandr.cmake",
+      "sha256": "a27b3cc77a29860fea13d85a4dbb3a7bdf6092bff7a2a824f9187b3393e026e1"
+    },
+    {
+      "path": "dependency-overlays/main/packages/svtav1.cmake",
+      "sha256": "8da08b6270baf8d7c0a7ad95960a3253e5f7eff3345251825204d5e6979b2c9b"
+    },
+    {
+      "path": "dependency-overlays/main/packages/uavs3d.cmake",
+      "sha256": "82dcde5f1f02abbe3622363fb47f85056b4b35e4d1aedde3d0e3c7e7708192a9"
+    },
+    {
+      "path": "dependency-overlays/main/packages/uchardet.cmake",
+      "sha256": "c7080bb25c8174f11458f0dd26d9cf1b4c4b45c2575d31a8a15c2ae28d9e1d54"
+    },
+    {
+      "path": "dependency-overlays/main/packages/vapoursynth.cmake",
+      "sha256": "fd009a189ad8cfa8dbd1f8936a05151a85777afcbb89931920f11b656c304dc2"
+    },
+    {
+      "path": "dependency-overlays/main/packages/vorbis.cmake",
+      "sha256": "0dabe8a7385181ac2cb6bb099ccd96be0ab3566d368a32c9dd3a74f19e916643"
+    },
+    {
+      "path": "dependency-overlays/main/packages/vulkan-header.cmake",
+      "sha256": "03463093faa6531eec4db8d946301f42f8295cf0e4dc0865b798f38b67616abc"
+    },
+    {
+      "path": "dependency-overlays/main/packages/vulkan.cmake",
+      "sha256": "4eeb4505b71ec29fe228b9748283fe6e7bf4c8a612c89e2b0327d15af1b2bab9"
+    },
+    {
+      "path": "dependency-overlays/main/packages/x264.cmake",
+      "sha256": "5d2108fcfd28b52de95edfef586f700a1ca0a36a08f4626b94826c255282f2de"
+    },
+    {
+      "path": "dependency-overlays/main/packages/x265.cmake",
+      "sha256": "393fd04a76a9ffabdacfc0ad176fe66a72cc09d80caa7981c31278761c656451"
+    },
+    {
+      "path": "dependency-overlays/main/packages/xxhash.cmake",
+      "sha256": "acbdd260574022e2d5e466407be548733cf7f5a408a3135f7906938dc089c268"
+    },
+    {
+      "path": "dependency-overlays/main/packages/xz.cmake",
+      "sha256": "0b06cb7366194c0d4e3098f46809128c4d3d97cab17e405f7c0967f6465aa3e9"
+    },
+    {
+      "path": "dependency-overlays/main/packages/zlib.cmake",
+      "sha256": "4a08b4baba1970ca86bcd71f01ef2cb1e6586b065c3da1eb059203fdda95c571"
+    },
+    {
+      "path": "dependency-overlays/main/packages/zstd.cmake",
+      "sha256": "b5b0f949f403b1742be2e5c8e3c253cd291676aab915da32d8df9e98d661931f"
+    },
+    {
+      "path": "dependency-overlays/main/toolchain/mingw-w64.cmake",
+      "sha256": "bced3952b82ea84dc1eeb0d3dc40573e74c9cb4bd3d930bf6b7a2cedbe0c4bb0"
+    },
+    {
+      "path": "migration-evidence/hunk-ledger.json",
+      "sha256": "9a908b5e075d6dbfa6e0ce701a166843c3c00ec0d33d4b9fa759553f20134f43"
+    },
+    {
+      "path": "migration-evidence/old-replay.json",
+      "sha256": "a2a5154cc14ca381f911dbfb35d744b4c6871e47f43d2a55b63cfbc9215ee09c"
+    },
+    {
+      "path": "migration-evidence/package-ledger.json",
+      "sha256": "d2c691f465020fe4b2cbad242bc85ac01eef35712bf78bdb9df1470d9f176d3e"
+    },
+    {
+      "path": "migration-evidence/port-ready.json",
+      "sha256": "4d98dd95b4e1ea667bc36c59c5afbc0a161466b70b63772b9dc7720f184dd284"
+    },
+    {
+      "path": "migration-evidence/port-replay.json",
+      "sha256": "412c22a89668bdc18a946c0ce6761910e9350b6a0c196feda8430aecbe08fda0"
+    },
+    {
+      "path": "migration-evidence/preserved-header-contracts.json",
+      "sha256": "d64dabf977879e34217f5c79f0d6227c580a096c5d9e037c3ad287d3334c3f68"
+    },
+    {
+      "path": "migration-evidence/replay-verification.json",
+      "sha256": "8ed373b7c9e081777994ed16b56db116ca16483bf165548c6eef5855192c65ed"
+    },
+    {
+      "path": "migration-evidence/source-contracts.json",
+      "sha256": "9aba973653aad96bbbb14987d3a1651dd5741d60eeaa774cbea67020473fceb9"
+    },
+    {
+      "path": "package.py",
+      "sha256": "345926a10c29c8f12ada72e4f508782065c18cee9ad2a53454c8b30b8e06e64f"
+    },
+    {
+      "path": "patches/atmos.patch",
+      "sha256": "4bc66bb57007905a364ce41870591cc8a19ca15af4f543fd97770d33c80f5a0d"
+    },
+    {
+      "path": "patches/main.patch",
+      "sha256": "692a8b6453eb5ee6bb97783891d87e105773e1524db5116c5c0e16e8ec153070"
+    },
+    {
+      "path": "prepare-winbuild.py",
+      "sha256": "d777c0cb03bf20d4b4f8dc99e2a8570176a016cbae59060edad68a440959b84b"
+    },
+    {
+      "path": "README.md",
+      "sha256": "473f2d224244a3202a47181130369526e78f20647228583cefd579035a7203d9"
+    },
+    {
+      "path": "verify-dependencies.py",
+      "sha256": "2c64a2be160659354257a1134abd44c5a72e7c7b64712430db7d1ef469bf4424"
+    },
+    {
+      "path": "verify-source.py",
+      "sha256": "9f677108e666fcff5fa415ac6d8c7756c7286ea499f313966db355d212c46bf0"
+    },
+    {
+      "path": "migration-evidence/post-build-corrections.json",
+      "sha256": "201ef73512741f243cce3b3c5fe00b787af6199764b06ababa2a084004d972c7"
+    }
+  ],
+  "revision": 8,
+  "supersedes": {
+    "migration_lock_sha256": "6a9254934ff5b71320bee7dc8903bfac470a2e76445d47eacd5464165017e884",
+    "build_config_commit": "7d2cd1767e3cb4e25292bd3dbcfc43770a41781d",
+    "failed_ci_run": 42021887290,
+    "reason": "Resolve the unique primary GCC Make rule relative to the actual build directory, require its exact object/source and the build/src symlink target; preserve raw dependency/configuration/Ninja evidence. Bind the unique expanded mpv link to an exact libavformat archive token. Retain source SHA, object freshness, archive member equality and runtime gates. No mpv or dependency source changed."
+  }
+}

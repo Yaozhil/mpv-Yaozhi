@@ -1,0 +1,599 @@
+[
+  {
+    "package": "mpv-9000-candidate-c318236.patch",
+    "sha256": "75169a4a84a030bca9efb1cca627d8f643b447f81e11eee85e6fbce65c3431aa",
+    "old_before": "d4bf96566b6babab857c91c5c290946c52a21aef",
+    "old_after": "27142085bd295af771e4db9ecaebd6473c8722f2",
+    "commits": [
+      "7b7e867374a71fc04090a78e722ce118d980da31",
+      "03d37be6b8d1553d78ac7d6dcf3c6009b4c0bafd",
+      "c76c2807158cac3c82ba078d6cf84ad449484938",
+      "31f9a233f5ddc424639e2819dea59772de0a6224",
+      "c774487601289aeed10ec376d09c8c36733d9dd6",
+      "3020f02d27467e5c0d3b1e7dde2db30e1f277f2e",
+      "e6bf2a22f257b70bdf51fc80a642d1af4790e58a",
+      "39dd525abefc8fa26e6b29c0b2b1630ee8ae53b9",
+      "6e34f72e536492f9cc8e9b88000ba5da098dc43a",
+      "e3803faa8b2c278c8f5b152b4cc663c3f8ffeab1",
+      "f17d636637f5283d7f9151e29cea38e907de76e4",
+      "195c351ddafdf0818f2b24fbe952782145d4b511",
+      "5bfdba0999c19adef46040b65a28d4fb60af4d15",
+      "6dbd2294be203078a780fee335fc98e4265241c5",
+      "62b11d50d208ecf3a069fe074c12bcc48c5c5331",
+      "6131d473b5f8c352bd982174512a9afdd83588b5",
+      "27142085bd295af771e4db9ecaebd6473c8722f2"
+    ],
+    "hunks": 83
+  },
+  {
+    "package": "mpv-9001-hdmv-overlay-video-ready.patch",
+    "sha256": "4273cc9b4cccf44fc286d67f04dcc4b0e8c7abd2e226fd73ae44690745a4aed8",
+    "old_before": "27142085bd295af771e4db9ecaebd6473c8722f2",
+    "old_after": "124cbe59171b64fd98bdfb3225c43fd350237ac0",
+    "commits": [
+      "124cbe59171b64fd98bdfb3225c43fd350237ac0"
+    ],
+    "hunks": 6
+  },
+  {
+    "package": "mpv-9002-bluray-title-resync-hdmv-context.patch",
+    "sha256": "ed2375e9e95140c21bbf36fb4a22c9249c0531de41ad6876d7f6ad68f99ee3d1",
+    "old_before": "124cbe59171b64fd98bdfb3225c43fd350237ac0",
+    "old_after": "97a0431fdb77a0a6dab348c3d647e4d862792f7c",
+    "commits": [
+      "97a0431fdb77a0a6dab348c3d647e4d862792f7c"
+    ],
+    "hunks": 3
+  },
+  {
+    "package": "mpv-9003-select-late-video-enhancement-layer.patch",
+    "sha256": "87aa097169461a68e1eda7fde7afbf31ff810b0277d38ba135af673b86dcb354",
+    "old_before": "97a0431fdb77a0a6dab348c3d647e4d862792f7c",
+    "old_after": "454bf9663ca5b4a46ed23b27ce0e5a8ba8c6ccaa",
+    "commits": [
+      "454bf9663ca5b4a46ed23b27ce0e5a8ba8c6ccaa"
+    ],
+    "hunks": 1
+  },
+  {
+    "package": "mpv-9004-mkv-optional-tail-tags.patch",
+    "sha256": "c9b5eb6802bd6b4e9526c1683fac07a71d7b12eb956e14f82c5301279608c5c5",
+    "old_before": "454bf9663ca5b4a46ed23b27ce0e5a8ba8c6ccaa",
+    "old_after": "08cec45e82bfab4cb623875259f9e7d3da74e988",
+    "commits": [
+      "08cec45e82bfab4cb623875259f9e7d3da74e988"
+    ],
+    "hunks": 5
+  },
+  {
+    "package": "mpv-9005-secondary-ass-full-viewport.patch",
+    "sha256": "60d1c47dd2cfd324c4f0b081527c8dabe7d9d3ffda61c31368120b1db038376a",
+    "old_before": "08cec45e82bfab4cb623875259f9e7d3da74e988",
+    "old_after": "794765dcf47ccca7ff25aef0137c53f70befcc06",
+    "commits": [
+      "794765dcf47ccca7ff25aef0137c53f70befcc06"
+    ],
+    "hunks": 6
+  },
+  {
+    "package": "mpv-9006-bluray-retain-navigation-head.patch",
+    "sha256": "e89946cfaf34ba69c42b20a28de78071c552871433e2b6abf44fa6302f254a3d",
+    "old_before": "794765dcf47ccca7ff25aef0137c53f70befcc06",
+    "old_after": "4abb994651878da00e6ad849b85e1ff6df5beb8f",
+    "commits": [
+      "4abb994651878da00e6ad849b85e1ff6df5beb8f"
+    ],
+    "hunks": 5
+  },
+  {
+    "package": "mpv-9007-dts-hd-seek-resync.patch",
+    "sha256": "51dc7f6e0ee1b0ca59ee9523f24f5de1ce0f5592b67cbbff78ef76f80ccfe174",
+    "old_before": "4abb994651878da00e6ad849b85e1ff6df5beb8f",
+    "old_after": "fa57f42d8d8c791841fc23c5c24db93b3c228dd6",
+    "commits": [
+      "fa57f42d8d8c791841fc23c5c24db93b3c228dd6"
+    ],
+    "hunks": 5
+  },
+  {
+    "package": "mpv-9008-bluray-slideshow-audio.patch",
+    "sha256": "5af7dba3ad18e513cc8ee4b61d4e12e9b3be4381133e12c3607ad3ada9008816",
+    "old_before": "fa57f42d8d8c791841fc23c5c24db93b3c228dd6",
+    "old_after": "db555f492a426a2fdc45002241c0773a0b236745",
+    "commits": [
+      "db555f492a426a2fdc45002241c0773a0b236745"
+    ],
+    "hunks": 12
+  },
+  {
+    "package": "mpv-9009-native-timing-diagnostics.patch",
+    "sha256": "21f7c584c3f1ebed360c2bfe5014cd102601b448bbc0216cf63f187facc33f4c",
+    "old_before": "db555f492a426a2fdc45002241c0773a0b236745",
+    "old_after": "c9c72c22461dd0d54a3b7725a7cd098462b2103d",
+    "commits": [
+      "c9c72c22461dd0d54a3b7725a7cd098462b2103d"
+    ],
+    "hunks": 9
+  },
+  {
+    "package": "mpv-9010-secondary-ass-refresh.patch",
+    "sha256": "f2d9998f5d8780a6586c9d0aed41287624c9ec54a219c529478b837dc261f3de",
+    "old_before": "c9c72c22461dd0d54a3b7725a7cd098462b2103d",
+    "old_after": "c10af5ef001e192b8413f9f950ae3242de0eaa11",
+    "commits": [
+      "c10af5ef001e192b8413f9f950ae3242de0eaa11"
+    ],
+    "hunks": 15
+  },
+  {
+    "package": "mpv-9011-secondary-ass-replace.patch",
+    "sha256": "47d9a51f430114eaf610446ee542e5add28603746bead52de331d65fb2cfe01b",
+    "old_before": "c10af5ef001e192b8413f9f950ae3242de0eaa11",
+    "old_after": "ccd2697231789b3c750373500a4cb24f5dac512a",
+    "commits": [
+      "ccd2697231789b3c750373500a4cb24f5dac512a"
+    ],
+    "hunks": 9
+  },
+  {
+    "package": "mpv-9012-secondary-ass-idle.patch",
+    "sha256": "228e6c44bc4a4ee985f0b1d3eb298654c0c93702ba4d4f7cfd58b939f2b1e4d7",
+    "old_before": "ccd2697231789b3c750373500a4cb24f5dac512a",
+    "old_after": "5aef90bb1f7e2e9fa404e0f94cd3543ac16ed0ab",
+    "commits": [
+      "5aef90bb1f7e2e9fa404e0f94cd3543ac16ed0ab"
+    ],
+    "hunks": 3
+  },
+  {
+    "package": "mpv-9013-secondary-ass-video-budget.patch",
+    "sha256": "733ce59e79a3e5b3fb086e0d4c49371e49ff41841535c50e65a2f061be8a4613",
+    "old_before": "5aef90bb1f7e2e9fa404e0f94cd3543ac16ed0ab",
+    "old_after": "a5fb3a5f844b4bf23aa1aaf837d58e372a16f86f",
+    "commits": [
+      "a5fb3a5f844b4bf23aa1aaf837d58e372a16f86f"
+    ],
+    "hunks": 4
+  },
+  {
+    "package": "mpv-9014-secondary-ass-video-headroom.patch",
+    "sha256": "9305d478ccd1c40973ef99a5dadae3a9c35aa69b18de9ccd5d32b5904eee2d59",
+    "old_before": "a5fb3a5f844b4bf23aa1aaf837d58e372a16f86f",
+    "old_after": "0fbfc907cc6aa1efc225c4bf29bf5c890c7d601c",
+    "commits": [
+      "0fbfc907cc6aa1efc225c4bf29bf5c890c7d601c"
+    ],
+    "hunks": 2
+  },
+  {
+    "package": "mpv-9015-secondary-ass-budget-stability.patch",
+    "sha256": "d368e666dd367fbbea1445d49327cd8100e33f535fc1140067e4103f80f6c177",
+    "old_before": "0fbfc907cc6aa1efc225c4bf29bf5c890c7d601c",
+    "old_after": "aa8f585a02b638bac909bdecd5a6bc0f0a186cfc",
+    "commits": [
+      "aa8f585a02b638bac909bdecd5a6bc0f0a186cfc"
+    ],
+    "hunks": 4
+  },
+  {
+    "package": "mpv-9016-native-presentation-telemetry.patch",
+    "sha256": "cddf26c758bf9f9ca9bc6e8772ccf91bf470df89a3cffa0c3143718c151bf0c9",
+    "old_before": "aa8f585a02b638bac909bdecd5a6bc0f0a186cfc",
+    "old_after": "672b0176119c9b0004cc53978d131a6d7e23b223",
+    "commits": [
+      "672b0176119c9b0004cc53978d131a6d7e23b223"
+    ],
+    "hunks": 11
+  },
+  {
+    "package": "mpv-9017-native-presentation-reuse.patch",
+    "sha256": "96652f7ceffc0ac6e74c5bb8e5ed1b6f52877b7ce078614776a7c5b1ac482865",
+    "old_before": "672b0176119c9b0004cc53978d131a6d7e23b223",
+    "old_after": "5495e28d735d1c0a25903e3b8dc8cea6a9630650",
+    "commits": [
+      "5495e28d735d1c0a25903e3b8dc8cea6a9630650"
+    ],
+    "hunks": 15
+  },
+  {
+    "package": "mpv-9018-bluray-popup-atomic-overlay.patch",
+    "sha256": "39ee4167041d89aedb6a191b4f34e8fa1bc9d478b0665919b9298a4b5607d607",
+    "old_before": "5495e28d735d1c0a25903e3b8dc8cea6a9630650",
+    "old_after": "7c0d3def226364ba5fefbfd5dbc3d66752e3be16",
+    "commits": [
+      "7c0d3def226364ba5fefbfd5dbc3d66752e3be16"
+    ],
+    "hunks": 7
+  },
+  {
+    "package": "mpv-9019-bluray-menu-audio-resume.patch",
+    "sha256": "72eec7c664f210c46c0bc920cb011cd4e5263ca39b072e4df9d60837920199be",
+    "old_before": "7c0d3def226364ba5fefbfd5dbc3d66752e3be16",
+    "old_after": "be5bf5ccb691e125e0039d6eb0061581cd2ec614",
+    "commits": [
+      "be5bf5ccb691e125e0039d6eb0061581cd2ec614"
+    ],
+    "hunks": 6
+  },
+  {
+    "package": "mpv-9020-bluray-popup-fragment-hold.patch",
+    "sha256": "536c0c931e6909309b34646a5a47c0d8a5183b93974f4d84b349fc73bba79fdb",
+    "old_before": "be5bf5ccb691e125e0039d6eb0061581cd2ec614",
+    "old_after": "95773b501c2b05e8ade2fe1395e9c5e7c9af2430",
+    "commits": [
+      "95773b501c2b05e8ade2fe1395e9c5e7c9af2430"
+    ],
+    "hunks": 6
+  },
+  {
+    "package": "mpv-9021-bluray-menu-audio-diagnostics.patch",
+    "sha256": "7001ebcc9ab3c13112905a2756782ce066640926ff91c980f32dc7b7498df93b",
+    "old_before": "95773b501c2b05e8ade2fe1395e9c5e7c9af2430",
+    "old_after": "bd802cfb495e51d5f80e3afb4116ebe6eab3a1d5",
+    "commits": [
+      "bd802cfb495e51d5f80e3afb4116ebe6eab3a1d5"
+    ],
+    "hunks": 2
+  },
+  {
+    "package": "mpv-9022-bluray-menu-audio-queue-retain.patch",
+    "sha256": "5a245609cbd43cb9444e28123ccd70b1b8e6f6ba69ca64e5a740f1673c4d6f46",
+    "old_before": "bd802cfb495e51d5f80e3afb4116ebe6eab3a1d5",
+    "old_after": "c7b0f03d0fc9a0a4f16548eb6f5cff0d5de043f6",
+    "commits": [
+      "c7b0f03d0fc9a0a4f16548eb6f5cff0d5de043f6"
+    ],
+    "hunks": 9
+  },
+  {
+    "package": "mpv-9023-bluray-audio-sample-rate.patch",
+    "sha256": "5d234f9c72d7264a4a7bf15359cfc737bdd5c2f38a951c4d6339868c7468a772",
+    "old_before": "c7b0f03d0fc9a0a4f16548eb6f5cff0d5de043f6",
+    "old_after": "9ec8880a364ea5f1da2f97796ce4a854f7a4327e",
+    "commits": [
+      "9ec8880a364ea5f1da2f97796ce4a854f7a4327e"
+    ],
+    "hunks": 12
+  },
+  {
+    "package": "mpv-9024-secondary-ass-low-fps-budget.patch",
+    "sha256": "523b4bbb9f85b66e511e2a4a1a5987f2bdc9cf9c4d56f19bf11071d3cf816ff7",
+    "old_before": "9ec8880a364ea5f1da2f97796ce4a854f7a4327e",
+    "old_after": "87d0903d9dd12a49cc20460e97b34ea6d2756895",
+    "commits": [
+      "87d0903d9dd12a49cc20460e97b34ea6d2756895"
+    ],
+    "hunks": 11
+  },
+  {
+    "package": "mpv-9025-secondary-ass-video-deadline.patch",
+    "sha256": "c213b37f875cf22e12415270426a20c31e5ddd39410266dfa608b2f0969993f1",
+    "old_before": "87d0903d9dd12a49cc20460e97b34ea6d2756895",
+    "old_after": "c2b5e5d13be005df6fd23b74d356ca4acbd37be0",
+    "commits": [
+      "c2b5e5d13be005df6fd23b74d356ca4acbd37be0"
+    ],
+    "hunks": 3
+  },
+  {
+    "package": "mpv-9026-dovi-rpu-enhancement-metadata.patch",
+    "sha256": "66806a3e156c2766f2318245bbfc68ce3dbb80d84dd06f246c4814310eb99dec",
+    "old_before": "c2b5e5d13be005df6fd23b74d356ca4acbd37be0",
+    "old_after": "82b3d7175799a10d215015d9c8e049bc5f321885",
+    "commits": [
+      "82b3d7175799a10d215015d9c8e049bc5f321885"
+    ],
+    "hunks": 13
+  },
+  {
+    "package": "mpv-9027-player-version-brand.patch",
+    "sha256": "22fb0ede7cb4db7ee22bf2856a27572d0aa31cda130fa9ff23723175cac8e34d",
+    "old_before": "82b3d7175799a10d215015d9c8e049bc5f321885",
+    "old_after": "b2fc426dfc08c94d8a90676f348d7a25dad11357",
+    "commits": [
+      "b2fc426dfc08c94d8a90676f348d7a25dad11357"
+    ],
+    "hunks": 1
+  },
+  {
+    "package": "mpv-9028-secondary-ass-continuous-clock.patch",
+    "sha256": "3b52bb2e2484772fac6436c81f2d3a4873408a3d493c040e60dd81ac7ec4c47b",
+    "old_before": "b2fc426dfc08c94d8a90676f348d7a25dad11357",
+    "old_after": "051f20325e80ef8710c942df4db2ad2be181a003",
+    "commits": [
+      "051f20325e80ef8710c942df4db2ad2be181a003"
+    ],
+    "hunks": 58
+  },
+  {
+    "package": "mpv-9029-native-ass-pacing-evidence.patch",
+    "sha256": "66c55615087a0c3e2b10844f79c33565ee2458afbfb06a371b8eef0d90371277",
+    "old_before": "051f20325e80ef8710c942df4db2ad2be181a003",
+    "old_after": "2f5314fe15c2892e9ab2b6bbd88f6bdc02a88f39",
+    "commits": [
+      "2f5314fe15c2892e9ab2b6bbd88f6bdc02a88f39"
+    ],
+    "hunks": 127
+  },
+  {
+    "package": "mpv-9030-secondary-ass-quiet-gap-hold.patch",
+    "sha256": "12ea5359df849fb4630dd8dee55fcc8c12fd01cbe18daad873afc9c730e8b012",
+    "old_before": "2f5314fe15c2892e9ab2b6bbd88f6bdc02a88f39",
+    "old_after": "0afa84fcdd6656196a641d510c5e020c5ea83148",
+    "commits": [
+      "bd513134ca18975458314a71fbbf86c2dd20534f",
+      "0afa84fcdd6656196a641d510c5e020c5ea83148"
+    ],
+    "hunks": 4
+  },
+  {
+    "package": "mpv-9031-native-ass-wait-deadline-cpu-spans.patch",
+    "sha256": "2ec81365de143e1c9166a39f7ef984d8f79119dd03e5c83f54660ae10200217a",
+    "old_before": "0afa84fcdd6656196a641d510c5e020c5ea83148",
+    "old_after": "6828e2d4f08e6f4de16c571a9b1b303b59c54399",
+    "commits": [
+      "6828e2d4f08e6f4de16c571a9b1b303b59c54399"
+    ],
+    "hunks": 23
+  },
+  {
+    "package": "mpv-9032-native-ass-coherent-queue-lead.patch",
+    "sha256": "a18de8b2528d1014adce5dd95d0cc2293a011203c753eeb6b5a515df4c3b1a04",
+    "old_before": "6828e2d4f08e6f4de16c571a9b1b303b59c54399",
+    "old_after": "0599b3a6a6bccf3e2e954bad9dc40111f5bbaa23",
+    "commits": [
+      "0599b3a6a6bccf3e2e954bad9dc40111f5bbaa23"
+    ],
+    "hunks": 28
+  },
+  {
+    "package": "mpv-9033-native-ass-display-forecast-staged-queue.patch",
+    "sha256": "251204787206a5dc383cb7679f8eaee6fac1d2ce0505d90f0516f02a3ce2abc3",
+    "old_before": "0599b3a6a6bccf3e2e954bad9dc40111f5bbaa23",
+    "old_after": "a3205ab9e25485b026a59129f084343814db33c7",
+    "commits": [
+      "a3205ab9e25485b026a59129f084343814db33c7"
+    ],
+    "hunks": 61
+  },
+  {
+    "package": "mpv-9034-native-ass-fixed-display-phase.patch",
+    "sha256": "40dfadefd8ab98c764faea2bf8e8dc54281f63ed9a87f6536773c5a5c0c16ab8",
+    "old_before": "a3205ab9e25485b026a59129f084343814db33c7",
+    "old_after": "8f6aa9f4ac16850816b79514d3695681359190f7",
+    "commits": [
+      "8f6aa9f4ac16850816b79514d3695681359190f7"
+    ],
+    "hunks": 27
+  },
+  {
+    "package": "mpv-9035-native-ass-ui-probe-recovery.patch",
+    "sha256": "4c091a956ca30dad116d126927a9c84a17b34ee8875a90ba7dbc3681bd66089a",
+    "old_before": "8f6aa9f4ac16850816b79514d3695681359190f7",
+    "old_after": "c613c2c51252c7c7182a7d2d9ed58b5879489118",
+    "commits": [
+      "c613c2c51252c7c7182a7d2d9ed58b5879489118"
+    ],
+    "hunks": 1
+  },
+  {
+    "package": "mpv-9036-native-ass-ui-lifecycle.patch",
+    "sha256": "78629c1c34c0e5c2dca4e4e1aac5edd477b45021eb91589757d3e72b6e6bdd69",
+    "old_before": "c613c2c51252c7c7182a7d2d9ed58b5879489118",
+    "old_after": "ac219c1915a183a6f364bc9ba18dc879fcdd2b53",
+    "commits": [
+      "ac219c1915a183a6f364bc9ba18dc879fcdd2b53"
+    ],
+    "hunks": 7
+  },
+  {
+    "package": "mpv-9037-native-ass-fixed-budget-recovery.patch",
+    "sha256": "ffd9488fad78d81d8e4e382cd8a7c7f542fb9d9cb5a585ebc204d76f9b39575f",
+    "old_before": "ac219c1915a183a6f364bc9ba18dc879fcdd2b53",
+    "old_after": "a93f2cbc00c0fca5084f88dd0eb89dc75e51f4ec",
+    "commits": [
+      "a93f2cbc00c0fca5084f88dd0eb89dc75e51f4ec"
+    ],
+    "hunks": 3
+  },
+  {
+    "package": "mpv-9038-native-ass-fresh-clock-continuity.patch",
+    "sha256": "ef72a86fae3eb0146d8c379af84804eee8934cd4f4f51ea511e057d2a7072f28",
+    "old_before": "a93f2cbc00c0fca5084f88dd0eb89dc75e51f4ec",
+    "old_after": "9c63f6be186dab16bc593ac3cf56b02651dace72",
+    "commits": [
+      "9c63f6be186dab16bc593ac3cf56b02651dace72"
+    ],
+    "hunks": 11
+  },
+  {
+    "package": "mpv-9039-native-ass-fresh-proposal-retry.patch",
+    "sha256": "0400999fd2680c1f779d61162ddd1224d3c210ad6bc3d7f01ccd3b9a9d8354d2",
+    "old_before": "9c63f6be186dab16bc593ac3cf56b02651dace72",
+    "old_after": "0e8c0003442d334e4a4032b1d5215fe56c6e459f",
+    "commits": [
+      "0e8c0003442d334e4a4032b1d5215fe56c6e459f"
+    ],
+    "hunks": 2
+  },
+  {
+    "package": "mpv-9040-native-ass-cache-window-neutral-pose.patch",
+    "sha256": "22fbc69bc3d60a29dcb359633f0100d25b0fe5ee46e5606a655ffb0e7443099c",
+    "old_before": "0e8c0003442d334e4a4032b1d5215fe56c6e459f",
+    "old_after": "463ab9eaf29d27edc0ae4d0294e90eae7596ad3c",
+    "commits": [
+      "463ab9eaf29d27edc0ae4d0294e90eae7596ad3c"
+    ],
+    "hunks": 18
+  },
+  {
+    "package": "mpv-9041-native-ass-captured-submit-window.patch",
+    "sha256": "520397134eb1c447b15f97f324bba4c006413106502150f77644d044698abfe3",
+    "old_before": "463ab9eaf29d27edc0ae4d0294e90eae7596ad3c",
+    "old_after": "7d85c3dfafcd98d37e837d69806033bcaa424e38",
+    "commits": [
+      "7d85c3dfafcd98d37e837d69806033bcaa424e38"
+    ],
+    "hunks": 5
+  },
+  {
+    "package": "mpv-9200-native-ass-paused-bitmap.patch",
+    "sha256": "59e6a0a50080ce3eb5fa451efcae4b2a6edcdc78b13849cacd809ba7716922b4",
+    "old_before": "7d85c3dfafcd98d37e837d69806033bcaa424e38",
+    "old_after": "a3d7435e37ddb16e819a42a3ccceba3a1525ba15",
+    "commits": [
+      "a3d7435e37ddb16e819a42a3ccceba3a1525ba15"
+    ],
+    "hunks": 1
+  },
+  {
+    "package": "mpv-9201-native-ass-prepass-display-budget.patch",
+    "sha256": "c8cd5e43e21653910ab73deaaad5bc59ddf989081db7ff518fff8d1325204e97",
+    "old_before": "a3d7435e37ddb16e819a42a3ccceba3a1525ba15",
+    "old_after": "3596a61ace0ff89b5d14b2064369b46591c327b3",
+    "commits": [
+      "3596a61ace0ff89b5d14b2064369b46591c327b3"
+    ],
+    "hunks": 2
+  },
+  {
+    "package": "mpv-9202-native-ass-observer-recovery.patch",
+    "sha256": "69683bf8de1181d796f66122ca0f8f9dae9f1d9a290a133f4b328d9b7c86d2fe",
+    "old_before": "3596a61ace0ff89b5d14b2064369b46591c327b3",
+    "old_after": "9f146dbbd97b8810f5924ca89d610bf86449f230",
+    "commits": [
+      "9f146dbbd97b8810f5924ca89d610bf86449f230"
+    ],
+    "hunks": 5
+  },
+  {
+    "package": "mpv-9202a-demux-inactive-subtitle-cache.patch",
+    "sha256": "b42ef5e3f597753095f5c899ade45d6dad8cd47f65c2da6c895d7627306942dd",
+    "old_before": "9f146dbbd97b8810f5924ca89d610bf86449f230",
+    "old_after": "8afa3e1c86a180368462120655b732337e6474b7",
+    "commits": [
+      "8afa3e1c86a180368462120655b732337e6474b7"
+    ],
+    "hunks": 15
+  },
+  {
+    "package": "mpv-9203-video-bounded-duplicate-pts.patch",
+    "sha256": "10d1d6405df68df6a4faab54e2902ca6c63ae55acdaf4f62066ba1f2fd83d1df",
+    "old_before": "8afa3e1c86a180368462120655b732337e6474b7",
+    "old_after": "4aebcd476cd946e35fdf2f5f9cdb8eea71855817",
+    "commits": [
+      "4aebcd476cd946e35fdf2f5f9cdb8eea71855817"
+    ],
+    "hunks": 7
+  },
+  {
+    "package": "mpv-9300-vc1-bounded-decoder-fallback.patch",
+    "sha256": "23bdcc03829fe39b0bc72efe8398c7959397ee8b583f971fbaa2badbf3675a9b",
+    "old_before": "4aebcd476cd946e35fdf2f5f9cdb8eea71855817",
+    "old_after": "35a077387a27229098d318abf70ade36fcd3cb96",
+    "commits": [
+      "35a077387a27229098d318abf70ade36fcd3cb96"
+    ],
+    "hunks": 10
+  },
+  {
+    "package": "mpv-9301-vc1-disc-parameter-probe.patch",
+    "sha256": "f47be59435bf0df6b92ca46ec006f5ab1b7bbf068a4cb301e83a0c6a6b3224fd",
+    "old_before": "35a077387a27229098d318abf70ade36fcd3cb96",
+    "old_after": "6b4c0ef5061a5fd83af6eeac25de4436b024ae6e",
+    "commits": [
+      "6b4c0ef5061a5fd83af6eeac25de4436b024ae6e"
+    ],
+    "hunks": 8
+  },
+  {
+    "package": "mpv-9302-script-property-lookup.patch",
+    "sha256": "1ebaa8beac08b1c5f52ec7572a4b18614e06652da44c22b032ae14438a48c017",
+    "old_before": "6b4c0ef5061a5fd83af6eeac25de4436b024ae6e",
+    "old_after": "937f9cad82c46d067851abf987e1fd80b19cbe4b",
+    "commits": [
+      "937f9cad82c46d067851abf987e1fd80b19cbe4b"
+    ],
+    "hunks": 31
+  },
+  {
+    "package": "mpv-9303-lua-native-api-efficiency.patch",
+    "sha256": "1354982fb0f3fb4efa9c21460624eef004701782ab52b475834a5fd1c70f83de",
+    "old_before": "937f9cad82c46d067851abf987e1fd80b19cbe4b",
+    "old_after": "bc7f4c768f7e3a17ced374af495bc48a06a92d29",
+    "commits": [
+      "bc7f4c768f7e3a17ced374af495bc48a06a92d29"
+    ],
+    "hunks": 21
+  },
+  {
+    "package": "mpv-9304-windows-com-lifetime.patch",
+    "sha256": "a677bdf0f82138e96b77afcb3ca761c90b045cd2f13f01f6589727bac7cd44fb",
+    "old_before": "bc7f4c768f7e3a17ced374af495bc48a06a92d29",
+    "old_after": "5064123a487921274ceb99eb136870998400bfcc",
+    "commits": [
+      "5064123a487921274ceb99eb136870998400bfcc"
+    ],
+    "hunks": 5
+  },
+  {
+    "package": "mpv-9305-av3a-content-selection.patch",
+    "sha256": "0ea711e17f6ba26b86bffed10d37bc038c2a07a8268926a6615b15b63f5f42f5",
+    "old_before": "5064123a487921274ceb99eb136870998400bfcc",
+    "old_after": "aa6aea4e2a451247d430c278f149fe6085d203bc",
+    "commits": [
+      "aa6aea4e2a451247d430c278f149fe6085d203bc"
+    ],
+    "hunks": 9
+  },
+  {
+    "package": "mpv-9306-round2-stability.patch",
+    "sha256": "083d9f9d307807c63a64069a3cc85590ce2728c6d059dbc0a083956efb2e707b",
+    "old_before": "aa6aea4e2a451247d430c278f149fe6085d203bc",
+    "old_after": "cd526ea43736a20a5beaee991ff240eaea9f52be",
+    "commits": [
+      "cd526ea43736a20a5beaee991ff240eaea9f52be"
+    ],
+    "hunks": 20
+  },
+  {
+    "package": "mpv-9307-windows-paths.patch",
+    "sha256": "5c27194e97a83d16c01226f9bea796b6bf905731a69bf55a2b36ff79f1426d20",
+    "old_before": "cd526ea43736a20a5beaee991ff240eaea9f52be",
+    "old_after": "9f939411738fd71839973873fef6e6c575f7936f",
+    "commits": [
+      "9f939411738fd71839973873fef6e6c575f7936f"
+    ],
+    "hunks": 6
+  },
+  {
+    "package": "mpv-9308-http-range.patch",
+    "sha256": "ff909032550b04244ebe6a6bf073851fd654787c7b42926a97ef8203b90e7f46",
+    "old_before": "9f939411738fd71839973873fef6e6c575f7936f",
+    "old_after": "16196b33e0763411cde1f7d2813c5b414a512620",
+    "commits": [
+      "16196b33e0763411cde1f7d2813c5b414a512620"
+    ],
+    "hunks": 12
+  },
+  {
+    "package": "mpv-9309-native-refresh-video-priority.patch",
+    "sha256": "411c7687ca12dfc9afae41fe80b8c951ffa7ec48864bf5d1da44a16d95a87058",
+    "old_before": "16196b33e0763411cde1f7d2813c5b414a512620",
+    "old_after": "cc8fa89d4fcfe3fee2d62e5a63b0e8f4b4b8f17d",
+    "commits": [
+      "cc8fa89d4fcfe3fee2d62e5a63b0e8f4b4b8f17d"
+    ],
+    "hunks": 6
+  },
+  {
+    "package": "mpv-9310-native-ass-wall-progress.patch",
+    "sha256": "acf9242587da78e3c9e32e20364a20f140ebc4618450b1984d3db77edd87f142",
+    "old_before": "cc8fa89d4fcfe3fee2d62e5a63b0e8f4b4b8f17d",
+    "old_after": "d7ee904ea0d33bb5ea9228d1debc98437d765287",
+    "commits": [
+      "d7ee904ea0d33bb5ea9228d1debc98437d765287"
+    ],
+    "hunks": 2
+  }
+]
