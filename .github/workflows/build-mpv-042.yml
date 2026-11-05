@@ -687,10 +687,6 @@ jobs:
             --output "native-refresh-gate-contract-${{ matrix.variant }}"
           python3 build/atmos/parity/prepare-native-freeze-winbuild.py \
             --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
-          python3 build/atmos/parity/prepare-dependency-lock.py \
-            --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
-          python3 build/atmos/parity/test-dependency-build-gate.py \
-            --output "dependency-gate-contract-${{ matrix.variant }}.json"
 
       - name: Apply and verify reviewed 0.42 source and dependency overlay
         shell: bash
@@ -698,6 +694,12 @@ jobs:
           set -euxo pipefail
           python3 build/mpv-042/prepare-winbuild.py \
             --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
+          # Freeze the effective 0.42 recipe inventory only after the reviewed
+          # non-render overlays and mpv/FFmpeg recipe adaptation are complete.
+          python3 build/atmos/parity/prepare-dependency-lock.py \
+            --winbuild winbuild/mpv-winbuild-cmake --variant '${{ matrix.variant }}'
+          python3 build/atmos/parity/test-dependency-build-gate.py \
+            --output "dependency-gate-contract-${{ matrix.variant }}.json"
           python3 build/mpv-042/verify-source.py \
             --prepare-preflight --variant '${{ matrix.variant }}' \
             --work "$RUNNER_TEMP/mpv-042-preflight" --output "mpv-042-preflight-${{ matrix.variant }}.json"
@@ -1044,6 +1046,7 @@ jobs:
           python3 build/atmos/parity/verify-dependency-build.py --winbuild "$winbuild" \
             --variant '${{ matrix.variant }}' --phase final \
             --binary "$(find "$winbuild/build64" -maxdepth 2 -type f -name mpv.exe -print -quit)" \
+            --binary "$(find "$winbuild/build64" -maxdepth 2 -type f -name mpv.com -print -quit)" \
             --output "mpv-042-rendering-dependencies-${{ matrix.variant }}.json"
 
       - name: Collect failed build logs

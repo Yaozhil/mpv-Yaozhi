@@ -1241,7 +1241,7 @@
     },
     {
       "path": "dependencies/source_gate.py",
-      "sha256": "27565ce3e1c924cc74867606e9a15f5c78e5ab5f0b58d4ef9b7158782ab588cf"
+      "sha256": "84f9e0c3bbdb45959fcedbdc322d172c74b9651589867e5f1f4434e26b3c55a6"
     },
     {
       "path": "dependencies/test_custom_io_cleanup.c",
@@ -1869,14 +1869,14 @@
     },
     {
       "path": "migration-evidence/post-build-corrections.json",
-      "sha256": "434b3a0ec0db9a698154ab6a0693f3ebf6db873c53a598162d9b99fbac3876c8"
+      "sha256": "8e0b169b696302b8173017c88ddc01568dcf0d4af40150efeb5b1cfae8d1f595"
     }
   ],
-  "revision": 6,
+  "revision": 7,
   "supersedes": {
-    "migration_lock_sha256": "b084bdce704cb101245ef09ebf8eb3e6a6ac262b25d78857f3c41e1366a4a85c",
-    "build_config_commit": "8e0c2d439395059f153569a2ede6bbd7eb4646f7",
-    "failed_ci_run": 41992716865,
-    "reason": "Remove only obsolete duplicate PLAYITEM five-line assignment branch. Retain official 0.42 locked change-sensitive current_playitem/seg_pending/nav_change_id branch byte-for-byte; all private audio/PGS/title/VM handling remains."
+    "migration_lock_sha256": "92266c0c4ac4bed34e9d6059b53316c1aaaff1766c03a3286ab6c371bc1dbd41",
+    "build_config_commit": "b172a13c58a9b1fa28968623fc550956685ab390",
+    "failed_ci_run": 42006947909,
+    "reason": "C compilation/link and exact mpv source binding passed. For compiled RENDER inputs only, generic git status ignores submodules before the unchanged dedicated render gate validates exact source bytes, external targets, Gitlinks, archive and link. Pass both mpv.exe/mpv.com to that gate as already required. No mpv/dependency source or acceptance predicate changed. Freeze the render/all-recipe inventory for the first time only after the reviewed 0.42 overlays; do not rewrite any earlier run receipt or relax final inventory SHA checks."
   }
 }

@@ -27,5 +27,17 @@
       "stream/stream_bluray.c"
     ],
     "compiler_first_error": "stream/stream_bluray.c:998 duplicate case; first case at960"
+  },
+  {
+    "id": "r7-render-gitlink-inventory-and-console-binding",
+    "failed_ci_run": 42006947909,
+    "resolution": "C compilation/link and exact mpv source binding passed. For compiled RENDER inputs only, generic git status ignores submodules before the unchanged dedicated render gate validates exact source bytes, external targets, Gitlinks, archive and link. Pass both mpv.exe/mpv.com to that gate as already required. No mpv/dependency source or acceptance predicate changed. Freeze the render/all-recipe inventory for the first time only after the reviewed 0.42 overlays; do not rewrite any earlier run receipt or relax final inventory SHA checks.",
+    "type": "build-gate-integration-only",
+    "files": [
+      "dependencies/source_gate.py",
+      ".github/workflows/build-mpv-042.yml"
+    ],
+    "first_failure": "git status: expected submodule path 3rdparty/fast_float not to be a symbolic link",
+    "additional_preempted_failure": "Final rendering gate requires both PE binaries; workflow previously supplied only mpv.exe; previous order captured 69 selected pre-overlay recipe hashes before adapting them, so unchanged render final would reject"
   }
 ]

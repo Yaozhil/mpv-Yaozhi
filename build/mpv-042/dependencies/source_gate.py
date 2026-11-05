@@ -26,15 +26,21 @@ def git(source, *args, env=None, data=None):
     return result.stdout
 
 
-def identity(source):
+def identity(source, *, ignore_submodules=False):
     # rev-parse by itself would otherwise discover a parent repository for an
     # absent checkout. Require this directory to be the actual worktree root.
     assert source.is_dir(), 'Missing reachable checkout: ' + str(source)
     top = Path(git(source, 'rev-parse', '--show-toplevel').decode().strip()).resolve()
     assert top == source.resolve(), 'Checkout resolved into another worktree: ' + str(source)
+    # Only compiled rendering inputs use external submodule links. Their
+    # exact bytes, link targets and Gitlinks are checked by the dedicated
+    # render gate; ordinary checkouts and preflight remain fully strict.
+    status_args = ['status', '--porcelain', '--untracked-files=no']
+    if ignore_submodules:
+        status_args.append('--ignore-submodules=all')
     return {'head': git(source, 'rev-parse', 'HEAD').decode().strip(),
             'tree': git(source, 'rev-parse', 'HEAD^{tree}').decode().strip(),
-            'tracked_status': git(source, 'status', '--porcelain', '--untracked-files=no').decode().strip()}
+            'tracked_status': git(source, *status_args).decode().strip()}
 
 
 def reachable(data, ledger):
@@ -186,7 +192,7 @@ def compiled_sources(root, binding, out):
         recipe = root / record['recipe_path']
         assert digest(recipe.read_bytes()) == record['recipe_sha256'], 'Recipe changed after configure: ' + name
         source = root / 'src_packages' / name
-        actual = identity(source)
+        actual = identity(source, ignore_submodules=name in RENDER)
         if name == 'mpv':
             # verify-source.py separately binds the full reviewed aggregate tree,
             # its official parent and actual mpv objects/binary in this attempt.
