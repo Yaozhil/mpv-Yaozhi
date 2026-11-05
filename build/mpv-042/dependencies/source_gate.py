@@ -202,7 +202,7 @@ def compiled_sources(root, binding, out):
             if name in RENDER:
                 method = 'DELEGATED_EXACT_BYTES_AND_GITLINKS_TO_RENDER_DEPENDENCY_GATE'
             elif name == 'mingw-w64':
-                method = 'SIX_GENERATED_BYTES_BOUND_BY_COMPILED_CRT_GATE'
+                method = 'ALL_CAPTURED_GENERATED_BYTES_BOUND_BY_COMPILED_CRT_GATE'
             elif 'retained_private_source' in record:
                 expectation = record['retained_private_source']
                 for item in expectation['inputs']:

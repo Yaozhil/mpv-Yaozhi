@@ -1194,7 +1194,7 @@
     },
     {
       "path": "dependencies/check_candidate_dependencies.py",
-      "sha256": "98ef69290447c266dcf55a48be21d4029900a12d3d2b60fb86adba618aed0311"
+      "sha256": "2a327ed81f73a51d500cca81d4eb21e64daa7fdb9fc5314cc653a11387290856"
     },
     {
       "path": "dependencies/dependency-provenance.json",
@@ -1210,7 +1210,7 @@
     },
     {
       "path": "dependencies/source_gate.py",
-      "sha256": "3c6355cf4869fac4c444a107867c7266e7f02006518c835ec032571a13771bb7"
+      "sha256": "27565ce3e1c924cc74867606e9a15f5c78e5ab5f0b58d4ef9b7158782ab588cf"
     },
     {
       "path": "dependencies/test_custom_io_cleanup.c",
@@ -1826,7 +1826,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "a503bae035fe69546fc2b3420dfce0982f73cdd3e298e190ce5872a5df082f59"
+      "sha256": "473f2d224244a3202a47181130369526e78f20647228583cefd579035a7203d9"
     },
     {
       "path": "verify-dependencies.py",
@@ -1837,11 +1837,11 @@
       "sha256": "3718f40ce24a53239927f0c464302bb9329cb368c46cf47f9b77d2318075e062"
     }
   ],
-  "revision": 2,
+  "revision": 3,
   "supersedes": {
-    "migration_lock_sha256": "6a52b01f124ae0a687dc05019eda111efa78edd7a58b7fe36f46daacfeaf9568",
-    "build_config_commit": "e89c394eb4a9a0ea15180b13436ca9bfa651f510",
-    "failed_ci_run": 41955985406,
-    "reason": "Actual AV3A CMake recipe wraps git apply across lines; parse real whitespace without changing source/patch inputs."
+    "migration_lock_sha256": "7ebcfae6626c02d332a60721de945a6704d193af913778ef30856c6bd84906cc",
+    "build_config_commit": "cd34eac6004ea5a80112108e6d3a0027d38e8aa2",
+    "failed_ci_run": 41956573771,
+    "reason": "Real Autoconf 2.72 / Automake 1.18.1 regenerates seven additional tracked build inputs; capture and bind all 13 explicit generated files, continue rejecting unrelated code changes."
   }
 }

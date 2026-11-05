@@ -21,7 +21,7 @@
 - `prepare-winbuild.py` 先核旧完整 58／59 包，再替换为正式基底与精确源码层。
 - 70 个依赖 overlay／核固定既有基线；保留私补，不跟踪今天的浮动分支。
 - `cleanup` 的固定 pin 脚本只核祖先关系，不 fetch／reset，也不撤销 Git-am 私补。
-- 真实 Ninja 图、MinGW 六生成文件和 fresh CRT、FFmpeg demux.o 与静态 archive、实际最终链接逐层绑定。
+- 真实 Ninja 图、MinGW 全部 13 个已确认生成文件（历史六项加当前 Autotools 新生成七项）和 fresh CRT、FFmpeg demux.o 与静态 archive、实际最终链接逐层绑定。
 - 历史构建配方／门禁保持原件；使用新工作流和独立分支，构建非零退出即阻断。
 - `package.py` 绑定本次 CI 的 variant、锁、source／dependency 收据及验证工具 SHA。打包状态仍明确未安装／未经过播放验收。
 

@@ -18,7 +18,11 @@ OPTIONAL = ['expat', 'flac', 'libmfx', 'libopusenc', 'megasdk', 'nettle', 'opus-
 MINGW = '7ce22f6637cc93fd2eb37c8a645908c92bb80bbd'
 GENERATED = ['mingw-w64-crt/aclocal.m4', 'mingw-w64-crt/build-aux/config.guess',
              'mingw-w64-crt/build-aux/config.sub', 'mingw-w64-crt/build-aux/install-sh',
-             'mingw-w64-crt/config.h.in', 'mingw-w64-crt/configure']
+             'mingw-w64-crt/config.h.in', 'mingw-w64-crt/configure',
+             'mingw-w64-crt/Makefile.in', 'mingw-w64-crt/build-aux/ar-lib',
+             'mingw-w64-crt/build-aux/compile', 'mingw-w64-crt/build-aux/depcomp',
+             'mingw-w64-crt/build-aux/missing', 'mingw-w64-crt/build-aux/test-driver',
+             'mingw-w64-crt/testcases/Makefile.in']
 
 
 def run(cmd, cwd=None, timeout=120):
