@@ -6,14 +6,14 @@
   "source_commit_date": "2026-11-05T00:56:42Z",
   "variants": {
     "main": {
-      "source_tree": "8cf4d6e6d27a862658571ef139c6bb14d27fa359",
+      "source_tree": "9970a1cf7cd00a9b67b54b2853ee6a973a2b4e15",
       "patch": "patches/main.patch",
-      "patch_sha256": "7fa3259c033705cce7783253cf109955ab623ff9f32725dfba0f73c9894ee3a2"
+      "patch_sha256": "52943baeeb82ea9b4dfa54de8366c6ba71fd023e3b6d063618fae00e135ffc92"
     },
     "atmos": {
-      "source_tree": "56217656c3c3587b3cdcfb22eef9022d529d8d57",
+      "source_tree": "abf7315eee967313fc9c4995bc62e82dcec47a1f",
       "patch": "patches/atmos.patch",
-      "patch_sha256": "55e8c661a78e3a9f97ba94d4b4d13a35a1dbfb76e5a5f28c1fc8992fedff8990"
+      "patch_sha256": "6d2a5e26e4f0a79821ce805a9969a425273694430bf771bb143d7772ec0ce6ae"
     }
   },
   "historical_package_patches": {
@@ -1152,6 +1152,21 @@
       "variants": [
         "atmos"
       ]
+    },
+    {
+      "id": "disc-dovi:demux/demux.c",
+      "path": "demux/demux.c",
+      "required": [
+        "void demux_set_stream_still_image(",
+        "sh->still_image = still_image;"
+      ]
+    },
+    {
+      "id": "disc-dovi:demux/demux.h",
+      "path": "demux/demux.h",
+      "required": [
+        "void demux_set_stream_still_image("
+      ]
     }
   ],
   "policy": "Preserve custom features; enable only verified playback and image-quality improvements. No new renderer defaults.",
@@ -1174,7 +1189,7 @@
     },
     {
       "path": "cpu/port-ready.json",
-      "sha256": "51ee39d829f490de5211da01781f30af34a44d76187be0d5c904a21cf6d26f3f"
+      "sha256": "8b77980e7c2af1995408774dc1a16c0c2840876ff148369c50e2758795112425"
     },
     {
       "path": "cpu/run_cpu_contracts.py",
@@ -1790,7 +1805,7 @@
     },
     {
       "path": "migration-evidence/port-ready.json",
-      "sha256": "51ee39d829f490de5211da01781f30af34a44d76187be0d5c904a21cf6d26f3f"
+      "sha256": "8b77980e7c2af1995408774dc1a16c0c2840876ff148369c50e2758795112425"
     },
     {
       "path": "migration-evidence/port-replay.json",
@@ -1806,7 +1821,7 @@
     },
     {
       "path": "migration-evidence/source-contracts.json",
-      "sha256": "dc288fd629f31364c64f751d5c9dfdb8c8f58cf83ec870c92385394503048efa"
+      "sha256": "8a3dc152526d6b0ea97ac900977c24ae81915e4f6c43ceb3fa96c677035df8fa"
     },
     {
       "path": "package.py",
@@ -1814,11 +1829,11 @@
     },
     {
       "path": "patches/atmos.patch",
-      "sha256": "55e8c661a78e3a9f97ba94d4b4d13a35a1dbfb76e5a5f28c1fc8992fedff8990"
+      "sha256": "6d2a5e26e4f0a79821ce805a9969a425273694430bf771bb143d7772ec0ce6ae"
     },
     {
       "path": "patches/main.patch",
-      "sha256": "7fa3259c033705cce7783253cf109955ab623ff9f32725dfba0f73c9894ee3a2"
+      "sha256": "52943baeeb82ea9b4dfa54de8366c6ba71fd023e3b6d063618fae00e135ffc92"
     },
     {
       "path": "prepare-winbuild.py",
@@ -1835,13 +1850,17 @@
     {
       "path": "verify-source.py",
       "sha256": "3718f40ce24a53239927f0c464302bb9329cb368c46cf47f9b77d2318075e062"
+    },
+    {
+      "path": "migration-evidence/post-build-corrections.json",
+      "sha256": "4e92ba956847cb0ceb1eae3e2dcc10735181ce680e274df382535d0ac9a7db76"
     }
   ],
-  "revision": 3,
+  "revision": 4,
   "supersedes": {
-    "migration_lock_sha256": "7ebcfae6626c02d332a60721de945a6704d193af913778ef30856c6bd84906cc",
-    "build_config_commit": "cd34eac6004ea5a80112108e6d3a0027d38e8aa2",
-    "failed_ci_run": 41956573771,
-    "reason": "Real Autoconf 2.72 / Automake 1.18.1 regenerates seven additional tracked build inputs; capture and bind all 13 explicit generated files, continue rejecting unrelated code changes."
+    "migration_lock_sha256": "b19901ec7474c45ae7dd2567c54a82e650f6bbd0226711b94de8fac41c00a24f",
+    "build_config_commit": "9f33f064a838081404db98afb365c9d2b4c1e3c7",
+    "failed_ci_run": 41957279903,
+    "reason": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled."
   }
 }

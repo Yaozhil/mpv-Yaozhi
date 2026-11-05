@@ -71,6 +71,13 @@
       "is_link_rsm_command",
       "static bool activate_current_button",
       "acted = activate_current_button"
+    ],
+    "demux/demux.c": [
+      "void demux_set_stream_still_image(",
+      "sh->still_image = still_image;"
+    ],
+    "demux/demux.h": [
+      "void demux_set_stream_still_image("
     ]
   },
   "network": {

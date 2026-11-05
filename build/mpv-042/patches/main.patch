@@ -915,7 +915,7 @@ index 228e3ee314c419d03b44c4b3cd8b4937556fa3d7..3d4dee88bde3591093df2892f2ed98a2
  const char mpv_builddate[] = BUILDDATE;
  const char mpv_copyright[] = MPVCOPYRIGHT;
 diff --git a/demux/demux.c b/demux/demux.c
-index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713c53635c3 100644
+index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..cea38adac1698050c78ecbb4db0fa96a1fb8747e 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
 @@ -210,6 +210,8 @@ struct demux_internal {
@@ -1040,7 +1040,26 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
  // called locked, from user thread only
  static void clear_reader_state(struct demux_internal *in,
                                 bool clear_back_state)
-@@ -960,12 +1040,13 @@ static void update_stream_selection_state(struct demux_internal *in,
+@@ -926,6 +1006,18 @@ static void update_stream_eager_state(struct demux_internal *in)
+         in->blocked = false;
+ }
+ 
++void demux_set_stream_still_image(demuxer_t *demuxer, struct sh_stream *sh,
++                                  bool still_image)
++{
++    struct demux_internal *in = demuxer->in;
++    mp_assert(demuxer == in->d_thread);
++
++    mp_mutex_lock(&in->lock);
++    sh->still_image = still_image;
++    update_stream_eager_state(in);
++    mp_mutex_unlock(&in->lock);
++}
++
+ // Set whether the media provides data for this stream at all.
+ void demux_set_stream_absent(demuxer_t *demuxer, struct sh_stream *sh,
+                              bool absent)
+@@ -960,12 +1052,13 @@ static void update_stream_selection_state(struct demux_internal *in,
      for (int n = 0; n < in->num_ranges; n++) {
          struct demux_cached_range *range = in->ranges[n];
  
@@ -1055,7 +1074,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
      free_empty_cached_ranges(in);
  
      wakeup_ds(ds);
-@@ -1913,6 +1994,7 @@ static void attempt_range_joining(struct demux_internal *in)
+@@ -1913,6 +2006,7 @@ static void attempt_range_joining(struct demux_internal *in)
          q1->last_ts = q2->last_ts;
          q1->keyframe_latest = q2->keyframe_latest;
          q1->is_eof = q2->is_eof;
@@ -1063,7 +1082,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
  
          q1->last_pos_fixup = -1;
  
-@@ -2175,7 +2257,9 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+@@ -2175,7 +2269,9 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
  
      struct demux_queue *queue = ds->queue;
  
@@ -1074,7 +1093,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
  
      if (!drop) {
          // If libavformat splits packets, some packets will have pos unset, so
-@@ -2290,6 +2374,11 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
+@@ -2290,6 +2386,11 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
  
      // Don't process the packet further if it's skipped by the previous seek
      // (see reader_head check/assignment above).
@@ -1086,7 +1105,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
      if (!ds->reader_head)
          return;
  
-@@ -2320,6 +2409,14 @@ static bool lazy_stream_needs_wait(struct demux_stream *ds)
+@@ -2320,6 +2421,14 @@ static bool lazy_stream_needs_wait(struct demux_stream *ds)
  }
  
  // Returns true if there was "progress" (lock was released temporarily).
@@ -1101,7 +1120,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
  static bool read_packet(struct demux_internal *in)
  {
      bool was_reading = in->reading;
-@@ -2328,10 +2425,13 @@ static bool read_packet(struct demux_internal *in)
+@@ -2328,10 +2437,13 @@ static bool read_packet(struct demux_internal *in)
      if (!was_reading || in->blocked || demux_cancel_test(in->d_thread))
          return false;
  
@@ -1115,7 +1134,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
      uint64_t total_fw_bytes = 0;
      for (int n = 0; n < in->num_streams; n++)
          total_fw_bytes += get_forward_buffered_bytes(in->streams[n]->ds);
-@@ -2356,22 +2456,42 @@ static bool read_packet(struct demux_internal *in)
+@@ -2356,22 +2468,42 @@ static bool read_packet(struct demux_internal *in)
              ds->queue->last_ts >= ds->base_ts &&
              !in->back_demuxing)
          {
@@ -1165,7 +1184,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
      if (total_fw_bytes >= in->max_bytes) {
          // if we hit the limit just by prefetching, simply stop prefetching
          if (!read_more) {
-@@ -2381,19 +2501,25 @@ static bool read_packet(struct demux_internal *in)
+@@ -2381,19 +2513,25 @@ static bool read_packet(struct demux_internal *in)
          if (!in->warned_queue_overflow) {
              in->warned_queue_overflow = true;
              MP_WARN(in, "Too many packets in the demuxer packet queues:\n");
@@ -1194,7 +1213,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
                  }
              }
              if (in->back_demuxing)
-@@ -2519,6 +2645,9 @@ static void prune_old_packets(struct demux_internal *in)
+@@ -2519,6 +2657,9 @@ static void prune_old_packets(struct demux_internal *in)
          bool non_kf_prune = queue->head && !queue->head->keyframe;
          bool kf_was_pruned = false;
  
@@ -1204,7 +1223,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
          while (queue->head && queue->head != ds->reader_head) {
              if (queue->head->keyframe) {
                  // If the cache is seekable, only delete until up the next
-@@ -3294,15 +3423,21 @@ void demux_set_duration(demuxer_t *demuxer, double duration)
+@@ -3294,15 +3435,21 @@ void demux_set_duration(demuxer_t *demuxer, double duration)
      mp_mutex_unlock(&in->lock);
  }
  
@@ -1229,7 +1248,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
          mp_cond_signal(&in->wakeup);
      }
      mp_mutex_unlock(&in->lock);
-@@ -3831,8 +3966,11 @@ static void switch_current_range(struct demux_internal *in,
+@@ -3831,8 +3978,11 @@ static void switch_current_range(struct demux_internal *in,
              struct demux_queue *queue = old->streams[n];
  
              // Remove all packets which cannot be involved in seeking.
@@ -1242,7 +1261,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
          }
  
          // Exclude weird corner cases that break resuming.
-@@ -4256,6 +4394,54 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4256,6 +4406,54 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
  {
      struct demux_stream *ds = stream->ds;
      ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
@@ -1297,7 +1316,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
  
      if (in->back_demuxing)
          ds->back_seek_pos = ref_pts;
-@@ -4277,7 +4463,9 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
+@@ -4277,7 +4475,9 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
      // - If cache is enabled and a seek causes some new data to be cached, the demuxer
      //   is sought to the end of cache after cache joining. Switching track immediately
      //   after this also causes the same problem.
@@ -1308,7 +1327,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
          MP_VERBOSE(in, "refresh track %d (%s)\n", stream->index,
                     stream_type_name(ds->type));
          initiate_refresh_seek(in, ds, ref_pts);
-@@ -4422,6 +4610,28 @@ bool demux_stream_has_packets(struct sh_stream *stream)
+@@ -4422,6 +4622,28 @@ bool demux_stream_has_packets(struct sh_stream *stream)
      return r;
  }
  
@@ -1338,7 +1357,7 @@ index 296993b63f6c386e6979427b6269f6eb0a4bbfe5..b12aae8b079f399316dcabf82c0b6713
                                  void (*cb)(void *ctx), void *ctx)
  {
 diff --git a/demux/demux.h b/demux/demux.h
-index 00e3f5ad15141470e61fb4c7b721c7f265be6ef0..c59b1accb6bb4990df1a4b627636b90e0aa097ca 100644
+index 00e3f5ad15141470e61fb4c7b721c7f265be6ef0..6cfd7fc9844adcb27818a01dc0562d54280f7645 100644
 --- a/demux/demux.h
 +++ b/demux/demux.h
 @@ -311,6 +311,8 @@ int demux_read_packet_async_until(struct sh_stream *sh, double min_pts,
@@ -1350,7 +1369,17 @@ index 00e3f5ad15141470e61fb4c7b721c7f265be6ef0..c59b1accb6bb4990df1a4b627636b90e
  void demux_set_stream_wakeup_cb(struct sh_stream *sh,
                                  void (*cb)(void *ctx), void *ctx);
  struct demux_packet *demux_read_any_packet(struct demuxer *demuxer,
-@@ -370,7 +372,8 @@ void demux_close_stream(struct demuxer *demuxer);
+@@ -334,6 +336,9 @@ void demux_set_wakeup_cb(struct demuxer *demuxer, void (*cb)(void *ctx), void *c
+ void demux_start_prefetch(struct demuxer *demuxer);
+ void demux_drive_nav(struct demuxer *demuxer);
+ void demux_nav_refresh(struct demuxer *demuxer);
++void demux_set_stream_still_image(struct demuxer *demuxer,
++                                  struct sh_stream *sh, bool still_image);
++
+ void demux_set_stream_absent(struct demuxer *demuxer, struct sh_stream *sh,
+                              bool absent);
+ void demux_set_stream_group(struct demuxer *demuxer,
+@@ -370,7 +375,8 @@ void demux_close_stream(struct demuxer *demuxer);
  
  void demux_metadata_changed(demuxer_t *demuxer);
  void demux_set_duration(demuxer_t *demuxer, double duration);

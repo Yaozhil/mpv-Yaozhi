@@ -1,0 +1,9 @@
+{
+  "id": "r4-private-still-image-api",
+  "failed_ci_run": 41957279903,
+  "resolution": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled.",
+  "files": [
+    "demux/demux.c",
+    "demux/demux.h"
+  ]
+}

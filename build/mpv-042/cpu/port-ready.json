@@ -11,11 +11,11 @@
   "variants": {
     "main": {
       "branch": "main-042",
-      "commit": "fe2b0dcb6c076cd39d9a536a851e5be632cff8db",
-      "source_tree": "8cf4d6e6d27a862658571ef139c6bb14d27fa359",
-      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\mpv-port\\patches\\mpv-042-main.patch",
-      "patch_sha256": "7fa3259c033705cce7783253cf109955ab623ff9f32725dfba0f73c9894ee3a2",
-      "patch_bytes": 705979,
+      "commit": "17dda92e1ea3e4e18fea83590e2d5ab81dcc82e0",
+      "source_tree": "9970a1cf7cd00a9b67b54b2853ee6a973a2b4e15",
+      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\disc-api-r4\\main.patch",
+      "patch_sha256": "52943baeeb82ea9b4dfa54de8366c6ba71fd023e3b6d063618fae00e135ffc92",
+      "patch_bytes": 707208,
       "changed_files": [
         "DOCS/interface-changes.rst",
         "DOCS/man/input.rst",
@@ -98,11 +98,11 @@
     },
     "atmos": {
       "branch": "atmos-042",
-      "commit": "55b0b4be2448396560ca1c1f05a7f11998b6eb9e",
-      "source_tree": "56217656c3c3587b3cdcfb22eef9022d529d8d57",
-      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\mpv-port\\patches\\mpv-042-atmos.patch",
-      "patch_sha256": "55e8c661a78e3a9f97ba94d4b4d13a35a1dbfb76e5a5f28c1fc8992fedff8990",
-      "patch_bytes": 856492,
+      "commit": "e9813d2f5cbaa76f4d5c45efc5f4032dff1d9f03",
+      "source_tree": "abf7315eee967313fc9c4995bc62e82dcec47a1f",
+      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\disc-api-r4\\atmos.patch",
+      "patch_sha256": "6d2a5e26e4f0a79821ce805a9969a425273694430bf771bb143d7772ec0ce6ae",
+      "patch_bytes": 857721,
       "changed_files": [
         "Copyright",
         "DOCS/interface-changes.rst",
@@ -214,5 +214,16 @@
     "Not yet compiled or runtime tested.",
     "Official Lua OOM can still leak talloc allocations; old private optimization functional hunks are retained upstream but OOM cleanup guarantee is not asserted equivalent.",
     "Physical video timing/HDR/audio/real disc required separately."
+  ],
+  "post_build_corrections": [
+    {
+      "id": "r4-private-still-image-api",
+      "failed_ci_run": 41957279903,
+      "resolution": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled.",
+      "files": [
+        "demux/demux.c",
+        "demux/demux.h"
+      ]
+    }
   ]
 }
