@@ -1,0 +1,99 @@
+{
+  "native-ass": {
+    "video/out/vo.c": [
+      "secondary_forecast_fresh_clock_plan",
+      "secondary_next_sample",
+      "reset_secondary_ass_budget",
+      "secondary_stage_cache_current"
+    ],
+    "sub/osd.c": [
+      "osd_set_secondary_physical_forecast_time",
+      "osd_hold_secondary_sample"
+    ],
+    "video/out/d3d11/context.c": [
+      "d3d11_present_generation_invalidate",
+      "mp_ass_pacing_record",
+      "IDXGISwapChain_Present"
+    ]
+  },
+  "av3a": {
+    "audio/decode/ad_lavc.c": [
+      "ADCTRL_GET_AV3A_CONTENT_INFO",
+      "av3a_contents"
+    ],
+    "player/command.c": [
+      "audio-av3a-content-info"
+    ],
+    "audio/chmap_avchannel.c": [
+      "AV_CHANNEL_ORDER_CUSTOM",
+      "AV_CHANNEL_ORDER_AMBISONIC"
+    ],
+    "audio/out/ao_wasapi_utils.c": [
+      "if (!unknown && wformat->dwChannelMask != chans)"
+    ]
+  },
+  "vc1": {
+    "demux/demux_lavf.c": [
+      "DISC_VC1_PROBE_BYTES",
+      "DISC_VC1_PROBE_SECONDS",
+      "disc_vc1_probe_deadline"
+    ],
+    "video/decode/vd_lavc.c": [
+      "finish_fallback",
+      "INIT_AVCTX_FAILED",
+      "while (result == INIT_AVCTX_HWDEC_FAILED)"
+    ]
+  },
+  "pgs-hdr": {
+    "video/out/vo_gpu_next.c": [
+      "image-subs-colorspace",
+      "IMAGE_SUBS_COLORSPACE_SDR",
+      "tone-mapping-knee-offset",
+      "slot_acquire",
+      "ra_hwdec_mapper_begin_access",
+      "ra_hwdec_mapper_end_access"
+    ]
+  },
+  "disc-dovi": {
+    "stream/stream_bluray.c": [
+      "remote_read_blocks",
+      "jump_head",
+      "mp_bluray_audio_sample_rate",
+      "bd_overlay_tall_sliver"
+    ],
+    "demux/demux_disc.c": [
+      "set_bd_profile7",
+      "demux_set_stream_codec",
+      "read_menu_audio",
+      "demuxer_set_stream_cache_inactive"
+    ],
+    "stream/stream_dvdnav.c": [
+      "is_link_rsm_command",
+      "static bool activate_current_button",
+      "acted = activate_current_button"
+    ]
+  },
+  "network": {
+    "stream/stream_curl.c": [
+      "if (received)",
+      "p->retry_count = 0;",
+      "check_http_reply",
+      "curl_multi_add_handle"
+    ]
+  },
+  "atmos": {
+    "audio/decode/ad_orender.c": [
+      "orender"
+    ],
+    "audio/out/ao_asio.c": [
+      "ASIO"
+    ],
+    "common/orender_dl.c": [
+      "orender"
+    ],
+    "meson.build": [
+      "features += {'orender'",
+      "features += {'asio'"
+    ]
+  }
+}

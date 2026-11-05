@@ -1,0 +1,16 @@
+{
+  "schema": "MPV_042_FFMPEG_FIX_SOURCE_PROOF_V1",
+  "status": "PASS_MINIMAL_SOURCE_PATCH_NOT_RUNTIME_BUILD",
+  "base_repository": "llawsxx/FFmpeg",
+  "base": "18c01ad424ca7712ef9a9d46953308efc75c4776",
+  "upstream_fix": "dc74fe70b28df8ff69f99b693665163bf9a6a16a",
+  "base_demux_sha256": "4d400f0232a2f4f52dbf2c41afdbab05bc6eba6ac05ff37d23d72a6b5c817ad3",
+  "base_version_sha256": "0bef4a11837f9f560943193d79e867a6e48896c495462e37425c9ee2cc5dcaaa",
+  "retained_private_demux_patch_sha256": "39d53b20c9c226a19e8e8971a0d35b65165a1f793112b85ac7fc006e5964dac1",
+  "demux_before_sha256": "4affac3580ae9c8a7291326f25b12627e5801a4d632865b2df620f48932aa6e7",
+  "demux_after_sha256": "0e342a33de59df9af36756b888c45d8d73fa232bb55e85740f7c3f586175e9e9",
+  "backport_sha256": "97d2f4c5cc7774cab510724abd4599614fca3f63ddd033e3a9f1dc3a20c8d9f7",
+  "byte_difference": "one avio_closep call replaced by ff_format_io_close",
+  "version_policy": "retain downstream 62.13.102; do not fabricate upstream safe minor",
+  "runtime_gate": "CI must compile fixed FFmpeg, bind archive and binary hashes, and run custom IO failure/abort test"
+}

@@ -1,0 +1,20 @@
+From: mpv-Yaozhi build adaptation
+Subject: [PATCH] avformat/demux: use custom IO close callback on open failure
+
+Backport the functional hunk of FFmpeg dc74fe70b28df8ff69f99b693665163bf9a6a16a
+(https://github.com/FFmpeg/FFmpeg/commit/dc74fe70b28df8ff69f99b693665163bf9a6a16a).
+Keep the fork ABI version 62.13.102: do not claim a different upstream minor.
+Applied after the existing AV3A/DV patches; no other decoder or demux change.
+
+diff --git a/libavformat/demux.c b/libavformat/demux.c
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -368,7 +368,7 @@ fail:
+     ff_id3v2_free_extra_meta(&id3v2_extra_meta);
+     av_dict_free(&tmp);
+     if (s->pb && !(s->flags & AVFMT_FLAG_CUSTOM_IO))
+-        avio_closep(&s->pb);
++        ff_format_io_close(s, &s->pb);
+     avformat_free_context(s);
+     *ps = NULL;
+     return ret;
