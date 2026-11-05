@@ -1210,7 +1210,7 @@
     },
     {
       "path": "dependencies/source_gate.py",
-      "sha256": "18cd10e448b7202391ec1458b3e7648506e269f4bd16427fdb057fc8a48461a7"
+      "sha256": "3c6355cf4869fac4c444a107867c7266e7f02006518c835ec032571a13771bb7"
     },
     {
       "path": "dependencies/test_custom_io_cleanup.c",
@@ -1836,5 +1836,12 @@
       "path": "verify-source.py",
       "sha256": "3718f40ce24a53239927f0c464302bb9329cb368c46cf47f9b77d2318075e062"
     }
-  ]
+  ],
+  "revision": 2,
+  "supersedes": {
+    "migration_lock_sha256": "6a52b01f124ae0a687dc05019eda111efa78edd7a58b7fe36f46daacfeaf9568",
+    "build_config_commit": "e89c394eb4a9a0ea15180b13436ca9bfa651f510",
+    "failed_ci_run": 41955985406,
+    "reason": "Actual AV3A CMake recipe wraps git apply across lines; parse real whitespace without changing source/patch inputs."
+  }
 }

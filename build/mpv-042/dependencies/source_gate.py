@@ -64,6 +64,17 @@ def set_blob(source, env, relative, raw):
     git(source, 'update-index', '--add', '--cacheinfo', '100644,' + oid + ',' + relative, env=env)
 
 
+def private_patch_inputs(text, name):
+    patch_block = text.split('PATCH_COMMAND', 1)[1].split('CONFIGURE_COMMAND', 1)[0]
+    # CMake permits the executable, arguments and filename on different lines.
+    # Requiring the filename immediately after whitespace also excludes the
+    # separate `git apply --check` command, without consuming the next command.
+    patches = re.findall(r'git\s+apply\s+\$\{CMAKE_CURRENT_SOURCE_DIR\}/([^\s]+)', patch_block)
+    assert patches and len(patches) == len(set(patches)), 'Unexpected retained patch commands: ' + name
+    assert len(patches) == (16 if name == 'ffmpeg' else 5), 'Private patch count drift: ' + name
+    return patch_block, patches
+
+
 def retained_expectation(root, row, out):
     """Replay only the two retained, non-committing private patch inputs.
 
@@ -76,10 +87,7 @@ def retained_expectation(root, row, out):
     source = root / 'src_packages' / name
     recipe = root / row['recipe_path']
     text = recipe.read_text('utf-8-sig')
-    patch_block = text.split('PATCH_COMMAND', 1)[1].split('CONFIGURE_COMMAND', 1)[0]
-    patches = re.findall(r'git apply (?!\-\-check)(?:\s*)\$\{CMAKE_CURRENT_SOURCE_DIR\}/([^\s]+)', patch_block)
-    assert patches and len(patches) == len(set(patches)), 'Unexpected retained patch commands: ' + name
-    assert len(patches) == (16 if name == 'ffmpeg' else 5), 'Private patch count drift: ' + name
+    patch_block, patches = private_patch_inputs(text, name)
     inputs = []
     with tempfile.TemporaryDirectory(prefix='expected-index-', dir=out) as temporary:
         env = index_env(Path(temporary) / 'index')
