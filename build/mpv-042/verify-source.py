@@ -65,6 +65,8 @@ def main():
         text = (source / contract['path']).read_text('utf-8')
         for fragment in contract['required']:
             assert fragment in text, 'Lost private source contract: ' + contract['id'] + ' / ' + fragment
+        for fragment, count in contract.get('exact_counts', {}).items():
+            assert text.count(fragment) == count, 'Source contract count differs: ' + contract['id'] + ' / ' + fragment
         checks.append(contract['id'])
     result = {'status': 'PASS_REVIEWED_042_SOURCE_NOT_RUNTIME', 'variant': a.variant,
               'upstream_commit': lock['upstream_commit'], 'source_tree': row['source_tree'],

@@ -18,5 +18,14 @@
     ],
     "compiler_first_error": "stream/stream_dvdnav.c:522 implicit declaration pci_num_buttons",
     "independent_review_additional_error": "player/orender_overlay.c:375 removed mp_client_set_weak call"
+  },
+  {
+    "id": "r6-duplicate-bluray-playitem",
+    "failed_ci_run": 41992716865,
+    "resolution": "Remove only obsolete duplicate PLAYITEM five-line assignment branch. Retain official 0.42 locked change-sensitive current_playitem/seg_pending/nav_change_id branch byte-for-byte; all private audio/PGS/title/VM handling remains.",
+    "files": [
+      "stream/stream_bluray.c"
+    ],
+    "compiler_first_error": "stream/stream_bluray.c:998 duplicate case; first case at960"
   }
 ]

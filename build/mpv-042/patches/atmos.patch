@@ -6839,7 +6839,7 @@ index ed40d06a4cdccf9d90c810ebaa79ae09792fd867..875165e6cc7eaaa06ed19ee17dbf1246
      unsigned int palette[16];
  };
 diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
-index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49b8f5b678 100644
+index e4454999d38c57b10a093476476c9cd865938592..3f1bfdfddf4549fdae27770d2b582f3094030c77 100644
 --- a/stream/stream_bluray.c
 +++ b/stream/stream_bluray.c
 @@ -22,8 +22,9 @@
@@ -7164,19 +7164,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
      bool hopped = false;
      while (!mp_cancel_test(s->cancel)) {
          BD_EVENT ev;
-@@ -792,6 +995,11 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
-             mp_mutex_unlock(&b->overlay_lock);
-             break;
-         }
-+        case BD_EVENT_PLAYITEM:
-+            mp_mutex_lock(&b->overlay_lock);
-+            b->current_playitem = ev.param;
-+            mp_mutex_unlock(&b->overlay_lock);
-+            break;
-         case BD_EVENT_AUDIO_STREAM:
-             mp_mutex_lock(&b->overlay_lock);
-             b->audio_stream_num = ev.param;
-@@ -841,8 +1049,8 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+@@ -841,8 +1044,8 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
  
          if (n > 0) {
              // A jump event popped by this read can mean the data already
@@ -7187,7 +7175,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
              uint64_t pos = bd_tell(b->bd);
              if (b->read_pos_known && pos - n != b->next_read_pos) {
                  MP_VERBOSE(s, "read not contiguous (expected %"PRIu64", "
-@@ -854,6 +1062,12 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+@@ -854,6 +1057,12 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
                      b->discontinuity_id++;
                  mp_mutex_unlock(&b->overlay_lock);
                  hopped = true;
@@ -7200,7 +7188,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
                  continue;
              }
              if (!b->read_pos_known)
-@@ -928,7 +1142,7 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+@@ -928,7 +1137,7 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
                  return 0;
              // Retry for a while before concluding that playback ended. The
              // first retry is immediate: a just-resumed VM progresses at once.
@@ -7209,7 +7197,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
                  MP_VERBOSE(s, "Navigation stopped, EOF.\n");
                  return 0;
              }
-@@ -947,6 +1161,36 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -947,6 +1156,36 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
      struct bluray_priv_s *b = s->priv;
  
      switch (cmd) {
@@ -7246,7 +7234,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
      case STREAM_CTRL_GET_NUM_CHAPTERS: {
          mp_mutex_lock(&b->overlay_lock);
          const BLURAY_TITLE_INFO *ti = b->title_info;
-@@ -1080,6 +1324,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -1080,6 +1319,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
      case STREAM_CTRL_SEEK_TO_TIME: {
          struct stream_seek_req *req = arg;
          req->skip_until = MP_NOPTS_VALUE;
@@ -7254,7 +7242,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
          bd_seek_time(b->bd, BD_TIME_FROM_S(req->target));
          stream_drop_buffers(s);
          b->read_pos_known = false;
-@@ -1147,6 +1392,35 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -1147,6 +1387,35 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
          bd_free_title_info(ti);
          return STREAM_OK;
      }
@@ -7290,7 +7278,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
      case STREAM_CTRL_GET_STREAMS: {
          struct stream_streams_req *req = arg;
          req->streams = NULL;
-@@ -1219,9 +1493,21 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -1219,9 +1488,21 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
          case STREAM_NAV_MENU_ROOT:
          case STREAM_NAV_MENU_TITLE:
              // BD doesn't distinguish "title menu", both map to disc root.
@@ -7312,7 +7300,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
              key = BD_VK_POPUP;
              break;
          case STREAM_NAV_KEY_RED:
-@@ -1245,6 +1531,9 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -1245,6 +1526,9 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
              // No dedicated "previous menu" key; popup-toggle is the closest
              // equivalent and behaves like "dismiss current menu" on most
              // discs when already in popup.
@@ -7322,7 +7310,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
              key = BD_VK_POPUP;
              break;
          case STREAM_NAV_MOUSE_MOVE:
-@@ -1269,6 +1558,21 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -1269,6 +1553,21 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
      }
      case STREAM_CTRL_GET_NAV_STATE: {
          struct stream_nav_state *st = arg;
@@ -7344,7 +7332,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
          int audio_pid = -1;
          int sub_pid = -1;
          bool no_audio = false;
-@@ -1297,12 +1601,14 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+@@ -1297,12 +1596,14 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
              .sub_visible = b->sub_visible,
              .angle = b->current_angle + 1,
              .num_angles = ti ? ti->angle_count : 0,
@@ -7359,7 +7347,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
              st->menu_active = b->ig.visible || b->pg.visible;
              st->still_active = b->still_active;
              st->src_w = MPMAX(b->ig.disp_w, b->pg.disp_w);
-@@ -1524,16 +1830,43 @@ static int bluray_stream_open_internal(stream_t *s)
+@@ -1524,16 +1825,43 @@ static int bluray_stream_open_internal(stream_t *s)
  #endif
      }
  
@@ -7412,7 +7400,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
          ret = STREAM_UNSUPPORTED;
          goto err;
      }
-@@ -1615,6 +1948,7 @@ static int bluray_stream_open_internal(stream_t *s)
+@@ -1615,6 +1943,7 @@ static int bluray_stream_open_internal(stream_t *s)
          b->cfg_title = BLURAY_MENU_TITLE;
  
      b->hdmv_mode = b->cfg_title == BLURAY_MENU_TITLE;

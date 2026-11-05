@@ -6,14 +6,14 @@
   "source_commit_date": "2026-11-05T00:56:42Z",
   "variants": {
     "main": {
-      "source_tree": "a390d6f21c21b3ba832c0550f33d445d2387e222",
+      "source_tree": "f1633e85477c8c7e4239af66d68eaab1cfddc3da",
       "patch": "patches/main.patch",
-      "patch_sha256": "2f11d4fc5dc98be59929e7fca738d14dcdfbecc72635219a2f04833c5871d083"
+      "patch_sha256": "692a8b6453eb5ee6bb97783891d87e105773e1524db5116c5c0e16e8ec153070"
     },
     "atmos": {
-      "source_tree": "c40dc7117acbe93f13aef7af95b4cb157332e519",
+      "source_tree": "9543daf97cce43cae2103e468b26078b63612877",
       "patch": "patches/atmos.patch",
-      "patch_sha256": "df3f212ad36af8d5770a24fa6b345c6050bddd83830645b7ba86e308b41d29d0"
+      "patch_sha256": "4bc66bb57007905a364ce41870591cc8a19ca15af4f543fd97770d33c80f5a0d"
     }
   },
   "historical_package_patches": {
@@ -1081,7 +1081,10 @@
         "jump_head",
         "mp_bluray_audio_sample_rate",
         "bd_overlay_tall_sliver"
-      ]
+      ],
+      "exact_counts": {
+        "case BD_EVENT_PLAYITEM:": 1
+      }
     },
     {
       "id": "disc-dovi:demux/demux_disc.c",
@@ -1202,7 +1205,7 @@
     },
     {
       "path": "cpu/port-ready.json",
-      "sha256": "4fa6d2ccd4eb276fb53844ac4695725ce85a41702595c626c75fd14034b73416"
+      "sha256": "4d98dd95b4e1ea667bc36c59c5afbc0a161466b70b63772b9dc7720f184dd284"
     },
     {
       "path": "cpu/run_cpu_contracts.py",
@@ -1818,7 +1821,7 @@
     },
     {
       "path": "migration-evidence/port-ready.json",
-      "sha256": "4fa6d2ccd4eb276fb53844ac4695725ce85a41702595c626c75fd14034b73416"
+      "sha256": "4d98dd95b4e1ea667bc36c59c5afbc0a161466b70b63772b9dc7720f184dd284"
     },
     {
       "path": "migration-evidence/port-replay.json",
@@ -1842,11 +1845,11 @@
     },
     {
       "path": "patches/atmos.patch",
-      "sha256": "df3f212ad36af8d5770a24fa6b345c6050bddd83830645b7ba86e308b41d29d0"
+      "sha256": "4bc66bb57007905a364ce41870591cc8a19ca15af4f543fd97770d33c80f5a0d"
     },
     {
       "path": "patches/main.patch",
-      "sha256": "2f11d4fc5dc98be59929e7fca738d14dcdfbecc72635219a2f04833c5871d083"
+      "sha256": "692a8b6453eb5ee6bb97783891d87e105773e1524db5116c5c0e16e8ec153070"
     },
     {
       "path": "prepare-winbuild.py",
@@ -1862,18 +1865,18 @@
     },
     {
       "path": "verify-source.py",
-      "sha256": "3718f40ce24a53239927f0c464302bb9329cb368c46cf47f9b77d2318075e062"
+      "sha256": "9f677108e666fcff5fa415ac6d8c7756c7286ea499f313966db355d212c46bf0"
     },
     {
       "path": "migration-evidence/post-build-corrections.json",
-      "sha256": "1ffe477845ed00314658399233f485a503531ce247a6be5fba35462efc27878b"
+      "sha256": "434b3a0ec0db9a698154ab6a0693f3ebf6db873c53a598162d9b99fbac3876c8"
     }
   ],
-  "revision": 5,
+  "revision": 6,
   "supersedes": {
-    "migration_lock_sha256": "e2a1a6ef7d5a0dbf8983982f7a90c8d2a3c19dfbef78c8798bb75380a7a3388c",
-    "build_config_commit": "332b5ca322010615f1f813e5dc784a9a15ed6ad9",
-    "failed_ci_run": 41981755005,
-    "reason": "Replace removed DVD helper call with the same bounded expression while retaining upstream PCI sanitize; create Atmos overlay using the new atomic mp_new_weak_client API. No menu/overlay function disabled."
+    "migration_lock_sha256": "b084bdce704cb101245ef09ebf8eb3e6a6ac262b25d78857f3c41e1366a4a85c",
+    "build_config_commit": "8e0c2d439395059f153569a2ede6bbd7eb4646f7",
+    "failed_ci_run": 41992716865,
+    "reason": "Remove only obsolete duplicate PLAYITEM five-line assignment branch. Retain official 0.42 locked change-sensitive current_playitem/seg_pending/nav_change_id branch byte-for-byte; all private audio/PGS/title/VM handling remains."
   }
 }

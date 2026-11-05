@@ -11,11 +11,11 @@
   "variants": {
     "main": {
       "branch": "main-042",
-      "commit": "c8b956319924056e3e9be364de28262e270049e3",
-      "source_tree": "a390d6f21c21b3ba832c0550f33d445d2387e222",
-      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\upstream-apis-r5\\main.patch",
-      "patch_sha256": "2f11d4fc5dc98be59929e7fca738d14dcdfbecc72635219a2f04833c5871d083",
-      "patch_bytes": 707247,
+      "commit": "bdc4f0553ff5d4cfb1cb2cb834c8ec8edc82c252",
+      "source_tree": "f1633e85477c8c7e4239af66d68eaab1cfddc3da",
+      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\playitem-r6\\main.patch",
+      "patch_sha256": "692a8b6453eb5ee6bb97783891d87e105773e1524db5116c5c0e16e8ec153070",
+      "patch_bytes": 706757,
       "changed_files": [
         "DOCS/interface-changes.rst",
         "DOCS/man/input.rst",
@@ -98,11 +98,11 @@
     },
     "atmos": {
       "branch": "atmos-042",
-      "commit": "71b291677d4aee578fb05a6156b876590d5c35ae",
-      "source_tree": "c40dc7117acbe93f13aef7af95b4cb157332e519",
-      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\upstream-apis-r5\\atmos.patch",
-      "patch_sha256": "df3f212ad36af8d5770a24fa6b345c6050bddd83830645b7ba86e308b41d29d0",
-      "patch_bytes": 857732,
+      "commit": "235fb2efda2545a7b721949620cd7cd0f3536296",
+      "source_tree": "9543daf97cce43cae2103e468b26078b63612877",
+      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\playitem-r6\\atmos.patch",
+      "patch_sha256": "4bc66bb57007905a364ce41870591cc8a19ca15af4f543fd97770d33c80f5a0d",
+      "patch_bytes": 857242,
       "changed_files": [
         "Copyright",
         "DOCS/interface-changes.rst",
@@ -235,6 +235,15 @@
       ],
       "compiler_first_error": "stream/stream_dvdnav.c:522 implicit declaration pci_num_buttons",
       "independent_review_additional_error": "player/orender_overlay.c:375 removed mp_client_set_weak call"
+    },
+    {
+      "id": "r6-duplicate-bluray-playitem",
+      "failed_ci_run": 41992716865,
+      "resolution": "Remove only obsolete duplicate PLAYITEM five-line assignment branch. Retain official 0.42 locked change-sensitive current_playitem/seg_pending/nav_change_id branch byte-for-byte; all private audio/PGS/title/VM handling remains.",
+      "files": [
+        "stream/stream_bluray.c"
+      ],
+      "compiler_first_error": "stream/stream_bluray.c:998 duplicate case; first case at960"
     }
   ]
 }
