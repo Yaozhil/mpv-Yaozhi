@@ -7,6 +7,8 @@ import json
 import os
 import subprocess
 import importlib.util
+import shlex
+import shutil
 
 HERE = Path(__file__).resolve().parent
 _source_spec = importlib.util.spec_from_file_location('source_gate', HERE / 'source_gate.py')
@@ -30,6 +32,49 @@ def run(cmd, cwd=None):
                        stderr=subprocess.PIPE, timeout=120)
     assert r.returncode == 0, r.stderr.decode('utf-8', 'replace')[-5000:]
     return r.stdout
+
+
+
+def bind_demux_dependency(raw, build, obj, demux):
+    """Bind GCC's unique primary Make rule to the actual source and object."""
+    text = raw.decode('utf-8', 'strict').replace('\\\r\n', ' ').replace('\\\n', ' ')
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    assert len(lines) == 1 and lines[0].count(':') == 1, 'Expected one primary GCC dependency rule'
+    assert not any(char in lines[0] for char in ('$', '#', ';', '|')), 'Unsupported Make dependency syntax'
+    target, prerequisites = lines[0].split(':', 1)
+    targets, inputs = shlex.split(target), shlex.split(prerequisites)
+    assert len(targets) == 1 and inputs, 'Missing unique dependency target or primary source'
+    actual_target = (build / targets[0]).resolve(strict=True)
+    actual_source = (build / inputs[0]).resolve(strict=True)
+    assert actual_target == obj.resolve(strict=True), 'Dependency rule targets another object'
+    assert actual_source == demux.resolve(strict=True), 'Dependency rule compiles another primary source'
+    link = build / 'src'
+    assert link.is_symlink() and link.resolve(strict=True) == demux.parent.parent.resolve(strict=True), 'FFmpeg build/src selects another source tree'
+    return {'target': targets[0], 'primary_source': inputs[0],
+            'resolved_target': str(actual_target), 'resolved_primary_source': str(actual_source),
+            'build_source_link': str(link), 'build_source_link_target': str(link.resolve(strict=True))}
+
+
+def bind_avformat_link(decoded, build, archive):
+    """Require a unique final link and an exact archive argument, not a substring."""
+    assert isinstance(decoded, list) and all(isinstance(row, dict) for row in decoded)
+    links = [row for row in decoded if row.get('output') == 'mpv.exe']
+    assert len(links) == 1, 'Expected one expanded mpv.exe link edge'
+    entry = links[0]
+    assert Path(entry['directory']).resolve(strict=True) == build.resolve(strict=True), 'Link uses another build directory'
+    command = entry['command']
+    assert isinstance(command, str) and '\n' not in command and '\r' not in command
+    arguments = shlex.split(command)
+    assert arguments and not any(value.startswith('@') for value in arguments), 'Unexpanded link response file'
+    assert arguments.count('-o') == 1 and arguments.index('-o') + 1 < len(arguments)
+    assert arguments[arguments.index('-o') + 1] == 'mpv.exe', 'Link does not produce mpv.exe'
+    # Only complete path arguments can select the bound archive. Compiler flags,
+    # archive-name substrings and archives belonging to another prefix reject.
+    archives = [value for value in arguments[1:] if not value.startswith('-') and
+                (Path(value).is_absolute() or value.endswith('.a')) and
+                (build / value).resolve() == archive.resolve(strict=True)]
+    assert len(archives) == 1, 'mpv link did not select exactly the bound FFmpeg archive'
+    return links
 
 
 def main():
@@ -66,22 +111,30 @@ def main():
     assert obj.is_file() and dep.is_file(), 'compiled demux object/dependency list missing'
     started = datetime.datetime.fromisoformat(configured['created_utc']).timestamp()
     assert obj.stat().st_mtime >= started - 2, 'stale cached demux object predates this configured gate'
-    deptext = dep.read_text('utf-8', errors='replace')
-    assert str(demux) in deptext or '../../../../../src_packages/ffmpeg/libavformat/demux.c' in deptext or 'src_packages/ffmpeg/libavformat/demux.c' in deptext
+    # Preserve the real compiler inputs and final graph before any path/link
+    # assertion. Failed builds retain these bytes in the provenance artifact.
+    captured = root / 'mpv-042-evidence' / a.variant / 'compiled-binding-inputs'
+    captured.mkdir(parents=True, exist_ok=False)
+    shutil.copyfile(dep, captured / 'demux.d')
+    shutil.copyfile(build / 'ffbuild/config.mak', captured / 'ffmpeg-config.mak')
+    source_link = build / 'src'
+    (captured / 'ffmpeg-source-link.json').write_text(json.dumps({
+        'path': str(source_link), 'is_symlink': source_link.is_symlink(),
+        'raw_target': os.readlink(source_link) if source_link.is_symlink() else None,
+        'resolved': str(source_link.resolve()), 'expected': str(ffmpeg.resolve())}, indent=2) + '\n')
+    mpv_build = root / 'build64/packages/mpv-prefix/src/mpv-build'
+    shutil.copyfile(mpv_build / 'build.ninja', captured / 'mpv-build.ninja')
+    commands = run(['ninja', '-C', mpv_build, '-t', 'compdb', '-x'])
+    (captured / 'mpv-expanded-compdb.json').write_bytes(commands)
+    (captured / 'mpv-link-query.txt').write_bytes(run(['ninja', '-C', mpv_build, '-t', 'query', 'mpv.exe']))
+    (captured / 'mpv-build-commands.txt').write_bytes(run(['ninja', '-C', mpv_build, '-t', 'commands', 'mpv.exe']))
+    dependency_binding = bind_demux_dependency(dep.read_bytes(), build, obj, demux)
     prefix = root / 'build64/install/x86_64-w64-mingw32'
     archive = prefix / 'lib/libavformat.a'
     ar = root / 'build64/install/bin/x86_64-w64-mingw32-ar'
     member = run([ar, 'p', archive, 'demux.o'])
     assert sha(member) == sha(obj.read_bytes()), 'installed FFmpeg archive does not contain this compiled demux object'
-    mpv_build = root / 'build64/packages/mpv-prefix/src/mpv-build'
-    commands = run(['ninja', '-C', mpv_build, '-t', 'compdb', '-x'])
-    (evidence / 'mpv-expanded-compdb.json').write_bytes(commands)
-    decoded = json.loads(commands)
-    links = [r for r in decoded if r.get('output') == 'mpv.exe' or (r.get('file') == 'mpv.exe' and 'libavformat.a' in r.get('command', ''))]
-    # Ninja compdb may include all rules; the final executable rule has -o mpv.exe.
-    if not links:
-        links = [r for r in decoded if 'libavformat.a' in r.get('command', '') and ('-o mpv.exe' in r['command'] or '-o "mpv.exe"' in r['command'])]
-    assert links and any(str(archive) in x.get('command', '') for x in links), 'mpv link did not select the bound FFmpeg archive'
+    links = bind_avformat_link(json.loads(commands), mpv_build, archive)
     binaries = [file_record(x.resolve()) for x in a.binary]
     assert all(x['size'] > 10000 for x in binaries), 'not a real candidate executable'
     result = {'schema': 'MPV_042_COMPILED_DEPENDENCY_BINDING_V1', 'variant': a.variant,
@@ -90,7 +143,9 @@ def main():
               'actual_sources': source_bindings,
               'ffmpeg_base': BASE, 'ffmpeg_demux': file_record(demux), 'demux_object': file_record(obj),
               'installed_avformat_archive': file_record(archive), 'archive_member_sha256': sha(member),
-              'demux_dependency_list': file_record(dep), 'expanded_compdb_sha256': sha(commands),
+              'demux_dependency_list': file_record(dep), 'demux_dependency_binding': dependency_binding,
+              'captured_compiler_inputs': [file_record(p) for p in sorted(captured.iterdir())],
+              'expanded_compdb_sha256': sha(commands),
               'mpv_link_records': links, 'binaries': binaries,
               'github_run_id': os.environ.get('GITHUB_RUN_ID'), 'github_run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
               'runtime_gate': 'Run custom_io_cleanup.exe (5 callbacks) and isolated mpv HLS failure/abort regression.'}

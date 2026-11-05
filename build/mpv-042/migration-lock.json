@@ -1217,7 +1217,7 @@
     },
     {
       "path": "dependencies/bind_compiled_dependencies.py",
-      "sha256": "dd56d18c877fcf0d2ecf5fb4231a57950db0e052f8adac53fae68ccd432c79c8"
+      "sha256": "f0cc69a82352581d120444a5d93284d05761b966048c035f6108c1208f5a97f6"
     },
     {
       "path": "dependencies/build_custom_io_probe.sh",
@@ -1869,14 +1869,14 @@
     },
     {
       "path": "migration-evidence/post-build-corrections.json",
-      "sha256": "8e0b169b696302b8173017c88ddc01568dcf0d4af40150efeb5b1cfae8d1f595"
+      "sha256": "201ef73512741f243cce3b3c5fe00b787af6199764b06ababa2a084004d972c7"
     }
   ],
-  "revision": 7,
+  "revision": 8,
   "supersedes": {
-    "migration_lock_sha256": "92266c0c4ac4bed34e9d6059b53316c1aaaff1766c03a3286ab6c371bc1dbd41",
-    "build_config_commit": "b172a13c58a9b1fa28968623fc550956685ab390",
-    "failed_ci_run": 42006947909,
-    "reason": "C compilation/link and exact mpv source binding passed. For compiled RENDER inputs only, generic git status ignores submodules before the unchanged dedicated render gate validates exact source bytes, external targets, Gitlinks, archive and link. Pass both mpv.exe/mpv.com to that gate as already required. No mpv/dependency source or acceptance predicate changed. Freeze the render/all-recipe inventory for the first time only after the reviewed 0.42 overlays; do not rewrite any earlier run receipt or relax final inventory SHA checks."
+    "migration_lock_sha256": "6a9254934ff5b71320bee7dc8903bfac470a2e76445d47eacd5464165017e884",
+    "build_config_commit": "7d2cd1767e3cb4e25292bd3dbcfc43770a41781d",
+    "failed_ci_run": 42021887290,
+    "reason": "Resolve the unique primary GCC Make rule relative to the actual build directory, require its exact object/source and the build/src symlink target; preserve raw dependency/configuration/Ninja evidence. Bind the unique expanded mpv link to an exact libavformat archive token. Retain source SHA, object freshness, archive member equality and runtime gates. No mpv or dependency source changed."
   }
 }

@@ -39,5 +39,16 @@
     ],
     "first_failure": "git status: expected submodule path 3rdparty/fast_float not to be a symbolic link",
     "additional_preempted_failure": "Final rendering gate requires both PE binaries; workflow previously supplied only mpv.exe; previous order captured 69 selected pre-overlay recipe hashes before adapting them, so unchanged render final would reject"
+  },
+  {
+    "id": "r8-ffmpeg-build-src-dependency-resolution",
+    "failed_ci_run": 42021887290,
+    "first_failure": "Compiled demux.d path substring assertion, both variants after successful compilation and source binding.",
+    "resolution": "Resolve the unique primary GCC Make rule relative to the actual build directory, require its exact object/source and the build/src symlink target; preserve raw dependency/configuration/Ninja evidence. Bind the unique expanded mpv link to an exact libavformat archive token. Retain source SHA, object freshness, archive member equality and runtime gates. No mpv or dependency source changed.",
+    "evidence": "r6 actual compiler logs in root/r8-binding-review/r6-compile-evidence.json show -MF libavformat/demux.d -MT libavformat/demux.o ... src/libavformat/demux.c",
+    "type": "compiled-provenance-path-integration-only",
+    "files": [
+      "dependencies/bind_compiled_dependencies.py"
+    ]
   }
 ]
