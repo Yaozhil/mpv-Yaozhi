@@ -1,9 +1,22 @@
-{
-  "id": "r4-private-still-image-api",
-  "failed_ci_run": 41957279903,
-  "resolution": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled.",
-  "files": [
-    "demux/demux.c",
-    "demux/demux.h"
-  ]
-}
+[
+  {
+    "id": "r4-private-still-image-api",
+    "failed_ci_run": 41957279903,
+    "resolution": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled.",
+    "files": [
+      "demux/demux.c",
+      "demux/demux.h"
+    ]
+  },
+  {
+    "id": "r5-removed-upstream-apis",
+    "failed_ci_run": 41981755005,
+    "resolution": "Replace removed DVD helper call with the same bounded expression while retaining upstream PCI sanitize; create Atmos overlay using the new atomic mp_new_weak_client API. No menu/overlay function disabled.",
+    "files": [
+      "stream/stream_dvdnav.c",
+      "player/orender_overlay.c"
+    ],
+    "compiler_first_error": "stream/stream_dvdnav.c:522 implicit declaration pci_num_buttons",
+    "independent_review_additional_error": "player/orender_overlay.c:375 removed mp_client_set_weak call"
+  }
+]

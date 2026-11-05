@@ -70,7 +70,9 @@
     "stream/stream_dvdnav.c": [
       "is_link_rsm_command",
       "static bool activate_current_button",
-      "acted = activate_current_button"
+      "acted = activate_current_button",
+      "int num_buttons = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));",
+      "pci->hli.hl_gi.btn_ns = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));"
     ],
     "demux/demux.c": [
       "void demux_set_stream_still_image(",

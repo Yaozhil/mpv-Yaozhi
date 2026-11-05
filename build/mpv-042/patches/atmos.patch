@@ -6136,10 +6136,10 @@ index 2fbb19d602ad57192bdfb8dca1ac7b8382108ca2..36b52b1af1b0560d39227ee7dcd5a8b4
  
 diff --git a/player/orender_overlay.c b/player/orender_overlay.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b22742e318b3221e76cfcaaaf7e73001e36f4460
+index 0000000000000000000000000000000000000000..3c8f8c5e9188a72e948b494095ccf6315c0ee784
 --- /dev/null
 +++ b/player/orender_overlay.c
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,399 @@
 +/*
 + * Built-in client that drives liborender's spatial object overlay.
 + *
@@ -6509,12 +6509,11 @@ index 0000000000000000000000000000000000000000..b22742e318b3221e76cfcaaaf7e73001
 +
 +    /* Created before the thread so a destroyed MPContext can't race the
 +     * client creation (same pattern as scripting.c). */
-+    mpv_handle *client = mp_new_client(mpctx->clients, "omniphony_overlay");
++    mpv_handle *client = mp_new_weak_client(mpctx->clients, "omniphony_overlay");
 +    if (!client) {
 +        MP_ERR(mpctx, "orender overlay: failed to create client\n");
 +        return;
 +    }
-+    mp_client_set_weak(client);
 +
 +    struct overlay_ctx *ctx = talloc_zero(NULL, struct overlay_ctx);
 +    ctx->log = mp_client_get_log(client);
@@ -7422,7 +7421,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
      // BD-J menus require a usable Java VM and libbluray's BD-J jar.
      if (b->hdmv_mode && info->bdj_detected && !info->bdj_handled) {
 diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
-index 19f724f9a47a48e8c6817b9a63a50190969abb58..5ea70238ebe8733de494da46f3fbf73c2eb3ab9b 100644
+index 19f724f9a47a48e8c6817b9a63a50190969abb58..6402fc602a617b55442033d54836deda17833689 100644
 --- a/stream/stream_dvdnav.c
 +++ b/stream/stream_dvdnav.c
 @@ -502,6 +502,80 @@ static void release_still(struct priv *priv)
@@ -7446,7 +7445,7 @@ index 19f724f9a47a48e8c6817b9a63a50190969abb58..5ea70238ebe8733de494da46f3fbf73c
 +{
 +    int32_t btn = 0;
 +    dvdnav_get_current_highlight(priv->dvdnav, &btn);
-+    int num_buttons = pci_num_buttons(pci);
++    int num_buttons = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));
 +    MP_VERBOSE(priv,
 +               "select button: vm=%d cached=%d buttons=%d hli=%d "
 +               "default=%d force-select=%d force-activate=%d "

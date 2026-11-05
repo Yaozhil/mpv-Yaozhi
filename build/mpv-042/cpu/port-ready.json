@@ -11,11 +11,11 @@
   "variants": {
     "main": {
       "branch": "main-042",
-      "commit": "17dda92e1ea3e4e18fea83590e2d5ab81dcc82e0",
-      "source_tree": "9970a1cf7cd00a9b67b54b2853ee6a973a2b4e15",
-      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\disc-api-r4\\main.patch",
-      "patch_sha256": "52943baeeb82ea9b4dfa54de8366c6ba71fd023e3b6d063618fae00e135ffc92",
-      "patch_bytes": 707208,
+      "commit": "c8b956319924056e3e9be364de28262e270049e3",
+      "source_tree": "a390d6f21c21b3ba832c0550f33d445d2387e222",
+      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\upstream-apis-r5\\main.patch",
+      "patch_sha256": "2f11d4fc5dc98be59929e7fca738d14dcdfbecc72635219a2f04833c5871d083",
+      "patch_bytes": 707247,
       "changed_files": [
         "DOCS/interface-changes.rst",
         "DOCS/man/input.rst",
@@ -98,11 +98,11 @@
     },
     "atmos": {
       "branch": "atmos-042",
-      "commit": "e9813d2f5cbaa76f4d5c45efc5f4032dff1d9f03",
-      "source_tree": "abf7315eee967313fc9c4995bc62e82dcec47a1f",
-      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\disc-api-r4\\atmos.patch",
-      "patch_sha256": "6d2a5e26e4f0a79821ce805a9969a425273694430bf771bb143d7772ec0ce6ae",
-      "patch_bytes": 857721,
+      "commit": "71b291677d4aee578fb05a6156b876590d5c35ae",
+      "source_tree": "c40dc7117acbe93f13aef7af95b4cb157332e519",
+      "patch_path": "G:\\mpv_config\\.codex-build\\mpv-042-adaptation-20261105\\root\\upstream-apis-r5\\atmos.patch",
+      "patch_sha256": "df3f212ad36af8d5770a24fa6b345c6050bddd83830645b7ba86e308b41d29d0",
+      "patch_bytes": 857732,
       "changed_files": [
         "Copyright",
         "DOCS/interface-changes.rst",
@@ -224,6 +224,17 @@
         "demux/demux.c",
         "demux/demux.h"
       ]
+    },
+    {
+      "id": "r5-removed-upstream-apis",
+      "failed_ci_run": 41981755005,
+      "resolution": "Replace removed DVD helper call with the same bounded expression while retaining upstream PCI sanitize; create Atmos overlay using the new atomic mp_new_weak_client API. No menu/overlay function disabled.",
+      "files": [
+        "stream/stream_dvdnav.c",
+        "player/orender_overlay.c"
+      ],
+      "compiler_first_error": "stream/stream_dvdnav.c:522 implicit declaration pci_num_buttons",
+      "independent_review_additional_error": "player/orender_overlay.c:375 removed mp_client_set_weak call"
     }
   ]
 }

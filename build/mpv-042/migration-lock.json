@@ -6,14 +6,14 @@
   "source_commit_date": "2026-11-05T00:56:42Z",
   "variants": {
     "main": {
-      "source_tree": "9970a1cf7cd00a9b67b54b2853ee6a973a2b4e15",
+      "source_tree": "a390d6f21c21b3ba832c0550f33d445d2387e222",
       "patch": "patches/main.patch",
-      "patch_sha256": "52943baeeb82ea9b4dfa54de8366c6ba71fd023e3b6d063618fae00e135ffc92"
+      "patch_sha256": "2f11d4fc5dc98be59929e7fca738d14dcdfbecc72635219a2f04833c5871d083"
     },
     "atmos": {
-      "source_tree": "abf7315eee967313fc9c4995bc62e82dcec47a1f",
+      "source_tree": "c40dc7117acbe93f13aef7af95b4cb157332e519",
       "patch": "patches/atmos.patch",
-      "patch_sha256": "6d2a5e26e4f0a79821ce805a9969a425273694430bf771bb143d7772ec0ce6ae"
+      "patch_sha256": "df3f212ad36af8d5770a24fa6b345c6050bddd83830645b7ba86e308b41d29d0"
     }
   },
   "historical_package_patches": {
@@ -1099,7 +1099,9 @@
       "required": [
         "is_link_rsm_command",
         "static bool activate_current_button",
-        "acted = activate_current_button"
+        "acted = activate_current_button",
+        "int num_buttons = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));",
+        "pci->hli.hl_gi.btn_ns = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));"
       ]
     },
     {
@@ -1167,6 +1169,17 @@
       "required": [
         "void demux_set_stream_still_image("
       ]
+    },
+    {
+      "id": "atmos-overlay:player/orender_overlay.c",
+      "path": "player/orender_overlay.c",
+      "variants": [
+        "atmos"
+      ],
+      "required": [
+        "mp_new_weak_client(mpctx->clients, \"omniphony_overlay\")",
+        "mpv_destroy(client);"
+      ]
     }
   ],
   "policy": "Preserve custom features; enable only verified playback and image-quality improvements. No new renderer defaults.",
@@ -1189,7 +1202,7 @@
     },
     {
       "path": "cpu/port-ready.json",
-      "sha256": "8b77980e7c2af1995408774dc1a16c0c2840876ff148369c50e2758795112425"
+      "sha256": "4fa6d2ccd4eb276fb53844ac4695725ce85a41702595c626c75fd14034b73416"
     },
     {
       "path": "cpu/run_cpu_contracts.py",
@@ -1805,7 +1818,7 @@
     },
     {
       "path": "migration-evidence/port-ready.json",
-      "sha256": "8b77980e7c2af1995408774dc1a16c0c2840876ff148369c50e2758795112425"
+      "sha256": "4fa6d2ccd4eb276fb53844ac4695725ce85a41702595c626c75fd14034b73416"
     },
     {
       "path": "migration-evidence/port-replay.json",
@@ -1821,7 +1834,7 @@
     },
     {
       "path": "migration-evidence/source-contracts.json",
-      "sha256": "8a3dc152526d6b0ea97ac900977c24ae81915e4f6c43ceb3fa96c677035df8fa"
+      "sha256": "9aba973653aad96bbbb14987d3a1651dd5741d60eeaa774cbea67020473fceb9"
     },
     {
       "path": "package.py",
@@ -1829,11 +1842,11 @@
     },
     {
       "path": "patches/atmos.patch",
-      "sha256": "6d2a5e26e4f0a79821ce805a9969a425273694430bf771bb143d7772ec0ce6ae"
+      "sha256": "df3f212ad36af8d5770a24fa6b345c6050bddd83830645b7ba86e308b41d29d0"
     },
     {
       "path": "patches/main.patch",
-      "sha256": "52943baeeb82ea9b4dfa54de8366c6ba71fd023e3b6d063618fae00e135ffc92"
+      "sha256": "2f11d4fc5dc98be59929e7fca738d14dcdfbecc72635219a2f04833c5871d083"
     },
     {
       "path": "prepare-winbuild.py",
@@ -1853,14 +1866,14 @@
     },
     {
       "path": "migration-evidence/post-build-corrections.json",
-      "sha256": "4e92ba956847cb0ceb1eae3e2dcc10735181ce680e274df382535d0ac9a7db76"
+      "sha256": "1ffe477845ed00314658399233f485a503531ce247a6be5fba35462efc27878b"
     }
   ],
-  "revision": 4,
+  "revision": 5,
   "supersedes": {
-    "migration_lock_sha256": "b19901ec7474c45ae7dd2567c54a82e650f6bbd0226711b94de8fac41c00a24f",
-    "build_config_commit": "9f33f064a838081404db98afb365c9d2b4c1e3c7",
-    "failed_ci_run": 41957279903,
-    "reason": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled."
+    "migration_lock_sha256": "e2a1a6ef7d5a0dbf8983982f7a90c8d2a3c19dfbef78c8798bb75380a7a3388c",
+    "build_config_commit": "332b5ca322010615f1f813e5dc784a9a15ed6ad9",
+    "failed_ci_run": 41981755005,
+    "reason": "Replace removed DVD helper call with the same bounded expression while retaining upstream PCI sanitize; create Atmos overlay using the new atomic mp_new_weak_client API. No menu/overlay function disabled."
   }
 }

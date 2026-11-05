@@ -3843,7 +3843,7 @@ index e4454999d38c57b10a093476476c9cd865938592..7759b6d7d1abd64756b51ce2e46d1f49
      // BD-J menus require a usable Java VM and libbluray's BD-J jar.
      if (b->hdmv_mode && info->bdj_detected && !info->bdj_handled) {
 diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
-index 19f724f9a47a48e8c6817b9a63a50190969abb58..5ea70238ebe8733de494da46f3fbf73c2eb3ab9b 100644
+index 19f724f9a47a48e8c6817b9a63a50190969abb58..6402fc602a617b55442033d54836deda17833689 100644
 --- a/stream/stream_dvdnav.c
 +++ b/stream/stream_dvdnav.c
 @@ -502,6 +502,80 @@ static void release_still(struct priv *priv)
@@ -3867,7 +3867,7 @@ index 19f724f9a47a48e8c6817b9a63a50190969abb58..5ea70238ebe8733de494da46f3fbf73c
 +{
 +    int32_t btn = 0;
 +    dvdnav_get_current_highlight(priv->dvdnav, &btn);
-+    int num_buttons = pci_num_buttons(pci);
++    int num_buttons = MPMIN(pci->hli.hl_gi.btn_ns, MP_ARRAY_SIZE(pci->hli.btnit));
 +    MP_VERBOSE(priv,
 +               "select button: vm=%d cached=%d buttons=%d hli=%d "
 +               "default=%d force-select=%d force-activate=%d "
