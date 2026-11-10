@@ -1078,7 +1078,7 @@
          return false;
      if (!d3d11_fifo_queue_unchanged(p))
          return false;
-@@ -1393,6 +1407,56 @@
+@@ -1393,6 +1407,64 @@
      p->early_present_target = original_target;
      p->early_present_wait = wait;
      return true;
@@ -1112,6 +1112,14 @@
 +               blocked ? "held" : "resumed");
 +}
 +
++uint64_t ra_d3d11_ctx_dovi_generation(struct ra_ctx *ra)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return 0;
++    struct priv *p = ra->priv;
++    return p->present_generation;
++}
++
 +bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra)
 +{
 +    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
@@ -1137,7 +1145,7 @@
  IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
 --- a/video/out/d3d11/context.h
 +++ b/video/out/d3d11/context.h
-@@ -8,6 +8,13 @@
+@@ -8,6 +8,14 @@
  // Get the underlying D3D11 swap chain from an RA context. The returned swap chain is
  // refcounted and must be released by the caller.
  IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
@@ -1148,6 +1156,7 @@
 +// VO thread only: suppress Present while the DV output worker changes the link.
 +void ra_d3d11_ctx_set_dovi_present_blocked(struct ra_ctx *ra, bool blocked);
 +bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra);
++uint64_t ra_d3d11_ctx_dovi_generation(struct ra_ctx *ra);
  
  // Returns true only when the current swapchain generation still permits a
  // fail-closed early Sync1 Present.
@@ -1174,7 +1183,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1288 @@
+@@ -0,0 +1,1294 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1324,6 +1333,7 @@
 +    int speed_frames;
 +    bool speed_warned;
 +    bool carrier_prepared; // SDR swapchain state applied after the HDMI handshake
++    uint64_t carrier_generation; // reassert state after a real swapchain lifecycle change
 +    bool reset_context; // retire old RPU/EL/GUI resources after output restore completes
 +
 +    // the stream last logged
@@ -2040,7 +2050,9 @@
 +        // The HDR/refresh switch can invalidate DXGI state while libplacebo's
 +        // colorspace-hint cache still contains SDR. Reassert the transport state
 +        // after the HDMI handshake, before any carrier bytes reach Present.
-+        if (!t->carrier_prepared) {
++        uint64_t carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
++        if (!t->carrier_prepared || t->carrier_generation != carrier_generation) {
++            ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
 +            if (!ra_d3d11_ctx_prepare_dovi_carrier(t->ra_ctx)) {
 +                switch_failed(t, "could not establish the SDR RGB carrier colorspace");
 +                return false;
@@ -2058,6 +2070,9 @@
 +        }
 +        t->out_state = "on";
 +        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, false);
++        // Resuming invalidates old presentation statistics too; remember the
++        // resulting epoch, not the held epoch that preceded this carrier.
++        t->carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
 +        return false;
 +    case DVT_OUTPUT_LIMIT60:
 +        t->failed = t->limit60 = true;
