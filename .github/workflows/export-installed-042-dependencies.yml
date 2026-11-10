@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   export:
-    if: github.event.pull_request.number == 35
+    if: github.event.pull_request.number == 35 && github.event.pull_request.head.sha == '51b21359d9f9f7a2176b6f9d359b404d541ab744'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:

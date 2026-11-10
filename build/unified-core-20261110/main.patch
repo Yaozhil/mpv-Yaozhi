@@ -1,0 +1,827 @@
+--- a/audio/out/ao.c
++++ b/audio/out/ao.c
+@@ -27,6 +27,7 @@
+ #include "ao.h"
+ #include "internal.h"
+ #include "audio/format.h"
++#include "device_channel_map.h"
+ 
+ #include "options/options.h"
+ #include "options/m_config_frontend.h"
+@@ -146,6 +147,8 @@
+         {"ao", OPT_SETTINGSLIST(audio_driver_list, &ao_obj_list),
+             .flags = UPDATE_AUDIO},
+         {"audio-device", OPT_STRING(audio_device), .flags = UPDATE_AUDIO},
++        {"audio-device-channel-map", OPT_STRING(audio_device_channel_map),
++            .flags = UPDATE_AUDIO},
+         {"audio-client-name", OPT_STRING(audio_client_name), .flags = UPDATE_AUDIO},
+         {"audio-buffer", OPT_DOUBLE(audio_buffer),
+             .flags = UPDATE_AUDIO, M_RANGE(0, 10)},
+@@ -157,6 +160,7 @@
+     .defaults = &(const OPT_BASE_STRUCT){
+         .audio_buffer = 0.2,
+         .audio_device = "auto",
++        .audio_device_channel_map = "auto",
+         .audio_client_name = "mpv",
+     },
+ };
+@@ -186,6 +190,7 @@
+         .log = mp_log_new(ao, log, name),
+         .def_buffer = opts->audio_buffer,
+         .client_name = talloc_strdup(ao, opts->audio_client_name),
++        .device_channel_map = talloc_strdup(ao, opts->audio_device_channel_map),
+         .set_media_role = opts->audio_set_media_role
+     };
+     talloc_free(opts);
+@@ -219,6 +224,35 @@
+     MP_VERBOSE(ao, "requested format: %d Hz, %s channels, %s\n",
+                ao->samplerate, mp_chmap_to_str(&ao->channels),
+                af_fmt_to_str(ao->format));
++
++    // This is an output-port contract, not another decoder/render layout.
++    // Unknown/partly unnamed transport PCM and encoded passthrough retain their
++    // existing semantics; they cannot safely be interpreted as speakers here.
++    const char *profile = ao->device_channel_map;
++    if (profile && profile[0] && strcmp(profile, "auto") != 0) {
++        struct mp_chmap physical;
++        if (!mp_chmap_from_str(&physical, bstr0(profile)) ||
++            !mp_chmap_is_valid(&physical) || mp_chmap_is_unknown(&physical))
++        {
++            MP_ERR(ao, "Invalid audio-device-channel-map: %s\n", profile);
++            goto fail;
++        }
++        bool supported = strcmp(name, "wasapi") == 0 || strcmp(name, "asio") == 0 ||
++                         strcmp(name, "pcm") == 0 || strcmp(name, "null") == 0;
++        if (!supported) {
++            MP_WARN(ao, "audio-device-channel-map is not supported by this AO.\n");
++        } else if (!af_fmt_is_pcm(format) || !mp_device_chmap_fully_named(&channels)) {
++            MP_VERBOSE(ao, "Physical speaker profile ignored for encoded or unnamed audio.\n");
++        } else if (!mp_device_chmap_covers(&physical, &channels)) {
++            MP_ERR(ao, "Physical speaker profile omits input speakers (%s).\n",
++                   mp_chmap_to_str(&channels));
++            goto fail;
++        } else {
++            ao->device_channels = physical;
++            ao->channels = physical;
++            MP_INFO(ao, "Physical speaker slots: %s\n", mp_chmap_to_str(&physical));
++        }
++    }
+ 
+     ao->device = talloc_strdup(ao, dev);
+     ao->stream_silence = flags & AO_INIT_STREAM_SILENCE;
+--- a/audio/out/ao.h
++++ b/audio/out/ao.h
+@@ -77,6 +77,7 @@
+ struct ao_opts {
+     struct m_obj_settings *audio_driver_list;
+     char *audio_device;
++    char *audio_device_channel_map;
+     char *audio_client_name;
+     double audio_buffer;
+     bool audio_set_media_role;
+--- a/audio/out/ao_wasapi_utils.c
++++ b/audio/out/ao_wasapi_utils.c
+@@ -41,6 +41,7 @@
+ #include "osdep/io.h"
+ #include "osdep/strnlen.h"
+ #include "ao_wasapi.h"
++#include "device_channel_map.h"
+ 
+ #ifdef _MSC_VER
+ // Define some GUIDs that are defined only in C++ interfaces.
+@@ -347,6 +348,15 @@
+             return false;
+         }
+ 
++        if (ao->device_channels.num) {
++            if (!mp_device_chmap_accepts(&ao->device_channels, &channels)) {
++                MP_ERR(ao, "Driver changed the physical channel slots: %s -> %s\n",
++                       mp_chmap_to_str(&ao->device_channels), mp_chmap_to_str(&channels));
++                return false;
++            }
++            channels = ao->device_channels;
++        }
++
+         struct ao_convert_fmt conv = {
+             .src_fmt    = format.mp_format,
+             .channels   = channels.num,
+@@ -498,6 +508,14 @@
+                 return true;
+         }
+         return false;
++    }
++
++    // Never substitute another layout for an explicit physical port profile.
++    // Sample format/rate changes are safe only while preserving its slot count.
++    if (ao->device_channels.num) {
++        struct mp_chmap transport;
++        mp_chmap_set_unknown(&transport, ao->device_channels.num);
++        return search_samplerates(ao, wformat, &transport);
+     }
+ 
+     // Fallback on the PCM format search
+@@ -573,8 +591,36 @@
+     struct wasapi_state *state = ao->priv;
+     struct mp_chmap channels = ao->channels;
+ 
+-    if (!mp_chmap_is_unknown(&channels))
++    if (!ao->device_channels.num && af_fmt_is_pcm(ao->format) &&
++        channels.num > 8 && mp_device_chmap_fully_named(&channels))
++    {
++        // Prefer a real endpoint speaker superset to a compact height layout.
++        // A zero/fabricated mask or a bare channel count is not such evidence.
++        WAVEFORMATEX *mix = NULL;
++        struct mp_chmap physical;
++        HRESULT hr = IAudioClient_GetMixFormat(state->pAudioClient, &mix);
++        if (SUCCEEDED(hr) && mix &&
++            chmap_from_waveformat(&physical, mix) &&
++            mp_chmap_is_valid(&physical) &&
++            mp_device_chmap_fully_named(&physical) &&
++            mp_device_chmap_covers(&physical, &channels))
++        {
++            channels = physical;
++            ao->device_channels = physical;
++            MP_VERBOSE(ao, "Using endpoint speaker slots: %s\n", mp_chmap_to_str(&physical));
++        }
++        CoTaskMemFree(mix);
++    }
++
++    if (ao->device_channels.num) {
++        // The semantic profile stays on ao. DIRECTOUT transports all slots,
++        // including NA padding and speaker IDs beyond the DWORD mask.
++        channels = ao->device_channels;
++        if (ao->device_channel_map && strcmp(ao->device_channel_map, "auto") != 0)
++            mp_chmap_set_unknown(&channels, channels.num);
++    } else if (!mp_chmap_is_unknown(&channels)) {
+         mp_chmap_reorder_to_waveext(&channels);
++    }
+     if (!mp_chmap_is_valid(&channels))
+         mp_chmap_from_channels(&channels, 2);
+ 
+--- /dev/null
++++ b/audio/out/device_channel_map.h
+@@ -0,0 +1,54 @@
++/* Physical output slots are separate from a stream's compact channel map.
++ * Never infer these slots from a channel count or reinterpret unnamed PCM.
++ * This file is part of mpv; LGPL-2.1-or-later.
++ */
++#ifndef MP_DEVICE_CHANNEL_MAP_H
++#define MP_DEVICE_CHANNEL_MAP_H
++
++#include "audio/chmap.h"
++
++static inline bool mp_device_chmap_fully_named(const struct mp_chmap *map)
++{
++    if (!map->num || map->num > MP_NUM_CHANNELS)
++        return false;
++    for (int c = 0; c < map->num; c++) {
++        if (map->speaker[c] >= MP_SPEAKER_ID_NA)
++            return false;
++    }
++    return true;
++}
++
++// Both maps must already have passed mp_chmap_is_valid(). A profile may contain
++// padding, but must have an unambiguous slot for every named input speaker.
++static inline bool mp_device_chmap_covers(const struct mp_chmap *profile,
++                                         const struct mp_chmap *input)
++{
++    if (!mp_device_chmap_fully_named(input) || profile->num < input->num ||
++        profile->num > MP_NUM_CHANNELS)
++        return false;
++    for (int c = 0; c < input->num; c++) {
++        int matches = 0;
++        for (int o = 0; o < profile->num; o++)
++            matches += input->speaker[c] == profile->speaker[o];
++        if (matches != 1)
++            return false;
++    }
++    return true;
++}
++
++// DIRECTOUT has no speaker semantics. Only an explicit/trusted profile can
++// supply them, and its count must equal the driver-accepted transport count.
++static inline bool mp_device_chmap_accepts(const struct mp_chmap *profile,
++                                          const struct mp_chmap *wire)
++{
++    if (!profile->num || wire->num != profile->num)
++        return false;
++    bool directout = true, same = true;
++    for (int c = 0; c < wire->num; c++) {
++        directout &= wire->speaker[c] == MP_SPEAKER_ID_NA;
++        same &= wire->speaker[c] == profile->speaker[c];
++    }
++    return directout || same;
++}
++
++#endif
+--- a/audio/out/internal.h
++++ b/audio/out/internal.h
+@@ -27,6 +27,8 @@
+ struct ao {
+     int samplerate;
+     struct mp_chmap channels;
++    struct mp_chmap device_channels; // physical slots; only if established
++    char *device_channel_map; // explicit profile, or auto
+     int format;                 // one of AF_FORMAT_...
+     int64_t bps;                // bytes per second (per plane)
+     int sstride;                // size of a sample on each plane
+--- a/player/command.c
++++ b/player/command.c
+@@ -6397,8 +6397,10 @@
+         cmd->success = sub_control(t->d_sub, SD_CTRL_REPLACE_ASS, &data) == CONTROL_OK;
+         talloc_free(data.start);
+     }
+-    if (cmd->success)
++    if (cmd->success) {
++        osd_reset_secondary_fresh_pose(mpctx->osd);
+         osd_changed(mpctx->osd);
++    }
+ }
+ 
+ static void cmd_playlist_next_prev(void *p)
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -218,12 +218,27 @@
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++static void reset_secondary_fresh_pose_locked(struct osd_state *osd)
++{
++    secondary_ass_fresh_pose_reset(&osd->secondary_fresh_pose);
++    osd->secondary_pose_scope = false;
++    osd->secondary_fresh_media_wall = 0;
++}
++
++void osd_reset_secondary_fresh_pose(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    reset_secondary_fresh_pose_locked(osd);
++    mp_mutex_unlock(&osd->lock);
++}
++
+ void osd_set_sub(struct osd_state *osd, int index, struct dec_sub *dec_sub)
+ {
+     mp_mutex_lock(&osd->lock);
+     if (index >= 0 && index < 2) {
+         struct osd_object *obj = osd->objs[OSDTYPE_SUB + index];
+         if (index == 1 && obj->sub != dec_sub) {
++            reset_secondary_fresh_pose_locked(osd);
+             secondary_ass_clock_reset(&osd->secondary_clock);
+             secondary_ass_sampler_reset(&osd->secondary_sampler);
+             osd->secondary_sample_held = false;
+@@ -329,6 +344,9 @@
+                                double requested_speed)
+ {
+     mp_mutex_lock(&osd->lock);
++    if (!rate || rate != osd->secondary_rate ||
++        requested_speed != osd->secondary_requested_speed)
++        reset_secondary_fresh_pose_locked(osd);
+     if (!rate || !osd->secondary_rate) {
+         secondary_ass_clock_reset(&osd->secondary_clock);
+         osd->secondary_sample_held = false;
+@@ -438,13 +456,16 @@
+ {
+     mp_mutex_lock(&osd->lock);
+     if (pts == MP_NOPTS_VALUE) {
++        reset_secondary_fresh_pose_locked(osd);
+         secondary_ass_clock_reset(&osd->secondary_clock);
+         secondary_ass_sampler_reset(&osd->secondary_sampler);
+     } else {
+         secondary_ass_clock_set_speed(&osd->secondary_clock, osd->secondary_speed,
+                                       mp_time_ns());
+-        if (secondary_ass_clock_anchor(&osd->secondary_clock, pts, wall, display_synced))
++        if (secondary_ass_clock_anchor(&osd->secondary_clock, pts, wall, display_synced)) {
+             secondary_ass_sampler_reset(&osd->secondary_sampler);
++            reset_secondary_fresh_pose_locked(osd);
++        }
+     }
+     mp_mutex_unlock(&osd->lock);
+ }
+@@ -548,6 +569,26 @@
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++void osd_begin_secondary_pose_scope(struct osd_state *osd, int64_t video_wall)
++{
++    mp_mutex_lock(&osd->lock);
++    osd->secondary_pose_scope = true;
++    osd->secondary_pose_thread = mp_thread_current_id();
++    osd->secondary_fresh_media_wall = video_wall > 0 ? video_wall : 0;
++    mp_mutex_unlock(&osd->lock);
++}
++
++void osd_end_secondary_pose_scope(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    if (osd->secondary_pose_scope &&
++        mp_thread_id_equal(osd->secondary_pose_thread, mp_thread_current_id())) {
++        osd->secondary_pose_scope = false;
++        osd->secondary_fresh_media_wall = 0;
++    }
++    mp_mutex_unlock(&osd->lock);
++}
++
+ void osd_set_ass_pacing_scope(struct osd_state *osd, uint64_t vo_seq,
+                             uint64_t draw_seq, uint64_t frame_id)
+ {
+@@ -564,6 +605,7 @@
+ void osd_reset_secondary_clock(struct osd_state *osd)
+ {
+     mp_mutex_lock(&osd->lock);
++    reset_secondary_fresh_pose_locked(osd);
+     secondary_ass_clock_reset(&osd->secondary_clock);
+     secondary_ass_sampler_reset(&osd->secondary_sampler);
+     osd->secondary_sample_held = false;
+@@ -645,6 +687,37 @@
+                         osd->secondary_submit_wall);
+             }
+         }
++        // Physical authority remains held/quarantined. A necessary fresh video
++        // may nevertheless emit its media-clock pose at its unchanged original F.
++        // Only this VO draw thread owns the scope; a screenshot or UI caller
++        // cannot consume a pending fresh-media request.
++        bool pose_scope = osd->secondary_pose_scope &&
++            mp_thread_id_equal(osd->secondary_pose_thread, mp_thread_current_id());
++        bool fresh_media_pose = false;
++        bool media_floor_clamped = false;
++        double physical_pts = video_pts;
++        if (pose_scope) {
++            if (osd->secondary_fresh_media_wall > 0 && osd->secondary_rate > 0)
++                fresh_media_pose = secondary_ass_fresh_pose_sample(
++                    &osd->secondary_fresh_pose, &osd->secondary_clock,
++                    osd->secondary_fresh_media_wall,
++                    osd->secondary_sampler.valid, osd->secondary_sampler.pts,
++                    &video_pts);
++            if (!fresh_media_pose) {
++                bool accepted = changed_sample && !osd->secondary_sample_held &&
++                    osd->secondary_physical_phase && osd->secondary_sampler.valid &&
++                    osd->secondary_sampler.epoch == osd->secondary_physical_epoch;
++                video_pts = secondary_ass_fresh_pose_resume(
++                    &osd->secondary_fresh_pose, video_pts, accepted);
++                media_floor_clamped = video_pts != physical_pts;
++            }
++        } else {
++            // Screenshots/UI callers may retain the emitted floor, but cannot
++            // consume the VO's F request or clear it as physical recovery.
++            video_pts = secondary_ass_fresh_pose_resume(
++                &osd->secondary_fresh_pose, video_pts, false);
++            media_floor_clamped = video_pts != physical_pts;
++        }
+         struct mp_ass_pacing_record scope = {0};
+         if (pacing) {
+             struct secondary_ass_sampler *sampler = &osd->secondary_sampler;
+@@ -665,7 +738,9 @@
+                     ((uint64_t)sampler->physical_slots << 4) |
+                     ((uint64_t)clock->display_synced << 5) |
+                     ((uint64_t)draw_scope << 6) |
+-                    ((uint64_t)osd->secondary_display_forecast << 7),
++                    ((uint64_t)osd->secondary_display_forecast << 7) |
++                    ((uint64_t)fresh_media_pose << 8) |
++                    ((uint64_t)media_floor_clamped << 9),
+                 .v = {sampler->sample_wall, (int64_t)sampler->tick,
+                     mp_ass_pacing_double_bits(video_pts), clock->wall,
+                     mp_ass_pacing_double_bits(clock->pts),
+@@ -678,6 +753,17 @@
+                     sampler->divisor, sampler->origin_slot},
+             };
+             mp_ass_pacing_record(osd->global, MP_ASS_PACING_SAMPLE, &scope);
++            if (fresh_media_pose || media_floor_clamped) {
++                struct mp_ass_pacing_record media = scope;
++                media.flags = (uint64_t)fresh_media_pose |
++                    ((uint64_t)media_floor_clamped << 1);
++                media.v[0] = osd->secondary_fresh_media_wall;
++                media.v[1] = mp_ass_pacing_double_bits(physical_pts);
++                media.v[2] = mp_ass_pacing_double_bits(video_pts);
++                media.v[3] = mp_ass_pacing_double_bits(osd->secondary_fresh_pose.floor_pts);
++                // Kind-local media-pose marker: no physical plan or Display claim.
++                mp_ass_pacing_record(osd->global, MP_ASS_PACING_ANCHOR, &media);
++            }
+         }
+         // Pausing disables the refresh clock and clears its sampler. A UI
+         // repaint can still request the held pose; with refresh disabled use
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -237,6 +237,11 @@
+                                         int64_t vsync_interval, int64_t submit_wall,
+                                         bool physical_phase);
+ void osd_hold_secondary_sample(struct osd_state *osd);
++// Scope is owned by the calling VO draw thread. A positive wall is the
++// mandatory video's original F, never an independent physical Present target.
++void osd_begin_secondary_pose_scope(struct osd_state *osd, int64_t video_wall);
++void osd_end_secondary_pose_scope(struct osd_state *osd);
++void osd_reset_secondary_fresh_pose(struct osd_state *osd);
+ // Opt-in recording scope, never a clock authority. Only the calling draw
+ // thread may use it; unrelated OSD/filter calls keep an invalid draw identity.
+ void osd_set_ass_pacing_scope(struct osd_state *osd, uint64_t vo_seq,
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -6,6 +6,7 @@
+ #include "osd.h"
+ #include "osdep/threads.h"
+ #include "secondary_ass_clock.h"
++#include "secondary_ass_fresh_pose.h"
+ 
+ enum mp_osdtype {
+     OSDTYPE_SUB,
+@@ -84,6 +85,10 @@
+     struct secondary_ass_clock secondary_clock;
+     struct secondary_ass_sampler secondary_sampler;
+     bool secondary_sample_held;
++    struct secondary_ass_fresh_pose secondary_fresh_pose;
++    bool secondary_pose_scope;
++    mp_thread_id secondary_pose_thread;
++    int64_t secondary_fresh_media_wall;
+     int64_t secondary_present_wall;
+     int64_t secondary_submit_wall;
+     int64_t secondary_vsync_interval;
+--- /dev/null
++++ b/sub/secondary_ass_fresh_pose.h
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_FRESH_POSE_H
++#define MP_SECONDARY_ASS_FRESH_POSE_H
++
++#include "secondary_ass_clock.h"
++
++// A media pose emitted by a mandatory video draw, not a physical G/D sample.
++// It must never grant cache admission or mutate the physical sampler identity.
++struct secondary_ass_fresh_pose {
++    bool floor_valid;
++    double floor_pts;
++};
++
++static inline void secondary_ass_fresh_pose_reset(struct secondary_ass_fresh_pose *p)
++{
++    *p = (struct secondary_ass_fresh_pose){0};
++}
++
++static inline bool secondary_ass_fresh_pose_sample(
++    struct secondary_ass_fresh_pose *p, const struct secondary_ass_clock *clock,
++    int64_t video_wall, bool retained_valid, double retained_pts, double *pts)
++{
++    if (!pts || !clock->valid || clock->display_synced || video_wall <= 0 ||
++        clock->wall <= 0 ||
++        !isfinite(clock->speed) || clock->speed <= 0 ||
++        !isfinite(clock->phase_rate) ||
++        !isfinite(clock->speed + clock->phase_rate) ||
++        clock->speed + clock->phase_rate <= 0)
++        return false;
++    double next = secondary_ass_clock_sample(clock, video_wall);
++    if (!isfinite(next))
++        return false;
++    if (retained_valid && isfinite(retained_pts) && retained_pts > next)
++        next = retained_pts;
++    if (p->floor_valid && p->floor_pts > next)
++        next = p->floor_pts;
++    p->floor_valid = true;
++    p->floor_pts = next;
++    *pts = next;
++    return true;
++}
++
++// Clamp only the emitted subtitle input. The physical sample's PTS, G/D,
++// origin, tick and epoch remain intact. A newly accepted physical pose clears
++// this temporary floor once it catches up; a UI repaint cannot clear it.
++static inline double secondary_ass_fresh_pose_resume(
++    struct secondary_ass_fresh_pose *p, double physical_pts, bool physical_accepted)
++{
++    if (!p->floor_valid || !isfinite(physical_pts))
++        return physical_pts;
++    if (physical_pts < p->floor_pts)
++        return p->floor_pts;
++    if (physical_accepted)
++        secondary_ass_fresh_pose_reset(p);
++    return physical_pts;
++}
++
++#endif
+--- /dev/null
++++ b/test/secondary_ass_fresh_recovery.c
+@@ -0,0 +1,176 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include <stdio.h>
++#include <string.h>
++#include <math.h>
++#include <limits.h>
++#include "sub/secondary_ass_fresh_pose.h"
++#include "video/out/secondary_ass_quiet_recovery.h"
++
++static int checks, failures;
++#define CHECK(test, label) do { checks++; if (!(test)) { \
++    fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__); failures++; \
++} } while (0)
++#define CLOSE(a,b) (fabs((a)-(b)) < 1e-8)
++
++static struct secondary_ass_physical authority(void)
++{
++    return (struct secondary_ass_physical){
++        .epoch = 95, .phase = 17528663100LL, .phase_slot = 4294967296LL,
++        .interval = 6250000, .sync_slot = 4294967296LL,
++        .sync_qpc_ns = 277260075217800LL, .sync_count = 40004778,
++        .sync_segment_consistent = true, .success_generation = 10,
++        .success_contiguous = true, .success_first_id = 328,
++        .success_last_id = 329, .last_submit_id = 329, .historical_id = 326,
++    };
++}
++
++static bool quiet_eligible(const struct secondary_ass_physical *p,
++                           uint64_t old_epoch, int64_t divisor, double rate)
++{
++#ifdef LEGACY_FRESH_HOLD
++    // Exact old failure consequence: secondary_next_sample refuses to map
++    // old epoch94 into physical95, quiet forecast receives first_slot=0.
++    struct secondary_ass_physical_point zero = {0};
++    return secondary_ass_present_plan_make_fixed_forecast(p, zero, 0).valid;
++#else
++    return secondary_ass_quiet_recovery_eligible(p, old_epoch, divisor, rate);
++#endif
++}
++
++static bool emit_pose(struct secondary_ass_fresh_pose *pose,
++                      const struct secondary_ass_clock *clock, int64_t F,
++                      bool retained_valid, double retained, double *out)
++{
++#ifdef LEGACY_FRESH_HOLD
++    // The old held-render path emits sampler->pts for every fresh video draw.
++    *out = retained;
++    return true;
++#else
++    return secondary_ass_fresh_pose_sample(pose, clock, F, retained_valid, retained, out);
++#endif
++}
++
++static void test_quiet_epoch(void)
++{
++    struct secondary_ass_physical p = authority();
++    CHECK(quiet_eligible(&p, 94, 2, 80), "run2 recovered epoch95 can bootstrap quiet sampler94");
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(&p);
++    int64_t F = 17680000000LL, ready = 17682000000LL;
++    struct secondary_ass_physical_point first = secondary_ass_physical_predict_point(&view, ready);
++    struct secondary_ass_present_fixed_offset fixed = {0};
++    int offset = secondary_ass_present_fixed_offset_get(&fixed, &p, first, 2, 80);
++    CHECK(offset == 0, "real recovered authority supplies a fixed forecast offset");
++    struct secondary_ass_present_plan plan = secondary_ass_present_plan_fresh_clock(
++        &p, first, 2, offset, ready, F);
++    CHECK(plan.valid && plan.fresh_clock_only, "existing fresh-clock helper accepts new-namespace candidate");
++    CHECK(plan.epoch == 95 && plan.target.slot > 0 && plan.base.slot > 0,
++          "bootstrap uses new physical namespace, not old zero/slot identity");
++    CHECK(plan.submit == F && plan.fallback_submit == F && plan.lifecycle_safe_wait == F,
++          "mandatory video F and lifecycle wait remain unchanged");
++    CHECK(!quiet_eligible(&p, 95, 2, 80), "same-epoch ordinary quiet path stays unchanged");
++    CHECK(!quiet_eligible(&p, 0, 2, 80), "unidentified sampler is not an epoch-recovery task");
++    CHECK(!quiet_eligible(&p, 94, 0, 80), "zero divisor is not physical authority");
++    CHECK(!quiet_eligible(&p, 94, 2, NAN), "NaN configured rate rejected");
++    CHECK(!quiet_eligible(&p, 94, 2, INFINITY), "infinite rate rejected");
++    CHECK(!quiet_eligible(&p, 94, 2, 0), "disabled clock rejected");
++#define BAD(field,value,label) do { struct secondary_ass_physical q=p; q.field=value; \
++    CHECK(!quiet_eligible(&q,94,2,80),label); } while (0)
++    BAD(epoch,0,"unknown physical epoch rejected");
++    BAD(epoch_exhausted,true,"exhausted physical epoch rejected");
++    BAD(outlier_pending,true,"outlier does not grant quiet bootstrap");
++    BAD(sync_segment_consistent,false,"inconsistent feedback cannot bootstrap");
++    BAD(success_generation,0,"no successful generation rejected");
++    BAD(success_contiguous,false,"noncontiguous successful prefix rejected");
++    BAD(phase,0,"missing phase wall rejected");
++    BAD(phase_slot,0,"missing physical phase slot rejected");
++    BAD(sync_qpc_ns,0,"missing raw observed QPC rejected");
++    BAD(sync_slot,0,"missing observed sync slot rejected");
++    BAD(interval,0,"missing physical interval rejected");
++    BAD(interval,6944444,"old divisor80 cannot silently carry into144Hz");
++#undef BAD
++    p.interval = 6250275;
++    CHECK(quiet_eligible(&p,94,2,80), "small observed period refinement retains 80/160 eligibility");
++}
++
++static void test_fresh_media_pose(void)
++{
++    struct secondary_ass_clock clock = {
++        .valid = true, .pts = 16.258242280082655, .wall = 18804847200LL, .speed = 1,
++    };
++    struct secondary_ass_sampler sampler = {
++        .valid = true, .physical_slots = true, .display_forecast = true,
++        .epoch = 75, .origin_slot = 4294969001LL, .tick = 227,
++        .sample_wall = 18804847200LL, .pts = clock.pts, .divisor = 2,
++    }, retained = sampler;
++    struct secondary_ass_fresh_pose pose = {0};
++    double out = sampler.pts, previous = out;
++    // Actual original-video F timestamps from run1's eight held fresh draws.
++    int64_t Fs[] = {18826610200LL,18866592267LL,18906592267LL,18946593000LL,
++                    18986592167LL,19026612133LL,19066600600LL,19106597800LL};
++    for (unsigned n=0; n<sizeof(Fs)/sizeof(Fs[0]); n++) {
++        CHECK(emit_pose(&pose,&clock,Fs[n],true,sampler.pts,&out),
++              "mandatory fresh draw can emit its anchored media pose");
++        CHECK(out > previous, "run1 fresh inputs no longer repeat for300ms");
++        previous = out;
++    }
++    CHECK(out - sampler.pts > .300, "eight necessary fresh draws advance media input through observed quarantine");
++    CHECK(memcmp(&sampler,&retained,sizeof(sampler))==0,
++          "fallback never rewrites retained physical sampler origin/tick/epoch/PTS");
++    CHECK(pose.floor_valid && CLOSE(pose.floor_pts,out), "fallback publishes a separate pose floor");
++    double floor = pose.floor_pts;
++    double behind = floor - .050;
++    CHECK(CLOSE(secondary_ass_fresh_pose_resume(&pose,behind,true),floor),
++          "recovered but lagging physical pose cannot move emitted input backward");
++    CHECK(pose.floor_valid, "lagging physical tick cannot clear recovery floor");
++    CHECK(CLOSE(secondary_ass_fresh_pose_resume(&pose,floor,false),floor) && pose.floor_valid,
++          "manual repaint cannot clear floor even at equal input");
++    CHECK(CLOSE(secondary_ass_fresh_pose_resume(&pose,floor+.001,true),floor+.001) && !pose.floor_valid,
++          "accepted physical sample clears floor once it catches up");
++    // If a captured prior D is slightly ahead of new mandatory F, keep one pose.
++    double ahead=secondary_ass_clock_sample(&clock,Fs[0])+.010;
++    CHECK(secondary_ass_fresh_pose_sample(&pose,&clock,Fs[0],true,ahead,&out) && CLOSE(out,ahead),
++          "future retained physical pose is never pulled backward to an earlier F");
++    CHECK(secondary_ass_fresh_pose_sample(&pose,&clock,Fs[1],true,ahead,&out) && out>ahead,
++          "retained-future clamp releases as the real F advances");
++}
++
++static void test_lifecycle(void)
++{
++    struct secondary_ass_fresh_pose p={0};
++    struct secondary_ass_clock c={.valid=true,.wall=1000000000,.pts=100,.speed=1};
++    double out=0;
++    CHECK(secondary_ass_fresh_pose_sample(&p,&c,1100000000,false,0,&out) && CLOSE(out,100.1),
++          "clock-based pose uses original F rather than CPU wake time");
++    secondary_ass_fresh_pose_reset(&p); // pause/rate0/sub replacement scope reset
++    CHECK(!p.floor_valid, "lifecycle reset removes stale pose floor");
++    secondary_ass_clock_reset(&c);
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,1200000000,false,0,&out),
++          "paused/unanchored clock grants no media pose");
++    c=(struct secondary_ass_clock){.valid=true,.wall=1000000000,.pts=100,.speed=1};
++    CHECK(secondary_ass_clock_anchor(&c,10,2000000000,false), "backward seek is a real clock discontinuity");
++    secondary_ass_fresh_pose_reset(&p);
++    CHECK(secondary_ass_fresh_pose_sample(&p,&c,2100000000,false,0,&out) && CLOSE(out,10.1),
++          "seek/reload may legitimately return to an earlier media timeline");
++    secondary_ass_clock_set_speed(&c,2,2200000000);
++    secondary_ass_fresh_pose_reset(&p);
++    CHECK(secondary_ass_fresh_pose_sample(&p,&c,2300000000,false,0,&out) && CLOSE(out,10.4),
++          "speed change integrates old speed before applying new slope");
++    c.display_synced=true;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out),
++          "display-synced video never receives this fallback");
++    c.display_synced=false;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,0,false,0,&out), "unknown F rejected");
++    c.wall=0;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out), "unanchored wall rejected");
++    c.wall=2000000000; c.speed=NAN;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out), "invalid speed rejected");
++    c.speed=1; c.phase_rate=-2;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out), "non-forward clock slope rejected");
++}
++
++int main(void)
++{
++    test_quiet_epoch(); test_fresh_media_pose(); test_lifecycle();
++    printf("{\"checks\":%d,\"failures\":%d,\"display_verified\":false,\"core_built\":false}\n",checks,failures);
++    return failures ? 1 : 0;
++}
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -71,7 +71,7 @@
+ static int hwdec_opt_help(struct mp_log *log, const m_option_t *opt,
+                           struct bstr name);
+ 
+-#define HWDEC_DELAY_QUEUE_COUNT 2
++#define HWDEC_DELAY_QUEUE_COUNT 4
+ #define HWDEC_WAIT_KEYFRAME_COUNT 96
+ 
+ // Fallback number of extra surfaces for fixed-size hw frame pools, if the
+@@ -811,9 +811,11 @@
+         if (ctx->hwdec.pix_fmt != AV_PIX_FMT_NONE)
+             avctx->get_format = get_format_hwdec;
+ 
+-        // Some APIs benefit from this, for others it's additional bloat.
+-        if (ctx->hwdec.copying)
++        // Allow the decoder to finish before hardware frames reach the VO.
++        if (ctx->hwdec.copying || ctx->hwdec.use_hw_frames)
+             ctx->max_delay_queue = HWDEC_DELAY_QUEUE_COUNT;
++        if (ctx->max_delay_queue && !ctx->hwdec.use_hw_frames)
++            avctx->extra_hw_frames = ctx->max_delay_queue;
+         ctx->hw_probing = true;
+ 
+         threads = ctx->hwdec_opts->hwdec_threads;
+@@ -983,9 +985,8 @@
+ // on to at any given time.
+ static int hwdec_get_extra_frames(vd_ffmpeg_ctx *ctx)
+ {
+-    // Structural surface requirement of the player (e.g. the enhancement-layer
+-    // pairing queue); applies on top of any user override.
+-    int hint = ctx->extra_hw_frames_hint;
++    // Structural player requirements (including EL pairing) plus decoder queue.
++    int hint = ctx->extra_hw_frames_hint + ctx->max_delay_queue;
+ 
+     int extra = ctx->hwdec_opts->hwdec_extra_frames;
+     if (extra >= 0)
+--- /dev/null
++++ b/video/out/secondary_ass_quiet_recovery.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_QUIET_RECOVERY_H
++#define MP_SECONDARY_ASS_QUIET_RECOVERY_H
++
++#include "secondary_ass_present_plan.h"
++
++// A quiet/static ASS track still needs its media clock to reach future events.
++// A new physical namespace may bootstrap only from recovered real feedback;
++// this predicate does not translate any old slot or manufacture a plan.
++static inline bool secondary_ass_quiet_recovery_eligible(
++    const struct secondary_ass_physical *p, uint64_t sampler_epoch,
++    int64_t divisor, double configured_rate)
++{
++    if (!sampler_epoch || !p->epoch || sampler_epoch == p->epoch ||
++        p->epoch_exhausted || p->outlier_pending || !p->sync_segment_consistent ||
++        !p->success_generation || !p->success_contiguous ||
++        p->phase <= 0 || p->phase_slot <= 0 ||
++        p->sync_qpc_ns <= 0 || p->sync_slot <= 0 ||
++        !secondary_ass_physical_interval_valid(p->interval) || divisor <= 0 ||
++        !isfinite(configured_rate) || configured_rate <= 0)
++        return false;
++    // Retain the existing physical sampler's integer-divisor eligibility.
++    // A display/rate change must not silently reuse an incompatible divisor.
++    return fabs(configured_rate * p->interval * 1e-9 * divisor - 1) <= 0.005;
++}
++
++#endif
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -45,6 +45,7 @@
+ #include "secondary_ass_physical.h"
+ #include "secondary_ass_present_plan.h"
+ #include "secondary_ass_fresh_video.h"
++#include "secondary_ass_quiet_recovery.h"
+ #include "secondary_ass_neutral_pose.h"
+ #include "secondary_ass_queue_lead.h"
+ #include "secondary_ass_queue_stage.h"
+@@ -2717,6 +2718,38 @@
+                 display_interval = in->secondary_physical.interval;
+             }
+         }
++        // Quiet/static output has no optional redraw rate. It still needs one
++        // mandatory video draw to bootstrap a recovered physical namespace;
++        // projecting its old sampler slot would be invalid, while holding it
++        // forever would prevent the next animated event from becoming active.
++        if (!neutral_admitted && !frame->repeat && !frame->display_synced &&
++            clock_rate > 0 && native_rate <= 0 && planned_audio &&
++            in->secondary_fixed_forecast && !in->paused && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            in->secondary_render_cost >= 0) {
++            struct secondary_ass_sample_snapshot quiet_sample =
++                osd_get_secondary_sample_snapshot(vo->osd);
++            int64_t recovery_now = mp_time_ns();
++            if (secondary_ass_quiet_recovery_eligible(&in->secondary_physical,
++                    quiet_sample.epoch, sample_divisor, clock_rate) &&
++                recovery_now <= INT64_MAX - in->secondary_render_cost) {
++                struct secondary_ass_present_plan recovery =
++                    secondary_forecast_fresh_clock_plan(vo,
++                        MPMAX(original_video_target,
++                              recovery_now + in->secondary_render_cost),
++                        original_video_target,
++                        (struct secondary_ass_physical_point){0},
++                        sample_divisor, clock_rate);
++                if (recovery.valid) {
++                    present_plan = recovery;
++                    physical_point = recovery.target;
++                    presentation_time = physical_point.wall;
++                    display_interval = in->secondary_physical.interval;
++                    target = original_video_target;
++                    present_ready = original_video_target;
++                }
++            }
++        }
+         physical_phase = physical_point.slot > 0 && !frame->display_synced;
+         bool secondary_target_updated = false;
+         if (neutral_admitted)
+@@ -2782,7 +2815,20 @@
+             };
+             mp_ass_pacing_record(vo->global, MP_ASS_PACING_SPAN, &reuse);
+         }
++        bool pose_scope = in->secondary_fixed_forecast && clock_rate > 0;
++        int64_t fresh_media_wall = 0;
++        if (pose_scope && !frame->repeat && !frame->display_synced &&
++            !neutral_admitted && native_rate > 0 && !secondary_target_updated &&
++            !in->paused && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            (in->secondary_physical.outlier_pending ||
++             !in->secondary_physical.sync_segment_consistent))
++            fresh_media_wall = original_video_target;
++        if (pose_scope)
++            osd_begin_secondary_pose_scope(vo->osd, fresh_media_wall);
+         in->visible = vo->driver->draw_frame(vo, frame);
++        if (pose_scope)
++            osd_end_secondary_pose_scope(vo->osd);
+         fresh_drawn = true;
+ 
+         int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
+@@ -3251,7 +3297,12 @@
+     secondary_record_begin(vo, frame, 0, trace_submit, presentation_time,
+         trace_deadline, &physical_point, planned_audio ? &present_plan : NULL,
+         false, secondary_target_updated, full_redraw);
++    bool pose_scope = in->secondary_fixed_forecast && clock_rate > 0;
++    if (pose_scope)
++        osd_begin_secondary_pose_scope(vo->osd, 0);
+     vo->driver->draw_frame(vo, frame);
++    if (pose_scope)
++        osd_end_secondary_pose_scope(vo->osd);
+     int64_t cpu_end = mp_time_ns();
+     if (vo->pacing_draw_seq)
+         in->pacing_cpu_end = cpu_end;
