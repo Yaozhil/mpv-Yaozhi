@@ -273,6 +273,42 @@
      int format;                 // one of AF_FORMAT_...
      int64_t bps;                // bytes per second (per plane)
      int sstride;                // size of a sample on each plane
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -196,6 +196,25 @@
+     sh->commentary_track |= !!(req.flags & TRACK_COMMENTARY);
+ }
+ 
++static void get_bd_video_rate(struct demuxer *demuxer, int id, struct mp_codec_params *c)
++{
++    struct priv *p = demuxer->priv;
++    if (!p->is_bd || !c || c->type != STREAM_VIDEO || c->fps > 0)
++        return;
++
++    // Interactive Blu-ray playback deliberately uses nostreams to avoid deep
++    // probing auxiliary/menu PIDs. Keep that protection; obtain a missing
++    // frame rate from the current PlayItem, before publishing codec params.
++    struct stream_bd_video_rate_req req = {.id = id};
++    if (stream_control(demuxer->stream, STREAM_CTRL_GET_BD_VIDEO_RATE, &req) ==
++        STREAM_OK && req.fps > 0)
++    {
++        c->fps = req.fps;
++        MP_VERBOSE(demuxer, "Blu-ray video id=0x%x rate from PlayItem: %.6f fps\n",
++                   id, req.fps);
++    }
++}
++
+ static void get_bd_audio_rate(struct demuxer *demuxer, int id, struct mp_codec_params *c)
+ {
+     struct priv *p = demuxer->priv;
+@@ -265,6 +284,7 @@
+     c->decoder = NULL;
+     c->decoder_desc = NULL;
+     set_disc_aspect(demuxer, c);
++    get_bd_video_rate(demuxer, src->demuxer_id, c);
+     get_bd_audio_rate(demuxer, src->demuxer_id, c);
+     if (p->is_bd && src->type == STREAM_VIDEO && !c->dovi) {
+         struct sh_stream *el = sh_stream_dependent_sibling(src);
 --- a/meson.build
 +++ b/meson.build
 @@ -1072,6 +1072,10 @@
@@ -354,6 +390,71 @@
          mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
      }
  }
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -98,6 +98,7 @@
+     STREAM_CTRL_SET_PLAYBACK_TIME,   // double*, current presentation time
+     STREAM_CTRL_SET_PLAYBACK_RATE,   // double*, 0 = paused, 1 = normal
+     STREAM_CTRL_GET_BD_AUDIO_RATE,   // struct stream_bd_audio_rate_req*
++    STREAM_CTRL_GET_BD_VIDEO_RATE,   // struct stream_bd_video_rate_req*
+     STREAM_CTRL_GET_CURRENT_TITLE,
+     STREAM_CTRL_SET_CURRENT_TITLE,
+     STREAM_CTRL_NAV_CMD,             // struct stream_nav_cmd*
+@@ -240,6 +241,11 @@
+     int id;
+     char name[50];
+     enum track_flags flags;
++};
++
++struct stream_bd_video_rate_req {
++    int id;             // input: mpeg-ts PID
++    double fps;         // output: PlayItem frame rate, 0 when unknown
+ };
+ 
+ struct stream_bd_audio_rate_req {
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -1387,6 +1387,40 @@
+         bd_free_title_info(ti);
+         return STREAM_OK;
+     }
++    case STREAM_CTRL_GET_BD_VIDEO_RATE: {
++        struct stream_bd_video_rate_req *req = arg;
++        req->fps = 0;
++        mp_mutex_lock(&b->overlay_lock);
++        const BLURAY_CLIP_INFO *clip = bd_current_clip(b);
++        if (clip) {
++            const BLURAY_STREAM_INFO *streams[] = {
++                clip->video_streams, clip->sec_video_streams,
++            };
++            const int counts[] = {
++                clip->video_stream_count, clip->sec_video_stream_count,
++            };
++            for (int group = 0; group < 2 && !req->fps; group++) {
++                for (int n = 0; n < counts[group]; n++) {
++                    const BLURAY_STREAM_INFO *si = &streams[group][n];
++                    if (si->pid != req->id)
++                        continue;
++                    // The PlayItem declares this PID's presentation rate. Do
++                    // not estimate it from delivery cadence or guess 24 fps.
++                    switch (si->rate) {
++                    case BLURAY_VIDEO_RATE_24000_1001: req->fps = 24000.0 / 1001; break;
++                    case BLURAY_VIDEO_RATE_24:         req->fps = 24; break;
++                    case BLURAY_VIDEO_RATE_25:         req->fps = 25; break;
++                    case BLURAY_VIDEO_RATE_30000_1001: req->fps = 30000.0 / 1001; break;
++                    case BLURAY_VIDEO_RATE_50:         req->fps = 50; break;
++                    case BLURAY_VIDEO_RATE_60000_1001: req->fps = 60000.0 / 1001; break;
++                    }
++                    break;
++                }
++            }
++        }
++        mp_mutex_unlock(&b->overlay_lock);
++        return req->fps > 0 ? STREAM_OK : STREAM_UNSUPPORTED;
++    }
+     case STREAM_CTRL_GET_BD_AUDIO_RATE: {
+         struct stream_bd_audio_rate_req *req = arg;
+         req->samplerate = 0;
 --- a/sub/osd.c
 +++ b/sub/osd.c
 @@ -218,12 +218,27 @@
