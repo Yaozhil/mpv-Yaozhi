@@ -40,6 +40,14 @@ assert (build/'meson-private/coredata.dat').is_file(),str(build)
 assert (build/'config.h').is_file()
 prefix=wb/'build64/install'
 cc=prefix/'bin/cross-gcc'
+# The restored compiler wrapper invokes the host ccache binary. Installing it
+# after Meson would poison feature/library probes with exit 127.
+policy=subprocess.check_output(['apt-cache','policy','ccache'],text=True)
+version=next(line.split(':',1)[1].strip() for line in policy.splitlines() if 'Candidate:' in line)
+assert version!='(none)' and version and all(c.isalnum() or c in '.:+~-_' for c in version)
+(out/'ccache-package-pin.txt').write_text(version+'\n'+policy)
+run(['sudo','apt-get','-o','Acquire::Retries=3','-o','Acquire::http::Timeout=30',
+     'install','-y','--no-install-recommends','ccache='+version],'ccache-install.log')
 run([str(cc),'-v'],'compiler.log')
 inputs={str(p.relative_to(wb)):sha(p) for p in (prefix/'x86_64-w64-mingw32/lib').glob('*.a')}
 assert len(inputs)>35
@@ -49,7 +57,7 @@ meson_version=info['meson_version']['full']
 assert meson_version and all(c in '0123456789.' for c in meson_version)
 run([sys.executable,'-m','pip','install','--disable-pip-version-check',f'meson=={meson_version}','ninja==1.13.2','Mako==1.3.10'],'host-tools.log')
 os.environ['PATH']=str(prefix/'bin')+os.pathsep+os.environ['PATH']
-run(['meson','setup','--reconfigure',str(build),str(source)],'meson-reconfigure.log')
+run(['meson','setup','--reconfigure','--clearcache',str(build),str(source)],'meson-reconfigure.log')
 start=time.time()
 run(['ninja','-j2','-C',str(build),'mpv.exe','mpv.com'],'compile.log')
 verify('after')
