@@ -107,7 +107,8 @@ for name in ('config.h','build.ninja','meson-info/intro-buildoptions.json','meso
  assert p.is_file(),name
  target=out/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,target)
 receipt=dict(variant=variant,phase=spec['phase'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
- config_commit=os.environ['GITHUB_SHA'],source_inventory=spec['after'],static_inputs=inputs,binaries=binaries,
+ config_commit=os.environ['GITHUB_SHA'],checked_out_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+ source_inventory=spec['after'],static_inputs=inputs,binaries=binaries,
  reused_exact_cached_dependencies=True,fresh_crt_built=False,compiled=True,runtime_verified=False,production_installed=False)
 (out/'compile-receipt.json').write_text(json.dumps(receipt,indent=2))
 print(json.dumps(dict(variant=variant,compiled=True,binaries=binaries,runtime_verified=False)))
