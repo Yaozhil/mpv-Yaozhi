@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -38,6 +39,8 @@ verify('after')
 build=wb/'build64/packages/mpv-prefix/src/mpv-build'
 assert (build/'meson-private/coredata.dat').is_file(),str(build)
 assert (build/'config.h').is_file()
+original_config=(build/'config.h').read_text()
+(out/'baseline-config.h').write_text(original_config)
 prefix=wb/'build64/install'
 cc=prefix/'bin/cross-gcc'
 # The restored compiler wrapper invokes the host ccache binary. Installing it
@@ -65,9 +68,31 @@ os.environ['PKG_CONFIG_LIBDIR']=str(pkgdir)
 os.environ['PKG_CONFIG_PATH']=str(pkgdir)
 run([str(prefix/'bin/x86_64-w64-mingw32-pkgconf'),'--static','--cflags','--libs',
      'libavcodec','libavformat','libavutil','libass','libplacebo'],'pkg-config-preflight.log')
-run(['meson','setup','--reconfigure','--clearcache',str(build),str(source)],'meson-reconfigure.log')
+run(['meson','setup','--reconfigure','--clearcache','--wrap-mode=nodownload',str(build),str(source)],'meson-reconfigure.log')
+new_config=(build/'config.h').read_text()
+enabled=lambda text:set(re.findall(r'^#define\s+(HAVE_[A-Z0-9_]+)\s+1\s*$',text,re.M))
+lost=enabled(original_config)-enabled(new_config)
+assert not lost,'Previously enabled features disappeared: '+str(sorted(lost))
+(out/'preserved-features.json').write_text(json.dumps(dict(baseline=sorted(enabled(original_config)),candidate=sorted(enabled(new_config)),lost=sorted(lost)),indent=2))
+previous={}
+for name in ('mpv.exe','mpv.com'):
+ path=build/name
+ if path.is_file():
+  previous[name]=dict(sha256=sha(path),mtime=path.stat().st_mtime)
+  # Ephemeral restored build outputs only. Force real link targets to run,
+  # including the unchanged console launcher, without touching static inputs.
+  assert path.resolve().parent==build.resolve()
+  path.unlink()
+(out/'previous-outputs.json').write_text(json.dumps(previous,indent=2))
 start=time.time()
-run(['ninja','-j2','-C',str(build),'mpv.exe','mpv.com'],'compile.log')
+run(['ninja','-v','-d','keeprsp','-j2','-C',str(build),'mpv.exe','mpv.com'],'compile.log')
+abi_probe=here/'dv-abi-probe.c'
+if abi_probe.exists():
+ for language,compiler in [('c','cross-gcc'),('cpp','x86_64-w64-mingw32-g++')]:
+  run([str(prefix/'bin'/compiler),'-x','c++' if language=='cpp' else 'c',
+       '-O2','-static','-Wno-deprecated-declarations',
+       '-I'+str(prefix/'x86_64-w64-mingw32/include'),str(abi_probe),
+       '-o',str(out/f'dv-metadata-abi-{language}.exe')],f'dv-metadata-abi-{language}-compile.log')
 verify('after')
 assert all(sha(wb/name)==digest for name,digest in inputs.items()),'static dependency changed during mpv-only build'
 binaries={}
