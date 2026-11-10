@@ -313,6 +313,15 @@
      mp_notify(mpctx, MPV_EVENT_START_FILE, &start_event);
  
      mp_cancel_reset(mpctx->playback_abort);
+@@ -2071,6 +2075,8 @@
+     mpctx->playing->playlist_prev_attempt = false;
+     mpctx->playlist->playlist_completed = false;
+     mpctx->playlist->playlist_started = true;
++    if (mpctx->video_out)
++        vo_control(mpctx->video_out, VOCTRL_FILE_READY, NULL);
+     mp_notify(mpctx, MPV_EVENT_FILE_LOADED, NULL);
+     update_screensaver_state(mpctx);
+     clear_playlist_paths(mpctx);
 --- a/player/playloop.c
 +++ b/player/playloop.c
 @@ -158,7 +158,8 @@
@@ -935,7 +944,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1258 @@
+@@ -0,0 +1,1269 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1233,8 +1242,16 @@
 +    set_info(t, "dv-failed", s);
 +    snprintf(s, sizeof(s), "%llu", (unsigned long long) t->rpu_frames);
 +    set_info(t, "dv-rpu", s);
-+    if (!buf)
++    if (!buf) {
++        set_info(t, "dv-el", "none");
++        set_info(t, "dv-stream", "");
++        set_info(t, "dv-master", "");
++        set_info(t, "dv-trims", "");
++        set_info(t, "dv-cm", "");
++        set_info(t, "dv-l1", "");
++        set_info(t, "dv-l6", "");
 +        return;
++    }
 +
 +    const AVDOVIMetadata *md = (const AVDOVIMetadata *) buf->data;
 +    const AVDOVIRpuDataHeader *hdr = av_dovi_get_header(md);
@@ -1844,6 +1861,7 @@
 +    t->stream_h = mpi->h;
 +    t->stream_el = have_el;
 +    t->stream_profile = profile;
++    t->publish_countdown = 0; // refresh EL/HDR details on the first new stream frame
 +    char fmt[64];
 +    snprintf(fmt, sizeof(fmt), "%s", mp_imgfmt_to_name(mpi->imgfmt));
 +    if (mpi->imgfmt == IMGFMT_D3D11)
@@ -1892,6 +1910,8 @@
 +    t->options_sent = -1;
 +    t->diag_paused = -1;
 +    t->stream_w = t->stream_h = 0;
++    t->publish_countdown = 0;
++    t->published_state = NULL;
 +    t->reset_context = false;
 +    dlog(t, MSGL_INFO, "previous Dolby Vision file retired; the next stream gets fresh RPU/EL/GUI state.");
 +}
@@ -2619,17 +2639,18 @@
  };
  
  enum mp_voctrl {
-@@ -133,6 +135,9 @@
+@@ -133,6 +135,10 @@
      // Clipboard
      VOCTRL_GET_CLIPBOARD,               // struct voctrl_clipboard*
      VOCTRL_SET_CLIPBOARD,
 +
 +    // New playlist entry, distinct from seek/reset; private output handoff.
 +    VOCTRL_FILE_CHANGED,
++    VOCTRL_FILE_READY,
  };
  
  // Helper to expose what kind of content is currently playing to the VO.
-@@ -572,6 +577,8 @@
+@@ -572,6 +578,8 @@
  int64_t vo_get_delayed_count(struct vo *vo);
  void vo_query_formats(struct vo *vo, uint8_t *list);
  void vo_event(struct vo *vo, int event);
@@ -2650,19 +2671,20 @@
  
  #if HAVE_GL && defined(PL_HAVE_OPENGL)
  #include <libplacebo/opengl.h>
-@@ -121,6 +124,11 @@
+@@ -121,6 +124,12 @@
  };
  
  struct priv {
 +#if HAVE_DOVI_TUNNEL
 +    struct dovi_tunnel *dovi_tunnel;
 +    bool dovi_file_pending;
++    bool dovi_wait_file_ready;
 +    uint64_t dovi_file_boundary;
 +#endif
      struct mp_log *log;
      struct mpv_global *global;
      struct stats_ctx *stats;
-@@ -233,6 +241,7 @@
+@@ -233,6 +242,7 @@
  };
  
  struct gl_next_opts {
@@ -2670,7 +2692,7 @@
      struct pl_tone_map_constants tone_constants;
      bool delayed_peak;
      int sub_hdr_peak;
-@@ -262,6 +271,9 @@
+@@ -262,6 +272,9 @@
  #define OPT_BASE_STRUCT struct gl_next_opts
  const struct m_sub_options gl_next_conf = {
      .opts = (const struct m_option[]) {
@@ -2680,7 +2702,7 @@
          {"tone-mapping-knee-adaptation", OPT_FLOAT(tone_constants.knee_adaptation), M_RANGE(0, 1)},
          {"tone-mapping-knee-minimum", OPT_FLOAT(tone_constants.knee_minimum), M_RANGE(0, 0.5)},
          {"tone-mapping-knee-maximum", OPT_FLOAT(tone_constants.knee_maximum), M_RANGE(0.5, 1)},
-@@ -1502,16 +1514,36 @@
+@@ -1502,16 +1515,36 @@
  
      struct pl_render_params params = pars->params;
      const struct gl_video_opts *opts = p->opts_cache->opts;
@@ -2689,7 +2711,7 @@
 +    const bool dovi_enabled = p->next_opts->dovi_tunnel;
 +    struct mp_image *dovi_frame = frame->current;
 +    if (p->dovi_file_pending) {
-+        if (frame->num_frames && frame->frame_id > p->dovi_file_boundary)
++        if (!p->dovi_wait_file_ready && frame->num_frames && frame->frame_id > p->dovi_file_boundary)
 +            p->dovi_file_pending = false;
 +        else
 +            dovi_frame = NULL; // a retained old frame must not re-enter DV
@@ -2719,7 +2741,7 @@
                             !frame->still && frame->num_frames > 1 && !p->paused;
      if (p->timing_diagnostics) {
          p->timing_draw++;
-@@ -1526,7 +1558,7 @@
+@@ -1526,7 +1559,7 @@
      params.info_priv = vo;
      params.skip_caching_single_frame = !cache_frame;
      params.preserve_mixing_cache = p->next_opts->inter_preserve && !frame->still;
@@ -2728,7 +2750,7 @@
          params.frame_mixer = NULL;
  
      if (frame->current && frame->current->params.vflip) {
-@@ -1634,7 +1666,7 @@
+@@ -1634,7 +1667,7 @@
          target_ref_luma = get_ref_luma(p);
      }
      bool external_params = false;
@@ -2737,7 +2759,7 @@
          const struct pl_color_space *source = &frame->current->params.color;
          const struct pl_color_space *target = &target_csp;
          hint = *source;
-@@ -1736,6 +1768,9 @@
+@@ -1736,6 +1769,9 @@
          if (p->icc_profile)
              hint = p->icc_profile->csp;
          external_params = set_colorspace_hint(p, &hint);
@@ -2747,7 +2769,7 @@
      } else if (!target_hint) {
          if (!hint.hdr.min_luma)
              hint.hdr.min_luma = target_csp.hdr.min_luma;
-@@ -1824,7 +1859,7 @@
+@@ -1824,7 +1860,7 @@
      }
      stats_time_start(p->stats, "osd-update");
      update_overlays(vo, p->osd_res,
@@ -2756,7 +2778,7 @@
                      PL_OVERLAY_COORDS_DST_FRAME, &p->osd_state, &target, frame->current,
                      frame->current ? frame->current->params.stereo3d : 0, get_ref_luma(p));
      stats_time_end(p->stats, "osd-update");
-@@ -1883,7 +1918,7 @@
+@@ -1883,7 +1919,7 @@
              struct mp_image *mpi = image->user_data;
              struct frame_priv *fp = mpi->priv;
              apply_crop(image, p->src, vo->params->w, vo->params->h);
@@ -2765,7 +2787,7 @@
                  if (frame->redraw)
                      p->osd_sync++;
                  if (fp->osd_sync < p->osd_sync) {
-@@ -1976,7 +2011,13 @@
+@@ -1976,7 +2012,13 @@
      pacing_gpu_stage(vo, 140, 0);
      vo_pacing_span_now(vo, 140, 0);
      pacing_gpu_marker(vo, 2);
@@ -2780,7 +2802,7 @@
      pacing_gpu_stage(vo, 141, render_ok);
      vo_pacing_span_now(vo, 141, render_ok);
      if (p->timing_diagnostics) {
-@@ -2008,11 +2049,11 @@
+@@ -2008,11 +2050,11 @@
  
      if (vo->params) {
          // Augment metadata with the peak detection results
@@ -2794,14 +2816,26 @@
      valid = true;
      // fall through
  
-@@ -2471,7 +2512,17 @@
+@@ -2471,7 +2513,29 @@
          return VO_TRUE;
      }
  
 +    case VOCTRL_FILE_CHANGED:
 +#if HAVE_DOVI_TUNNEL
 +        p->dovi_file_boundary = p->last_id;
-+        p->dovi_file_pending = dovi_tunnel_file_changed(p->dovi_tunnel);
++        p->dovi_file_pending = dovi_tunnel_file_changed(p->dovi_tunnel) || p->dovi_file_pending;
++        p->dovi_wait_file_ready = p->dovi_file_pending;
++#endif
++        return VO_TRUE;
++
++    case VOCTRL_FILE_READY:
++#if HAVE_DOVI_TUNNEL
++        // Redraw/requeue of the retained old image during demux loading may
++        // itself receive a new VO ID. Only the ready boundary can exclude it.
++        if (p->dovi_file_pending) {
++            p->dovi_file_boundary = p->last_id;
++            p->dovi_wait_file_ready = false;
++        }
 +#endif
 +        return VO_TRUE;
 +
@@ -2812,7 +2846,7 @@
          // Defer until the first new frame (unique ID) actually arrives
          p->want_seek_reset = true;
          return VO_TRUE;
-@@ -2722,6 +2773,9 @@
+@@ -2722,6 +2786,9 @@
  {
      struct priv *p = vo->priv;
  
@@ -2822,7 +2856,7 @@
      // Drain any in-flight uploads.
      if (p->gpu)
          pl_gpu_finish(p->gpu);
-@@ -2800,6 +2854,7 @@
+@@ -2800,6 +2867,7 @@
      struct gl_video_opts *gl_opts = p->opts_cache->opts;
      struct ra_ctx_opts *ctx_opts = mp_get_config_group(vo, vo->global, &ra_ctx_conf);
      update_ra_ctx_options(vo, ctx_opts);
@@ -2830,7 +2864,7 @@
      p->context = gpu_ctx_create(vo, ctx_opts);
      talloc_free(ctx_opts);
      if (!p->context)
-@@ -2809,6 +2864,9 @@
+@@ -2809,6 +2877,9 @@
      p->pllog = p->context->pllog;
      p->gpu = p->context->gpu;
      p->sw = p->context->swapchain;
