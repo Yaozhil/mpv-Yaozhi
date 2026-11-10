@@ -55,7 +55,9 @@ assert len(inputs)>35
 info=json.loads((build/'meson-info/meson-info.json').read_text())
 meson_version=info['meson_version']['full']
 assert meson_version and all(c in '0123456789.' for c in meson_version)
-run([sys.executable,'-m','pip','install','--disable-pip-version-check',f'meson=={meson_version}','ninja==1.13.2','Mako==1.3.10'],'host-tools.log')
+run([sys.executable,'-m','pip','install','--disable-pip-version-check',f'meson=={meson_version}',
+     'ninja==1.13.2','Mako==1.3.10','rst2pdf==0.103.1'],'host-tools.log')
+run([sys.executable,'-m','pip','freeze'],'host-tools-resolved.txt')
 os.environ['PATH']=str(prefix/'bin')+os.pathsep+os.environ['PATH']
 pkgdir=prefix/'x86_64-w64-mingw32/lib/pkgconfig'
 assert (pkgdir/'libavcodec.pc').is_file()
