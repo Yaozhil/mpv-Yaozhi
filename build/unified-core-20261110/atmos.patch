@@ -899,7 +899,54 @@
      if (capture)
          QueryPerformanceCounter(&api_end);
      p->last_present_hr = present_hr;
-@@ -1385,7 +1386,7 @@
+@@ -869,7 +870,7 @@
+             .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
+             .frame_id = vo->pacing_frame_id, .generation = p->present_generation,
+             .flags = UINT64_C(1) << 63, // error/unsupported; no raw stats
+-            .v = {(uint32_t)hr, tag, p->opts->sync_interval,
++            .v = {(uint32_t)hr, tag, p->last_present_sync_interval,
+                 p->last_submit_qpc, p->perf_freq},
+         };
+         mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
+@@ -877,7 +878,7 @@
+     if (p->secondary_trace)
+         MP_INFO(sw->ctx, "native-ass-dxgi: status=%s hr=0x%08"PRIx32
+                 " sync_interval=%d last_submit_qpc=%"PRId64"\n",
+-                status, (uint32_t)hr, p->opts->sync_interval,
++                status, (uint32_t)hr, p->last_present_sync_interval,
+                 p->last_submit_qpc);
+ }
+ 
+@@ -889,7 +890,9 @@
+     m_config_cache_update(p->opts_cache);
+ 
+     // The calculations below are only valid if mpv presents on every vsync
+-    if (p->opts->sync_interval != 1) {
++    // Classify the actual submission, including the DV carrier's Sync1
++    // transport override. The configured interval can differ from Present.
++    if (p->last_present_sync_interval != 1) {
+         info->secondary_phase_reset = true;
+         d3d11_trace_vsync_status(sw, "unsupported_sync_interval", S_OK);
+         return;
+@@ -1056,7 +1059,7 @@
+                     stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart,
+                     p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
+                     now_qpc.QuadPart, now_ns, info->last_queue_display_time,
+-                    p->opts->sync_interval, desc.SwapEffect,
++                    p->last_present_sync_interval, desc.SwapEffect,
+                     info->secondary_sync_time, info->secondary_display_time},
+             };
+             mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
+@@ -1073,7 +1076,7 @@
+                 stats.SyncRefreshCount, (int64_t)stats.SyncQPCTime.QuadPart,
+                 p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
+                 (int64_t)now_qpc.QuadPart, now_ns,
+-                info->last_queue_display_time, p->opts->sync_interval,
++                info->last_queue_display_time, p->last_present_sync_interval,
+                 (unsigned)desc.SwapEffect);
+     }
+ }
+@@ -1385,7 +1388,7 @@
      // Re-read the current option immediately before the decision. If a config
      // update changes SyncInterval, the FIFO lower bound no longer applies.
      m_config_cache_update(p->opts_cache);
@@ -908,7 +955,7 @@
          return false;
      if (!d3d11_fifo_queue_unchanged(p))
          return false;
-@@ -1393,6 +1394,36 @@
+@@ -1393,6 +1396,36 @@
      p->early_present_target = original_target;
      p->early_present_wait = wait;
      return true;
