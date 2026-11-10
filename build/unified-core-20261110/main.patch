@@ -929,15 +929,28 @@
      if (extra >= 0)
 --- a/video/out/d3d11/context.c
 +++ b/video/out/d3d11/context.c
-@@ -128,6 +128,7 @@
+@@ -128,6 +128,8 @@
      IDXGISwapChain *swapchain;
      struct pl_color_space swapchain_csp;
      BOOL fullscreen_state;
 +    bool dovi_transport;
++    bool dovi_present_blocked;
  
      int64_t perf_freq;
      unsigned last_sync_refresh_count;
-@@ -771,7 +772,7 @@
+@@ -757,6 +759,11 @@
+ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+ {
+     struct priv *p = sw->priv;
++    // The DV worker is changing the display, not accepting carrier frames.
++    // Keep the last scanned-out image; do not submit black/ordinary buffers
++    // into a simultaneous refresh, colour or HDR transition.
++    if (p->dovi_present_blocked)
++        return;
+ 
+     bool trace = p->schedule_trace;
+     bool recording = mp_ass_pacing_enabled(sw->ctx->global);
+@@ -771,7 +778,7 @@
          // Options and swapchain state are checked again at the actual API
          // call site. A change after the VO decision restores the old wait;
          // it must never turn a guarded Sync1 submission into an early Sync0.
@@ -946,7 +959,7 @@
              p->present_generation == p->early_present_generation &&
              p->last_present_valid &&
              p->last_present_generation == p->early_present_generation &&
-@@ -796,13 +797,13 @@
+@@ -796,13 +803,13 @@
      p->last_present_valid = false;
      p->last_present_desc_valid = false;
      p->last_present_generation = 0;
@@ -962,7 +975,7 @@
      if (capture)
          QueryPerformanceCounter(&api_end);
      p->last_present_hr = present_hr;
-@@ -869,7 +870,7 @@
+@@ -869,7 +876,7 @@
              .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
              .frame_id = vo->pacing_frame_id, .generation = p->present_generation,
              .flags = UINT64_C(1) << 63, // error/unsupported; no raw stats
@@ -971,7 +984,7 @@
                  p->last_submit_qpc, p->perf_freq},
          };
          mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
-@@ -877,7 +878,7 @@
+@@ -877,19 +884,26 @@
      if (p->secondary_trace)
          MP_INFO(sw->ctx, "native-ass-dxgi: status=%s hr=0x%08"PRIx32
                  " sync_interval=%d last_submit_qpc=%"PRId64"\n",
@@ -980,7 +993,16 @@
                  p->last_submit_qpc);
  }
  
-@@ -889,7 +890,9 @@
+ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+ {
+     struct priv *p = sw->priv;
++    if (p->dovi_present_blocked) {
++        info->secondary_phase_reset = true;
++        d3d11_trace_vsync_status(sw, "dovi_output_transition", S_OK);
++        return;
++    }
+     HRESULT hr;
+ 
      m_config_cache_update(p->opts_cache);
  
      // The calculations below are only valid if mpv presents on every vsync
@@ -991,7 +1013,7 @@
          info->secondary_phase_reset = true;
          d3d11_trace_vsync_status(sw, "unsupported_sync_interval", S_OK);
          return;
-@@ -1056,7 +1059,7 @@
+@@ -1056,7 +1070,7 @@
                      stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart,
                      p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
                      now_qpc.QuadPart, now_ns, info->last_queue_display_time,
@@ -1000,7 +1022,7 @@
                      info->secondary_sync_time, info->secondary_display_time},
              };
              mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
-@@ -1073,7 +1076,7 @@
+@@ -1073,7 +1087,7 @@
                  stats.SyncRefreshCount, (int64_t)stats.SyncQPCTime.QuadPart,
                  p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
                  (int64_t)now_qpc.QuadPart, now_ns,
@@ -1009,7 +1031,7 @@
                  (unsigned)desc.SwapEffect);
      }
  }
-@@ -1385,7 +1388,7 @@
+@@ -1385,7 +1399,7 @@
      // Re-read the current option immediately before the decision. If a config
      // update changes SyncInterval, the FIFO lower bound no longer applies.
      m_config_cache_update(p->opts_cache);
@@ -1018,7 +1040,7 @@
          return false;
      if (!d3d11_fifo_queue_unchanged(p))
          return false;
-@@ -1393,6 +1396,36 @@
+@@ -1393,6 +1407,56 @@
      p->early_present_target = original_target;
      p->early_present_wait = wait;
      return true;
@@ -1030,6 +1052,26 @@
 +        return;
 +    struct priv *p = ra->priv;
 +    p->dovi_transport = active;
++}
++
++void ra_d3d11_ctx_set_dovi_present_blocked(struct ra_ctx *ra, bool blocked)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return;
++    struct priv *p = ra->priv;
++    if (p->dovi_present_blocked == blocked)
++        return;
++    p->dovi_present_blocked = blocked;
++    d3d11_present_generation_invalidate(p);
++    p->early_present_wait = NULL;
++    p->early_present_generation = 0;
++    p->early_present_target = 0;
++    p->last_sync_refresh_count = 0;
++    p->last_sync_qpc_time = 0;
++    p->vsync_duration_qpc = 0;
++    p->early_statistics_disjoint = true;
++    MP_VERBOSE(ra, "Dolby Vision Present %s during output transition.\n",
++               blocked ? "held" : "resumed");
 +}
 +
 +bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra)
@@ -1057,7 +1099,7 @@
  IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
 --- a/video/out/d3d11/context.h
 +++ b/video/out/d3d11/context.h
-@@ -8,6 +8,11 @@
+@@ -8,6 +8,13 @@
  // Get the underlying D3D11 swap chain from an RA context. The returned swap chain is
  // refcounted and must be released by the caller.
  IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
@@ -1065,6 +1107,8 @@
 +// Raw TV-led DV transport is SDR RGB8 with synchronized whole-frame Present.
 +// No display settings or user options are changed by these functions.
 +void ra_d3d11_ctx_set_dovi_transport(struct ra_ctx *ra, bool active);
++// VO thread only: suppress Present while the DV output worker changes the link.
++void ra_d3d11_ctx_set_dovi_present_blocked(struct ra_ctx *ra, bool blocked);
 +bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra);
  
  // Returns true only when the current swapchain generation still permits a
@@ -1092,7 +1136,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1269 @@
+@@ -0,0 +1,1288 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1458,6 +1502,8 @@
 +        dlog(t, MSGL_INFO, "closing: %llu frames sent as Dolby Vision, %llu not packed, "
 +             "%llu black while switching.", (unsigned long long) t->packed,
 +             (unsigned long long) t->failed_frames, (unsigned long long) t->black_frames);
++        if (t->requested || t->state != DVT_OUTPUT_OFF)
++            ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
 +        t->fn.destroy(t->ctx); // leaves Dolby Vision output (waits for it)
 +    }
 +    if (t->hdr_on_mon) {
@@ -1478,7 +1524,16 @@
 +
 +void dovi_tunnel_reset(struct dovi_tunnel *t)
 +{
-+    (void) t; // no global watchdog/crash-handler diagnostics are installed
++    if (!t)
++        return;
++    // A seek changes decoded frames, not the HDMI output or its capability.
++    // Keep the established carrier, a failed request and an in-flight switch's
++    // deadline. Only a new file or an explicit off/on starts a fresh request.
++    t->pack_fails = t->misses = 0;
++    t->miss_since = t->gap_since = 0;
++    t->gui_since = t->speed_since = 0;
++    t->gui_off = t->speed_warned = false;
++    t->publish_countdown = 0;
 +}
 +
 +void dovi_tunnel_start_file(struct dovi_tunnel *t)
@@ -1785,6 +1840,7 @@
 +    if (t->ctx && t->requested) {
 +        dlog(t, MSGL_INFO, "leaving Dolby Vision output: %s.", why);
 +        set_info(t, "dv-why", why); // shown in the info panel
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
 +        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
 +    }
 +    t->requested = false;
@@ -1793,8 +1849,10 @@
 +    t->gap_since = t->canvas_wait = 0;
 +    t->carrier_prepared = false;
 +    set_wake(t, false);
-+    if (t->state == DVT_OUTPUT_OFF)
++    if (t->state == DVT_OUTPUT_OFF) {
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, false);
 +        set_pause(t, false);
++    }
 +}
 +
 +// A frame that is not sent through the tunnel. Returns true when it must be drawn
@@ -1911,8 +1969,10 @@
 +    struct dvt_link link = {0};
 +    // Announce cooperation before the worker can turn HDR off. Scripts must
 +    // not mistake that transition for a user's manual HDR override.
-+    if (!t->requested)
++    if (!t->requested) {
 +        set_info(t, "dv-out", "entering");
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++    }
 +    int state = t->fn.output(t->ctx, 1, video_monitor(t), fps, mode, &link);
 +    if (!t->requested) {
 +        t->requested = true;
@@ -1959,6 +2019,7 @@
 +                 link.width, link.height);
 +        }
 +        t->out_state = "on";
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, false);
 +        return false;
 +    case DVT_OUTPUT_LIMIT60:
 +        t->failed = t->limit60 = true;
@@ -1984,6 +2045,7 @@
 +    }
 +
 +waiting:
++    ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
 +    t->out_state = "entering";
 +    set_wake(t, true);
 +    if (!t->waiting_for_output) {
@@ -2082,6 +2144,7 @@
 +    if (!tunneled && t->ctx && !t->requested && t->state != DVT_OUTPUT_OFF) {
 +        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
 +        bool leaving = t->state != DVT_OUTPUT_OFF;
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, leaving);
 +        set_wake(t, leaving);
 +        if (leaving) {
 +            set_pause(t, true);
@@ -2407,7 +2470,7 @@
 +                      struct mp_image *mpi, struct mp_rect src,
 +                      const struct pl_frame *target);
 +
-+// A seek or a new file (VOCTRL_RESET), for the diagnostics in mpv-dv.log.
++// Seek-only decoded-frame diagnostics; preserves the HDMI request and carrier.
 +void dovi_tunnel_reset(struct dovi_tunnel *t);
 +void dovi_tunnel_start_file(struct dovi_tunnel *t);
 +// Retire the old file's HDMI/metadata state; false is a no-op when never used.
@@ -2989,7 +3052,7 @@
 +
      case VOCTRL_RESET:
 +#if HAVE_DOVI_TUNNEL
-+        dovi_tunnel_start_file(p->dovi_tunnel);
++        dovi_tunnel_reset(p->dovi_tunnel);
 +#endif
          // Defer until the first new frame (unique ID) actually arrives
          p->want_seek_reset = true;
