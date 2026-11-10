@@ -57,6 +57,12 @@ meson_version=info['meson_version']['full']
 assert meson_version and all(c in '0123456789.' for c in meson_version)
 run([sys.executable,'-m','pip','install','--disable-pip-version-check',f'meson=={meson_version}','ninja==1.13.2','Mako==1.3.10'],'host-tools.log')
 os.environ['PATH']=str(prefix/'bin')+os.pathsep+os.environ['PATH']
+pkgdir=prefix/'x86_64-w64-mingw32/lib/pkgconfig'
+assert (pkgdir/'libavcodec.pc').is_file()
+os.environ['PKG_CONFIG_LIBDIR']=str(pkgdir)
+os.environ['PKG_CONFIG_PATH']=str(pkgdir)
+run([str(prefix/'bin/x86_64-w64-mingw32-pkgconf'),'--static','--cflags','--libs',
+     'libavcodec','libavformat','libavutil','libass','libplacebo'],'pkg-config-preflight.log')
 run(['meson','setup','--reconfigure','--clearcache',str(build),str(source)],'meson-reconfigure.log')
 start=time.time()
 run(['ninja','-j2','-C',str(build),'mpv.exe','mpv.com'],'compile.log')
