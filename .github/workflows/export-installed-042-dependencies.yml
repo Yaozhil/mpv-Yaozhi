@@ -1,0 +1,63 @@
+name: Export exact installed 0.42 build dependencies
+
+# This temporary workflow must run in PR 35, whose merge ref owns the caches.
+# It never checks out or executes project code and never creates a release.
+on:
+  pull_request:
+    types: [synchronize, reopened]
+    paths: ['.github/workflows/export-installed-042-dependencies.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event.pull_request.number == 35
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, atmos]
+    steps:
+      - name: Restore only the exact installed dependency generation
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          fail-on-cache-miss: true
+          key: mpv-042-dependency-${{ matrix.variant }}-9c759137b540fd1d7229c2225282074c36e99164786f273d83a9bef33ec7b590
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+
+      - name: Bind the actual prefix and preserve source and build metadata
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          root=winbuild/mpv-winbuild-cmake
+          test -x "$root/build64/install/bin/cross-gcc"
+          for name in avcodec avformat avutil swresample ass placebo AVS3AudioDec RendererCore; do
+            test -s "$root/build64/install/x86_64-w64-mingw32/lib/lib${name}.a"
+          done
+          mkdir -p export
+          "$root/build64/install/bin/cross-gcc" -v > export/compiler.txt 2>&1
+          find "$root/build64/install" -type f -print0 | sort -z | xargs -0 sha256sum > export/prefix.sha256
+          find "$root/build64/install" -type l -printf '%p -> %l\n' | sort > export/prefix-symlinks.txt
+          printf '%s\n' "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$VARIANT" > export/invocation.txt
+          # No cleanup or cache save: export the restored generation unchanged.
+          tar --zstd -cf "export/installed-042-${VARIANT}.tar.zst" \
+            "$root/build64/install" "$root/build64/packages" \
+            "$root/build64/toolchain" "$root/src_packages"
+          sha256sum "export/installed-042-${VARIANT}.tar.zst" > export/archive.sha256
+
+      - name: Upload build inputs only, with a short retention
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: installed-042-dependencies-${{ matrix.variant }}
+          path: export/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
