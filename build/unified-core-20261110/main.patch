@@ -2186,10 +2186,10 @@
 +            set_pause(t, true);
 +        }
 +        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, leaving);
-+        set_wake(t, leaving);
++        set_wake(t, leaving && t->state != DVT_OUTPUT_RECOVERY_FAILED);
 +        if (leaving) {
 +            set_pause(t, true);
-+            t->out_state = "leaving";
++            t->out_state = t->state == DVT_OUTPUT_RECOVERY_FAILED ? "recovery-failed" : "leaving";
 +            tunneled = draw_black(t, target, false);
 +        } else {
 +            set_pause(t, false);
