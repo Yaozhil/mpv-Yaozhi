@@ -1183,7 +1183,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1294 @@
+@@ -0,0 +1,1320 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1311,6 +1311,7 @@
 +    bool limit60;        // the TV cannot output this file at 2160p60
 +    int64_t switch_start;
 +    int64_t canvas_wait;
++    int64_t canvas_sync;
 +    bool was_enabled;
 +    bool waiting_for_output;   // playback paused while the output switches
 +    int misses;
@@ -1992,6 +1993,7 @@
 +static const char *state_name(int state)
 +{
 +    return state == DVT_OUTPUT_ON ? "on" : state == DVT_OUTPUT_LEAVING ? "leaving" :
++           state == DVT_OUTPUT_RECOVERY_FAILED ? "recovery-failed" :
 +           state == DVT_OUTPUT_LIMIT60 ? "limit60" :
 +           state == DVT_OUTPUT_FAILED ? "failed" : state == DVT_OUTPUT_ENTERING ? "entering" : "off";
 +}
@@ -2042,6 +2044,14 @@
 +                dlog(t, MSGL_INFO, "waiting for the fullscreen buffer %ux%u to match HDMI %ux%u.",
 +                     buffer_w, buffer_h, link.width, link.height);
 +            }
++            // WM_DPICHANGED can leave the suggested logical size in place
++            // while update_fullscreen_state sees no fullscreen-flag change.
++            // Correct the physical rectangle on the GUI thread, then let the
++            // normal VO resize recreate its buffer; never fake buffer sizes.
++            if (fullscreen && (!t->canvas_sync || now - t->canvas_sync >= MP_TIME_MS_TO_NS(250))) {
++                vo_w32_sync_dovi_fullscreen(t->vo);
++                t->canvas_sync = now;
++            }
 +            if (now - t->canvas_wait < MP_TIME_MS_TO_NS(3000))
 +                goto waiting;
 +            switch_failed(t, "fullscreen buffer does not match the HDMI signal");
@@ -2059,7 +2069,7 @@
 +            }
 +            t->carrier_prepared = true;
 +        }
-+        t->canvas_wait = 0;
++        t->canvas_wait = t->canvas_sync = 0;
 +        t->switch_start = 0;
 +        set_wake(t, false);
 +        if (t->waiting_for_output) {
@@ -2084,6 +2094,16 @@
 +            set_info(t, "dv-ask", ask);
 +        }
 +        return false;
++    case DVT_OUTPUT_RECOVERY_FAILED:
++        t->failed = true;
++        t->requested = false;
++        t->out_state = "recovery-failed";
++        set_info(t, "dv-out", "recovery-failed");
++        set_info(t, "dv-why", "HDMI recovery failed; output held, no automatic retry");
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++        set_pause(t, true);
++        set_wake(t, false);
++        return true;
 +    case DVT_OUTPUT_FAILED:
 +        switch_failed(t, "see the lines above");
 +        return false;
@@ -2197,6 +2217,12 @@
 +    if (!tunneled && t->ctx && !t->requested && t->state != DVT_OUTPUT_OFF) {
 +        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
 +        bool leaving = t->state != DVT_OUTPUT_OFF;
++        if (t->state == DVT_OUTPUT_RECOVERY_FAILED) {
++            t->out_state = "recovery-failed";
++            set_info(t, "dv-out", "recovery-failed");
++            set_info(t, "dv-why", "HDMI recovery failed; output held, no automatic retry");
++            set_pause(t, true);
++        }
 +        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, leaving);
 +        set_wake(t, leaving);
 +        if (leaving) {
@@ -2541,7 +2567,7 @@
 +void dovi_tunnel_set_content_type(struct dovi_tunnel *t, int mode);
 --- /dev/null
 +++ b/video/out/gpu_next/dvtunnel.h
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,196 @@
 +/*
 + * dvtunnel.dll: TV-led Dolby Vision output for a D3D11 video player.
 + *
@@ -2616,6 +2642,7 @@
 +
 +enum dvt_output_state {
 +    DVT_OUTPUT_OFF = 0,
++    DVT_OUTPUT_RECOVERY_FAILED = 6, // hold Present; explicit recovery required
 +    DVT_OUTPUT_ENTERING = 1, // switching; takes a few seconds
 +    DVT_OUTPUT_ON = 2,
 +    DVT_OUTPUT_LEAVING = 3,
@@ -3138,3 +3165,46 @@
      p->hwdec_ctx = (struct ra_hwdec_ctx) {
          .log = p->log,
          .global = p->global,
+--- a/video/out/w32_common.c
++++ b/video/out/w32_common.c
+@@ -2618,6 +2618,30 @@
+     mp_dispatch_run(w32->dispatch, cb, ctx);
+ }
+ 
++static void sync_dovi_fullscreen(void *ptr)
++{
++    struct vo_w32_state *w32 = ptr;
++    // Do not alter embedded, minimized or ordinary/windowed playback.
++    if (w32->parent || w32->destroyed || !w32->window ||
++        !w32->current_fs || !w32->opts->fullscreen || IsMinimized(w32->window))
++        return;
++    force_update_display_info(w32);
++    RECT target = get_screen_area(w32);
++    RECT current;
++    if (GetWindowRect(w32->window, &current) && !EqualRect(&current, &target)) {
++        MP_VERBOSE(w32, "DV fullscreen physical rectangle: %ld,%ld %ldx%ld.\n",
++                   target.left, target.top, rect_w(target), rect_h(target));
++        window_set_pos(w32, target);
++        signal_events(w32, VO_EVENT_RESIZE);
++    }
++}
++
++void vo_w32_sync_dovi_fullscreen(struct vo *vo)
++{
++    if (vo && vo->w32)
++        vo_w32_run_on_thread(vo, sync_dovi_fullscreen, vo->w32);
++}
++
+ void vo_w32_set_transparency(struct vo *vo, bool enable)
+ {
+     struct vo_w32_state *w32 = vo->w32;
+--- a/video/out/w32_common.h
++++ b/video/out/w32_common.h
+@@ -35,5 +35,7 @@
+ bool vo_w32_composition_size(struct vo *vo);
+ void vo_w32_run_on_thread(struct vo *vo, void (*cb)(void *ctx), void *ctx);
+ void vo_w32_set_transparency(struct vo *vo, bool enable);
++// DV handshake only: reconcile a fullscreen window after physical mode/DPI changes.
++void vo_w32_sync_dovi_fullscreen(struct vo *vo);
+ 
+ #endif /* MPLAYER_W32_COMMON_H */
