@@ -1,0 +1,107 @@
+[
+  {
+    "id": "ui-annotated",
+    "file": "ui-annotated.png",
+    "title": "mpv-Yaozhi 主界面"
+  },
+  {
+    "id": "startup-format-badges-playback",
+    "file": "startup-format-badges-playback.png",
+    "title": "mpv-Yaozhi 播放界面"
+  },
+  {
+    "id": "player-menu",
+    "file": "功能界面展示111.png",
+    "title": "杳知功能菜单"
+  },
+  {
+    "id": "config-assistant-7.1",
+    "file": "config-assistant-7.1.png",
+    "title": "杳知 MPV 配置助手 7.1：基础设置、账号与 Cookie、弹幕源及旧配置迁移"
+  },
+  {
+    "id": "emby-home",
+    "file": "emby-cinema-home.png",
+    "title": "Emby 媒体库首页：影片横幅、简介与分类入口"
+  },
+  {
+    "id": "emby-library",
+    "file": "emby-poster-library.png",
+    "title": "Emby 国产剧媒体库：海报墙、片名与分类切换"
+  },
+  {
+    "id": "emby-details",
+    "file": "emby-cinema-details.png",
+    "title": "Emby 影院式剧集详情：片名、简介、播放与按季选集"
+  },
+  {
+    "id": "ai-interpolation-hdr-4k",
+    "file": "ai-interpolation-hdr-4k.png",
+    "title": "RTX 5090 D v2 实机播放：4K 输入 25 fps，输出 50 fps"
+  },
+  {
+    "id": "bluray-menu-showcase-1",
+    "file": "bluray-menu-showcase-1.png",
+    "title": "蓝光原盘菜单播放展示"
+  },
+  {
+    "id": "bluray-menu-showcase-2",
+    "file": "bluray-menu-showcase-2.png",
+    "title": "蓝光原盘菜单播放展示"
+  },
+  {
+    "id": "startup-format-badges-vivid-dual",
+    "file": "startup-format-badges-vivid-dual.png",
+    "title": "HDR Vivid 与 Audio Vivid 起播格式标签"
+  },
+  {
+    "id": "startup-format-badges-opening",
+    "file": "startup-format-badges-opening.png",
+    "title": "双杜比起播格式标签"
+  },
+  {
+    "id": "startup-format-badges-color-overview",
+    "file": "startup-format-badges-color-overview.png",
+    "title": "彩色版起播格式标签"
+  },
+  {
+    "id": "startup-format-badges-white-overview",
+    "file": "startup-format-badges-white-overview.png",
+    "title": "透明白色版起播格式标签"
+  },
+  {
+    "id": "cinema-remote-library",
+    "file": "cinema-remote-library.png",
+    "title": "手机选片：浏览本地目录与剧集"
+  },
+  {
+    "id": "cinema-remote-controls",
+    "file": "cinema-remote-controls.png",
+    "title": "播放遥控：暂停、进度、音量、字幕与音轨"
+  },
+  {
+    "id": "cinema-remote-link",
+    "file": "cinema-remote-link.png",
+    "title": "链接播放：识别分享内容并在电脑播放"
+  },
+  {
+    "id": "cinema-remote-danmaku",
+    "file": "cinema-remote-danmaku.png",
+    "title": "弹幕搜索与加载：在手机上查找并控制大屏弹幕"
+  },
+  {
+    "id": "cinema-remote-search",
+    "file": "cinema-remote-search.png",
+    "title": "目录搜索与剧集浏览：按关键词查找影片"
+  },
+  {
+    "id": "cinema-remote-playlist",
+    "file": "cinema-remote-playlist.png",
+    "title": "播放列表与选集：查看剧集并选择播放"
+  },
+  {
+    "id": "support",
+    "file": "赞赏码.png",
+    "title": "支持 mpv-Yaozhi"
+  }
+]

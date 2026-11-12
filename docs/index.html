@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>界面图库 · mpv-Yaozhi</title>
+  <script>
+    const gallery = new URL("./gallery/", location.href);
+    gallery.search = location.search;
+    gallery.hash = location.hash;
+    location.replace(gallery.href);
+  </script>
+  <noscript><meta http-equiv="refresh" content="0; url=./gallery/"></noscript>
+</head>
+<body>
+  <p>正在打开 <a href="./gallery/">mpv-Yaozhi 界面图库</a>…</p>
+</body>
+</html>

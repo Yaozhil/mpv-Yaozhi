@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b100d">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>界面图库 · mpv-Yaozhi</title>
+  <link rel="stylesheet" href="./viewer.css">
+  <script src="./viewer.js" defer></script>
+</head>
+<body>
+  <header class="toolbar" id="toolbar" aria-label="图片查看工具栏">
+    <div class="heading">
+      <p class="brand">mpv-Yaozhi <span>界面图库</span></p>
+      <h1 id="image-title">正在打开图库…</h1>
+    </div>
+
+    <div class="toolbar-actions" role="group" aria-label="查看方式">
+      <button class="control" id="fit-button" type="button" aria-pressed="true" disabled>适应</button>
+      <button class="control" id="actual-button" type="button" aria-pressed="false" disabled>1:1</button>
+      <button class="control" id="fullscreen-button" type="button" aria-label="进入全屏" aria-pressed="false">
+        <span id="fullscreen-label">进入全屏</span>
+      </button>
+      <a class="control original-link" id="original-link" aria-label="在新标签页查看原图" aria-disabled="true" target="_blank" rel="noopener noreferrer">原图 ↗</a>
+    </div>
+
+    <button class="control close-button" id="close-button" type="button" aria-label="关闭图库，返回项目主页" title="关闭（Esc）">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+    </button>
+  </header>
+
+  <main class="stage" id="stage" aria-label="图片查看区域" aria-busy="true">
+    <div class="image-canvas mode-fit" id="image-canvas" tabindex="0" aria-label="当前图片；左右方向键切换，Esc 关闭"></div>
+
+    <div class="state-panel" id="loading-panel" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <p id="loading-message">正在加载图库…</p>
+    </div>
+
+    <div class="state-panel error-panel" id="error-panel" role="alert" hidden>
+      <p class="error-heading" id="error-heading">暂时无法打开图库</p>
+      <p id="error-message">请检查网络后重试。</p>
+      <button class="control retry-button" id="retry-button" type="button">重新加载</button>
+    </div>
+
+    <noscript><p class="no-script">请启用 JavaScript 查看图库，或<a href="https://github.com/Yaozhil/mpv-Yaozhi#readme">返回项目主页</a>。</p></noscript>
+  </main>
+
+  <footer class="navigation" id="navigation" aria-label="图片切换">
+    <button class="control navigation-button" id="previous-button" type="button" aria-label="上一张图片（左方向键）" title="上一张（←）" disabled>
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m14 5-7 7 7 7"/></svg>
+    </button>
+    <div class="position">
+      <p id="position-label" aria-live="polite" aria-atomic="true">— / —</p>
+      <p class="keyboard-hint">← / → 切换图片 <span>·</span> Esc 关闭</p>
+    </div>
+    <button class="control navigation-button" id="next-button" type="button" aria-label="下一张图片（右方向键）" title="下一张（→）" disabled>
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 5 7 7-7 7"/></svg>
+    </button>
+  </footer>
+
+  <p class="notice" id="notice" role="status" aria-live="polite" hidden></p>
+</body>
+</html>
