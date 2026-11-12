@@ -67,8 +67,8 @@
 <br>
 
 <p align="center">
-  <a href="https://yaozhil.github.io/mpv-Yaozhi/gallery/#emby-library" title="点击全屏查看，右上角可关闭"><img src="docs/images/emby-poster-library.png" alt="Emby 国产剧媒体库：海报墙、片名与分类切换" width="450"></a> &nbsp;
-  <a href="https://yaozhil.github.io/mpv-Yaozhi/gallery/#emby-details" title="点击全屏查看，右上角可关闭"><img src="docs/images/emby-cinema-details.png" alt="Emby 影院式剧集详情：片名、简介、播放与按季选集" width="450"></a>
+  <a href="https://yaozhil.github.io/mpv-Yaozhi/gallery/#emby-library" title="点击全屏查看，右上角可关闭"><img src="docs/images/emby-poster-library.png" alt="Emby 国产剧媒体库：海报墙、片名与分类切换" width="400"></a> &nbsp;
+  <a href="https://yaozhil.github.io/mpv-Yaozhi/gallery/#emby-details" title="点击全屏查看，右上角可关闭"><img src="docs/images/emby-cinema-details.png" alt="Emby 影院式剧集详情：片名、简介、播放与按季选集" width="400"></a>
 </p>
 
 <p align="center">海报墙浏览 · 影院式详情与选集<br><sub>点击图片可全屏查看，按 Esc 或点右上角关闭。</sub></p>
