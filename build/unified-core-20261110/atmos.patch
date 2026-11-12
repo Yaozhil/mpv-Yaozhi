@@ -1078,7 +1078,7 @@
          return false;
      if (!d3d11_fifo_queue_unchanged(p))
          return false;
-@@ -1393,6 +1407,73 @@
+@@ -1393,6 +1407,87 @@
      p->early_present_target = original_target;
      p->early_present_wait = wait;
      return true;
@@ -1120,14 +1120,15 @@
 +    return p->present_generation;
 +}
 +
-+bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra)
++bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra, bool reset_hdr_state)
 +{
 +    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
 +        return false;
 +    struct priv *p = ra->priv;
-+    // The SDR hint was applied by vo_gpu_next before requesting NVAPI DV.
-+    // Once the HDMI handshake is active, only inspect the carrier here:
-+    // writing ColorSpace/HDR metadata again can replace driver-owned signalling.
++    // Keep the existing read-only path when entering from an SDR desktop.
++    // An external Windows HDR transition can invalidate the actual DXGI state
++    // without invalidating libplacebo's cached SDR hint. Support is not state:
++    // an HDR-origin request must rebind the carrier before its first Present.
 +    DXGI_SWAP_CHAIN_DESC desc = {0};
 +    HRESULT hr = IDXGISwapChain_GetDesc(p->swapchain, &desc);
 +    bool rgb8 = desc.BufferDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
@@ -1142,10 +1143,23 @@
 +    if (SUCCEEDED(hr))
 +        hr = IDXGISwapChain3_CheckColorSpaceSupport(sc3, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
 +                                                  &support);
-+    SAFE_RELEASE(sc3);
 +    bool supported = SUCCEEDED(hr) && (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT);
++    IDXGISwapChain4 *sc4 = NULL;
++    if (supported && reset_hdr_state) {
++        hr = IDXGISwapChain_QueryInterface(p->swapchain, &IID_IDXGISwapChain4, (void **)&sc4);
++        if (SUCCEEDED(hr))
++            hr = IDXGISwapChain3_SetColorSpace1(sc3, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
++        if (SUCCEEDED(hr))
++            hr = IDXGISwapChain4_SetHDRMetaData(sc4, DXGI_HDR_METADATA_TYPE_NONE, 0, NULL);
++        supported = SUCCEEDED(hr);
++    }
++    SAFE_RELEASE(sc4);
++    SAFE_RELEASE(sc3);
 +    if (!supported)
-+        MP_WARN(ra, "Could not verify Dolby Vision SDR carrier support: %s\n", mp_HRESULT_to_str(hr));
++        MP_WARN(ra, "Could not prepare Dolby Vision SDR carrier (HDR reset %d): %s\n",
++                reset_hdr_state, mp_HRESULT_to_str(hr));
++    else if (reset_hdr_state)
++        MP_INFO(ra, "Dolby Vision carrier: SDR RGB full rebound after Windows HDR transition, HDR10 metadata cleared.\n");
 +    else
 +        MP_INFO(ra, "Dolby Vision carrier: 8-bit RGB verified; preserving driver HDMI signalling.\n");
 +    return supported;
@@ -1154,7 +1168,7 @@
  IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
 --- a/video/out/d3d11/context.h
 +++ b/video/out/d3d11/context.h
-@@ -8,6 +8,14 @@
+@@ -8,6 +8,15 @@
  // Get the underlying D3D11 swap chain from an RA context. The returned swap chain is
  // refcounted and must be released by the caller.
  IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
@@ -1164,7 +1178,8 @@
 +void ra_d3d11_ctx_set_dovi_transport(struct ra_ctx *ra, bool active);
 +// VO thread only: suppress Present while the DV output worker changes the link.
 +void ra_d3d11_ctx_set_dovi_present_blocked(struct ra_ctx *ra, bool blocked);
-+bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra);
++// Rebind SDR state only for a request that began with Windows HDR enabled.
++bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra, bool reset_hdr_state);
 +uint64_t ra_d3d11_ctx_dovi_generation(struct ra_ctx *ra);
  
  // Returns true only when the current swapchain generation still permits a
@@ -1192,7 +1207,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1399 @@
+@@ -0,0 +1,1417 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1203,6 +1218,7 @@
 +#include <stdarg.h>
 +#include <stdio.h>
 +#include <string.h>
++#include <wchar.h>
 +
 +#include <windows.h>
 +#include <d3d11.h>
@@ -1313,6 +1329,8 @@
 +    ID3D11Texture2D *gui_raw;
 +    pl_tex gui_tex;
 +
++    wchar_t req_display[CCHDEVICENAME]; // stable target across HMONITOR rebuilds
++    int req_windows_hdr; // Windows HDR at request: 2 on, 1 off, 0 unsupported, -1 unknown
 +    bool requested;      // Dolby Vision output asked for
 +    double req_fps;      // the frame rate it was asked for
 +    int state;           // last enum dvt_output_state seen
@@ -1342,7 +1360,7 @@
 +    int64_t speed_since;
 +    int speed_frames;
 +    bool speed_warned;
-+    bool carrier_prepared; // carrier format/support inspected after the HDMI handshake
++    bool carrier_prepared; // carrier checked/rebound after the HDMI handshake
 +    uint64_t carrier_generation; // recheck after a real swapchain lifecycle change
 +    bool reset_context; // retire old RPU/EL/GUI resources after output restore completes
 +    bool window_change_pending; // native window options held until HDMI is Off
@@ -1904,6 +1922,8 @@
 +        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
 +    }
 +    t->requested = false;
++    t->req_display[0] = L'\0';
++    t->req_windows_hdr = -1;
 +    t->misses = 0;
 +    t->switch_start = 0;
 +    t->gap_since = t->canvas_wait = 0;
@@ -2101,13 +2121,24 @@
 +        return false;
 +    int64_t now = mp_time_ns();
 +    struct dvt_link link = {0};
-+    // Announce cooperation before the worker can turn HDR off. Scripts must
-+    // not mistake that transition for a user's manual HDR override.
-+    if (!t->requested) {
++    HMONITOR monitor = video_monitor(t);
++    MONITORINFOEXW mi = {.cbSize = sizeof(mi)};
++    bool have_display = monitor && GetMonitorInfoW(monitor, (MONITORINFO *)&mi);
++    bool target_changed = t->requested && have_display &&
++                          _wcsicmp(t->req_display, mi.szDevice) != 0;
++    // Capture before the worker can turn HDR off. Never re-read it every frame
++    // or after a seek: the temporary SDR state is not the request's origin.
++    // Bind it to the GDI name, not HMONITOR, which a mode switch may rebuild.
++    if (!t->requested || target_changed) {
 +        set_info(t, "dv-out", "entering");
 +        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++        t->req_windows_hdr = t->fn.windows_hdr(monitor, -1);
++        memcpy(t->req_display, mi.szDevice, sizeof(t->req_display));
++        t->carrier_prepared = false;
++        dlog(t, MSGL_INFO, "Windows HDR at Dolby Vision request: %d; SDR carrier rebind %s.",
++             t->req_windows_hdr, t->req_windows_hdr == 2 ? "required" : "not requested");
 +    }
-+    int state = t->fn.output(t->ctx, 1, video_monitor(t), fps, mode, &link);
++    int state = t->fn.output(t->ctx, 1, monitor, fps, mode, &link);
 +    if (!t->requested) {
 +        t->requested = true;
 +        t->req_fps = fps;
@@ -2141,14 +2172,14 @@
 +            switch_failed(t, "fullscreen buffer does not match the HDMI signal");
 +            return false;
 +        }
-+        // The SDR hint was applied before the HDMI request. Inspect the buffer
-+        // after any lifecycle change, without overwriting driver-owned HDMI
-+        // signalling after NVAPI entered DV.
++        // The pre-request SDR hint may still be cached after Windows HDR was
++        // disabled. Rebind only that HDR-origin request; preserve the read-only
++        // SDR path. Never release Present before canvas and carrier are ready.
 +        uint64_t carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
 +        if (!t->carrier_prepared || t->carrier_generation != carrier_generation) {
 +            ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
-+            if (!ra_d3d11_ctx_prepare_dovi_carrier(t->ra_ctx)) {
-+                switch_failed(t, "could not verify the 8-bit RGB carrier support");
++            if (!ra_d3d11_ctx_prepare_dovi_carrier(t->ra_ctx, t->req_windows_hdr == 2)) {
++                switch_failed(t, "could not prepare the 8-bit SDR RGB carrier");
 +                return false;
 +            }
 +            t->carrier_prepared = true;
@@ -2181,6 +2212,8 @@
 +    case DVT_OUTPUT_RECOVERY_FAILED:
 +        t->failed = true;
 +        t->requested = false;
++        t->req_display[0] = L'\0';
++        t->req_windows_hdr = -1;
 +        t->out_state = "recovery-failed";
 +        set_info(t, "dv-out", "recovery-failed");
 +        set_info(t, "dv-why", "HDMI recovery failed; output held, no automatic retry");
