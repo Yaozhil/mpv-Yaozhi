@@ -1,6 +1,6 @@
 {
   "variant": "atmos",
-  "phase": "dv-r14-pre-signal-SDR-carrier-and-PCM-only-SDL",
+  "phase": "dv-r15-verified-SDR-entry-with-readonly-fallback",
   "baseline_archive_sha256": "025587d4ea19512b949d7ed96cc52cee46696fc3b78af4056bd328bcdecdc521",
   "before": {
     ".editorconfig": "866cbc92d3ed2b26c6e7e277b03af113aecc1a50cfeb03d6c00e63ef04ed2352",
@@ -1548,9 +1548,9 @@
     "video/out/gpu/video_shaders.h": "a06097d69ee28095f3bb066c9b07342646819f5f77ac139a8c37c6a8f07ef73e",
     "video/out/gpu_next/context.c": "7ff59f2543184fb58c6154241880da65c5a2607847e421fb87e307f64559628a",
     "video/out/gpu_next/context.h": "02910eef9500c0974a57de23391d62ad9fe2c95c5c46ec6cf6b820a6e764d9d1",
-    "video/out/gpu_next/dovi_tunnel.c": "0bd318e6121a256786912c6021f7e8e7d419f18c16bd004fc1ae7e5cabd43f7a",
+    "video/out/gpu_next/dovi_tunnel.c": "84a2485a9cf03370e977dd78ca42a385a7412883095a6aa3371e2f150349a04d",
     "video/out/gpu_next/dovi_tunnel.h": "d56589821e47f3b7780e9c429bf694dacb1f85d11af82f2030681a4d11d81675",
-    "video/out/gpu_next/dvtunnel.h": "ccaa43fee834a8be8242243014797e7102d21a831b0ecf1af78faff5485db41a",
+    "video/out/gpu_next/dvtunnel.h": "7f75b3b7ca577b67537fe3fd89782ded253fa3587e6b3ad9600ef63e76cff5ba",
     "video/out/hwdec/dmabuf_interop.h": "95964b56fde9793da01e7c511b492c14fa207dd6e748b8945bec8f3109011a7e",
     "video/out/hwdec/dmabuf_interop_gl.c": "1ba571b0b0e9e7c873ba1873ad1df499248a2aff9a6fb8d66434f7c9c5a3336a",
     "video/out/hwdec/dmabuf_interop_pl.c": "ddcb41074c76abd95404183e6ca417fe8ef3f00be9e3269ef91cacb53d493b59",

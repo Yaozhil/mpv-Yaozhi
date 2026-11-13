@@ -1221,7 +1221,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1424 @@
+@@ -0,0 +1,1482 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1298,6 +1298,8 @@
 +        dvt_monitor_gpu_fn monitor_gpu;
 +        dvt_set_options_fn set_options;
 +        dvt_windows_hdr_fn windows_hdr;
++        dvt_check_output_fn check_output;
++        dvt_poll_output_fn poll_output;
 +        dvt_content_type_fn content_type; // optional
 +    } fn;
 +    dvt_ctx *ctx;
@@ -1345,6 +1347,9 @@
 +
 +    wchar_t req_display[CCHDEVICENAME]; // stable target across HMONITOR rebuilds
 +    int req_windows_hdr; // Windows HDR at request: 2 on, 1 off, 0 unsupported, -1 unknown
++    int entry_blocked; // preflight result; reset by a new explicit off/on
++    bool entry_pending, entry_query_started;
++    int64_t entry_query_start;
 +    bool requested;      // Dolby Vision output asked for
 +    double req_fps;      // the frame rate it was asked for
 +    int state;           // last enum dvt_output_state seen
@@ -1638,6 +1643,8 @@
 +    t->gui_since = t->speed_since = 0;
 +    t->gui_off = t->speed_warned = false;
 +    t->carrier_prepared = false;
++    t->entry_blocked = 0;
++    t->entry_pending = t->entry_query_started = false;
 +    t->gui_interactive = false;
 +    set_info(t, "dv-why", "");
 +    set_info(t, "dv-slow", "");
@@ -1675,7 +1682,7 @@
 +    if (!version || version() != DVT_API_VERSION || !LOAD(create) || !LOAD(destroy) ||
 +        !LOAD(render) || !LOAD(gui_texture) || !LOAD(finish) || !LOAD(output) ||
 +        !LOAD(remove_leftover) || !LOAD(log) || !LOAD(monitor_gpu) ||
-+        !LOAD(set_options) || !LOAD(windows_hdr))
++        !LOAD(set_options) || !LOAD(windows_hdr) || !LOAD(check_output) || !LOAD(poll_output))
 +    {
 +        MP_ERR(t, "dvtunnel.dll is not the version this mpv expects (%d).\n",
 +               DVT_API_VERSION);
@@ -1873,7 +1880,7 @@
 +    // NVIDIA's "content type reported to the display" (auto breaks Dolby Vision on some
 +    // TVs), once per display and choice. ask (default): read it first; on auto the
 +    // scripts ask the viewer (user-data/yaozhi-dv/ct-ask). A choice is written and read back.
-+    if (v == DVT_GPU_NVIDIA && t->fn.content_type && t->ct_mode != 6 &&
++    if (v == DVT_GPU_NVIDIA && !t->entry_blocked && !t->entry_pending && t->fn.content_type && t->ct_mode != 6 &&
 +        (t->ct_mon != mon || t->ct_done != t->ct_mode))
 +    {
 +        // DLL values (as the control panel lists them): 0 full-screen video, 1 desktop,
@@ -1916,6 +1923,45 @@
 +           src.x1 == mpi->w && src.y1 == mpi->h;
 +}
 +
++static bool check_sdr_entry(struct dovi_tunnel *t)
++{
++    if (test_mode() || t->requested || t->state != DVT_OUTPUT_OFF)
++        return true; // do not infer entry state from an established DV link
++    if (!load_dll(t)) return false;
++    struct dvt_preflight info = {0};
++    bool refresh = !t->entry_query_started;
++    if (refresh) { t->entry_query_started = true; t->entry_query_start = mp_time_ns(); }
++    int result = t->fn.poll_output(video_monitor(t), refresh, &info);
++    t->entry_pending = result == -2;
++    if (t->entry_pending && mp_time_ns() - t->entry_query_start < MP_TIME_MS_TO_NS(10000)) {
++        set_info(t, "dv-preflight", "checking");
++        set_info(t, "dv-check-reason", "checking");
++        set_wake(t, true);
++        return false; // normal mapped frames continue, no carrier/setter changes
++    }
++    if (t->entry_pending) { t->entry_pending = false; result = -1; snprintf(info.reason, sizeof(info.reason), "query-timeout"); }
++    char value[32];
++    snprintf(value, sizeof(value), "%d", result);
++    set_info(t, "dv-preflight", value);
++    snprintf(value, sizeof(value), "%d", info.source);
++    set_info(t, "dv-check-source", value);
++    set_info(t, "dv-target", info.target);
++    set_info(t, "dv-check-reason", info.reason);
++    set_info(t, "win-hdr", info.windows_mode == 2 ? "on" : info.windows_mode == 1 ? "wcg" :
++             info.windows_mode == 0 ? "off" : result == 0 ? "off-fallback" : "unknown");
++    if (result == 0) {
++        t->entry_blocked = 0;
++        set_info(t, "dv-why", "");
++        return true;
++    }
++    t->entry_blocked = result == 1 ? 1 : result == 2 ? 2 : result == 3 ? 3 : result == 4 ? 4 : -1;
++    t->failed = true;
++    set_info(t, "dv-why", info.reason);
++    dlog(t, MSGL_WARN, "Dolby Vision entry rejected before carrier/display changes: %s (source %d, target %s).",
++         info.reason, info.source, info.target);
++    return false;
++}
++
 +bool dovi_tunnel_wanted(struct dovi_tunnel *t, bool enabled, struct mp_image *mpi,
 +                        struct mp_rect src)
 +{
@@ -1923,7 +1969,7 @@
 +        return true; // keep the swapchain in SDR until the HDMI switch has left
 +    return t && enabled && !t->display_busy && !t->load_failed && !(t->failed && enabled == t->was_enabled) &&
 +           can_pack_geometry(mpi, src) && stream_dovi(t, mpi) && covers_monitor(t, t->vo->dwidth, t->vo->dheight) &&
-+           gpu_can_switch(t);
++           check_sdr_entry(t) && gpu_can_switch(t);
 +}
 +
 +// Stops asking for Dolby Vision output; the DLL leaves it in the background.
@@ -2144,6 +2190,7 @@
 +    // or after a seek: the temporary SDR state is not the request's origin.
 +    // Bind it to the GDI name, not HMONITOR, which a mode switch may rebuild.
 +    if (!t->requested || target_changed) {
++        if (!t->requested && !check_sdr_entry(t)) return false;
 +        set_info(t, "dv-out", "entering");
 +        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
 +        t->req_windows_hdr = t->fn.windows_hdr(monitor, -1);
@@ -2242,6 +2289,11 @@
 +        set_pause(t, true);
 +        set_wake(t, false);
 +        return true;
++    case DVT_OUTPUT_ENTRY_BLOCKED:
++        release_output(t, "entry state changed before signalling");
++        t->failed = true;
++        check_sdr_entry(t);
++        return false;
 +    case DVT_OUTPUT_FAILED:
 +        switch_failed(t, "see the lines above");
 +        return false;
@@ -2376,13 +2428,15 @@
 +        }
 +    }
 +    if (!tunneled && !t->requested && t->state == DVT_OUTPUT_OFF)
-+        set_wake(t, false);
++        set_wake(t, enabled && t->entry_pending);
 +    AVBufferRef *meta = stream_dovi(t, mpi);
 +    set_info(t, "dv-source", !meta ? "none" : t->synth_active ? "hdr10" : "dv");
 +    if (meta)
 +        gpu_can_switch(t); // the card for the panel and the log, in a window too
 +    if (!tunneled)
-+        t->out_state = !meta ? "off" : t->failed ? (t->limit60 ? "limit60" : "failed")
++        t->out_state = !meta ? "off" : enabled && t->entry_pending ? "checking" : enabled && t->entry_blocked ?
++            (t->entry_blocked == 1 ? "requires-sdr" : t->entry_blocked == 2 ? "requires-sdr" : "preflight-unknown") :
++            t->failed ? (t->limit60 ? "limit60" : "failed")
 +                                             : t->no_gpu ? "nogpu" : "mapped";
 +    else if (test_mode())
 +        t->out_state = "test";
@@ -2457,6 +2511,8 @@
 +        if (enabled && t->failed)
 +            dlog(t, MSGL_INFO, "Dolby Vision tunnel on again; trying the switch again.");
 +        t->failed = false; // turned on again: try again
++        t->entry_blocked = 0;
++        t->entry_pending = t->entry_query_started = false;
 +    }
 +    t->was_enabled = enabled;
 +    if (!t->requested && (t->state != DVT_OUTPUT_OFF || t->display_busy))
@@ -2480,6 +2536,8 @@
 +    }
 +    if (fullscreen)
 +        t->warned_window = false;
++    if (enabled && meta && fullscreen && !t->requested && !t->failed && !check_sdr_entry(t))
++        return false;
 +    if (t->failed && enabled) {
 +        missed(t, enabled, fullscreen);
 +        return false; // given up: mpv tone maps (never the raw tunnel signal)
@@ -2716,7 +2774,7 @@
 +void dovi_tunnel_set_content_type(struct dovi_tunnel *t, int mode);
 --- /dev/null
 +++ b/video/out/gpu_next/dvtunnel.h
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,214 @@
 +/*
 + * dvtunnel.dll: TV-led Dolby Vision output for a D3D11 video player.
 + *
@@ -2744,7 +2802,7 @@
 +extern "C" {
 +#endif
 +
-+#define DVT_API_VERSION 7
++#define DVT_API_VERSION 8
 +
 +#ifdef DVT_BUILD
 +#define DVT_API __declspec(dllexport)
@@ -2791,6 +2849,7 @@
 +
 +enum dvt_output_state {
 +    DVT_OUTPUT_OFF = 0,
++    DVT_OUTPUT_ENTRY_BLOCKED = 8, // read-only preflight rejected; no display changes
 +    DVT_OUTPUT_PREPARING = 7, // SDR swapchain acknowledgement before DV signalling
 +    DVT_OUTPUT_RECOVERY_FAILED = 6, // hold Present; explicit recovery required
 +    DVT_OUTPUT_ENTERING = 1, // switching; takes a few seconds
@@ -2799,6 +2858,21 @@
 +    DVT_OUTPUT_LIMIT60 = 5, // the selected 4K mode exceeds the TV capability
 +    DVT_OUTPUT_FAILED = 4,   // stays until Dolby Vision output is no longer asked for
 +};
++
++// Read-only entry preflight. Result: 0 confirmed SDR, 1 HDR, 2 WCG,
++// 3 conflicting observations, 4 unsafe/ambiguous target, -1 unavailable.
++// source: 1 current Windows API, 2 compatible Windows API, 3 DXGI + NVAPI.
++struct dvt_preflight {
++    int result, source, windows_mode, driver_hdr, driver_output, dxgi_mode;
++    char target[96];
++    char reason[160];
++};
++typedef int (*dvt_check_output_fn)(void *hmonitor, struct dvt_preflight *info);
++DVT_API int dvt_check_output(void *hmonitor, struct dvt_preflight *info);
++// Nonblocking render-thread form: -2 means checking. refresh starts a new
++// explicit request. At most one read-only driver probe is in flight.
++typedef int (*dvt_poll_output_fn)(void *hmonitor, int refresh, struct dvt_preflight *info);
++DVT_API int dvt_poll_output(void *hmonitor, int refresh, struct dvt_preflight *info);
 +
 +typedef int (*dvt_api_version_fn)(void);
 +DVT_API int dvt_api_version(void);
