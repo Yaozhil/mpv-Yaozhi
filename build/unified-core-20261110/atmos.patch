@@ -1,25 +1,3 @@
---- a/DOCS/man/options.rst
-+++ b/DOCS/man/options.rst
-@@ -2085,6 +2085,19 @@
-     pitch correction, then only the last one in the filter chain is used.
-     For details on the specifics of each available filter, see the audio filter
-     section.
-+
-+``--audio-device-channel-map=<speakers>``
-+    Physical PCM output slots for WASAPI and ASIO (default: ``auto``).
-+    Use speaker IDs separated by ``-``; ``na`` inserts a silent physical slot.
-+    Every named input speaker must have exactly one slot. Encoded passthrough
-+    and unnamed/partly unnamed transports are left untouched. If a valid
-+    profile does not cover the input layout, automatic negotiation is used.
-+    A channel count alone does not identify a device's physical speaker order.
-+
-+``--audio-device-channel-map-device=<device>``
-+    Optional exact ``audio-device`` ID binding for the physical slot profile.
-+    The profile is ignored for other devices, including automatic selection.
-+    Empty (the default) leaves an explicit command-line profile unbound.
- 
- ``--audio-device=<name>``
-     Use the given audio device. This consists of the audio output name, e.g.
 --- a/audio/out/ao.c
 +++ b/audio/out/ao.c
 @@ -27,6 +27,7 @@
@@ -361,6 +339,28 @@
      get_bd_audio_rate(demuxer, src->demuxer_id, c);
      if (p->is_bd && src->type == STREAM_VIDEO && !c->dovi) {
          struct sh_stream *el = sh_stream_dependent_sibling(src);
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -2085,6 +2085,19 @@
+     pitch correction, then only the last one in the filter chain is used.
+     For details on the specifics of each available filter, see the audio filter
+     section.
++
++``--audio-device-channel-map=<speakers>``
++    Physical PCM output slots for WASAPI and ASIO (default: ``auto``).
++    Use speaker IDs separated by ``-``; ``na`` inserts a silent physical slot.
++    Every named input speaker must have exactly one slot. Encoded passthrough
++    and unnamed/partly unnamed transports are left untouched. If a valid
++    profile does not cover the input layout, automatic negotiation is used.
++    A channel count alone does not identify a device's physical speaker order.
++
++``--audio-device-channel-map-device=<device>``
++    Optional exact ``audio-device`` ID binding for the physical slot profile.
++    The profile is ignored for other devices, including automatic selection.
++    Empty (the default) leaves an explicit command-line profile unbound.
+ 
+ ``--audio-device=<name>``
+     Use the given audio device. This consists of the audio output name, e.g.
 --- a/meson.build
 +++ b/meson.build
 @@ -1109,6 +1109,10 @@
@@ -1221,7 +1221,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1482 @@
+@@ -0,0 +1,1487 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -1981,6 +1981,11 @@
 +        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
 +        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
 +    }
++    // A new output lifecycle must get its own fresh SDR query and timeout.
++    // The previous successful query may be minutes old after leaving fullscreen.
++    // Never carry that elapsed time into the next asynchronous entry attempt.
++    t->entry_pending = t->entry_query_started = false;
++    t->entry_query_start = 0;
 +    t->requested = false;
 +    t->req_display[0] = L'\0';
 +    t->req_windows_hdr = -1;
