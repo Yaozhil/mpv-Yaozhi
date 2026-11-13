@@ -113,6 +113,20 @@
      char *audio_client_name;
      double audio_buffer;
      bool audio_set_media_role;
+--- a/audio/out/ao_sdl.c
++++ b/audio/out/ao_sdl.c
+@@ -89,6 +89,11 @@
+ 
+ static int init(struct ao *ao)
+ {
++    if (!af_fmt_is_pcm(ao->format)) {
++        MP_VERBOSE(ao, "SDL supports PCM only; declining compressed passthrough.\n");
++        return -1;
++    }
++
+     if (SDL_WasInit(SDL_INIT_AUDIO)) {
+         MP_ERR(ao, "already initialized\n");
+         return -1;
 --- a/audio/out/ao_wasapi_utils.c
 +++ b/audio/out/ao_wasapi_utils.c
 @@ -41,6 +41,7 @@
@@ -1090,7 +1104,7 @@
 +    // Keep the existing read-only path when entering from an SDR desktop.
 +    // An external Windows HDR transition can invalidate the actual DXGI state
 +    // without invalidating libplacebo's cached SDR hint. Support is not state:
-+    // an HDR-origin request must rebind the carrier before its first Present.
++    // an HDR-origin request rebinds before the worker sends any DV signalling.
 +    DXGI_SWAP_CHAIN_DESC desc = {0};
 +    HRESULT hr = IDXGISwapChain_GetDesc(p->swapchain, &desc);
 +    bool rgb8 = desc.BufferDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
@@ -1121,7 +1135,7 @@
 +        MP_WARN(ra, "Could not prepare Dolby Vision SDR carrier (HDR reset %d): %s\n",
 +                reset_hdr_state, mp_HRESULT_to_str(hr));
 +    else if (reset_hdr_state)
-+        MP_INFO(ra, "Dolby Vision carrier: SDR RGB full rebound after Windows HDR transition, HDR10 metadata cleared.\n");
++        MP_INFO(ra, "Dolby Vision carrier: SDR RGB full prepared before Dolby Vision signalling, HDR10 metadata cleared.\n");
 +    else
 +        MP_INFO(ra, "Dolby Vision carrier: 8-bit RGB verified; preserving driver HDMI signalling.\n");
 +    return supported;
@@ -1169,7 +1183,7 @@
          mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
 --- /dev/null
 +++ b/video/out/gpu_next/dovi_tunnel.c
-@@ -0,0 +1,1417 @@
+@@ -0,0 +1,1424 @@
 +/*
 + * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
 + *
@@ -2058,7 +2072,7 @@
 +
 +static const char *state_name(int state)
 +{
-+    return state == DVT_OUTPUT_ON ? "on" : state == DVT_OUTPUT_LEAVING ? "leaving" :
++    return state == DVT_OUTPUT_PREPARING ? "preparing" : state == DVT_OUTPUT_ON ? "on" : state == DVT_OUTPUT_LEAVING ? "leaving" :
 +           state == DVT_OUTPUT_RECOVERY_FAILED ? "recovery-failed" :
 +           state == DVT_OUTPUT_LIMIT60 ? "limit60" :
 +           state == DVT_OUTPUT_FAILED ? "failed" : state == DVT_OUTPUT_ENTERING ? "entering" : "off";
@@ -2114,6 +2128,7 @@
 +        t->carrier_prepared = false;
 +    }
 +    switch (state) {
++    case DVT_OUTPUT_PREPARING:
 +    case DVT_OUTPUT_ON:
 +        if (!fullscreen || buffer_w != link.width || buffer_h != link.height) {
 +            if (!t->canvas_wait) {
@@ -2134,17 +2149,23 @@
 +            switch_failed(t, "fullscreen buffer does not match the HDMI signal");
 +            return false;
 +        }
-+        // The pre-request SDR hint may still be cached after Windows HDR was
-+        // disabled. Rebind only that HDR-origin request; preserve the read-only
-+        // SDR path. Never release Present before canvas and carrier are ready.
++        // Original HDR-on requests yield here while the worker is still
++        // on SDR, before custom timing and final DV signalling. ON is strictly
++        // read-only: never clobber an established HDMI DV signal with DXGI.
 +        uint64_t carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
++        bool preparing = state == DVT_OUTPUT_PREPARING;
 +        if (!t->carrier_prepared || t->carrier_generation != carrier_generation) {
 +            ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
-+            if (!ra_d3d11_ctx_prepare_dovi_carrier(t->ra_ctx, t->req_windows_hdr == 2)) {
++            if (!ra_d3d11_ctx_prepare_dovi_carrier(t->ra_ctx, preparing)) {
 +                switch_failed(t, "could not prepare the 8-bit SDR RGB carrier");
 +                return false;
 +            }
 +            t->carrier_prepared = true;
++            t->carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
++        }
++        if (preparing) {
++            t->fn.output(t->ctx, 2, monitor, fps, mode, NULL);
++            goto waiting;
 +        }
 +        t->canvas_wait = t->canvas_sync = 0;
 +        t->switch_start = 0;
@@ -2163,8 +2184,8 @@
 +        return false;
 +    case DVT_OUTPUT_LIMIT60:
 +        t->failed = t->limit60 = true;
-+        release_output(t, "the TV has no 2160p60 Dolby Vision");
-+        show_text(t, "电视不支持当前 4K 高帧率杜比视界，已改用 mpv 映射", "6000");
++        release_output(t, "4K high-rate TV-led capability was not verified for this connection");
++        show_text(t, "当前连接未确认 4K 高帧率杜比视界能力，已改用 mpv 映射", "6000");
 +        if (t->low60_mode == 0) {
 +            char ask[64];
 +            snprintf(ask, sizeof(ask), "%.3f %d", fps, ++t->ask_count);
@@ -2657,7 +2678,7 @@
 +void dovi_tunnel_set_content_type(struct dovi_tunnel *t, int mode);
 --- /dev/null
 +++ b/video/out/gpu_next/dvtunnel.h
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,198 @@
 +/*
 + * dvtunnel.dll: TV-led Dolby Vision output for a D3D11 video player.
 + *
@@ -2685,7 +2706,7 @@
 +extern "C" {
 +#endif
 +
-+#define DVT_API_VERSION 6
++#define DVT_API_VERSION 7
 +
 +#ifdef DVT_BUILD
 +#define DVT_API __declspec(dllexport)
@@ -2732,6 +2753,7 @@
 +
 +enum dvt_output_state {
 +    DVT_OUTPUT_OFF = 0,
++    DVT_OUTPUT_PREPARING = 7, // SDR swapchain acknowledgement before DV signalling
 +    DVT_OUTPUT_RECOVERY_FAILED = 6, // hold Present; explicit recovery required
 +    DVT_OUTPUT_ENTERING = 1, // switching; takes a few seconds
 +    DVT_OUTPUT_ON = 2,
@@ -2790,6 +2812,7 @@
 +    DVT_MODE_PREFER_2160 = -3840,
 +};
 +struct dvt_link { unsigned width, height; };
++// want=2 acknowledges DVT_OUTPUT_PREPARING for the same current request.
 +// Returns the current enum dvt_output_state.
 +typedef int (*dvt_output_fn)(dvt_ctx *ctx, int want, void *hmonitor, double fps,
 +                             int mode, struct dvt_link *link);
