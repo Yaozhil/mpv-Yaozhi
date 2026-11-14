@@ -1,0 +1,54 @@
+[
+  {
+    "id": "r4-private-still-image-api",
+    "failed_ci_run": 41957279903,
+    "resolution": "Restore exact old-main helper implementation/declaration; lock, eager-state recomputation and existing callers retained. No feature disabled.",
+    "files": [
+      "demux/demux.c",
+      "demux/demux.h"
+    ]
+  },
+  {
+    "id": "r5-removed-upstream-apis",
+    "failed_ci_run": 41981755005,
+    "resolution": "Replace removed DVD helper call with the same bounded expression while retaining upstream PCI sanitize; create Atmos overlay using the new atomic mp_new_weak_client API. No menu/overlay function disabled.",
+    "files": [
+      "stream/stream_dvdnav.c",
+      "player/orender_overlay.c"
+    ],
+    "compiler_first_error": "stream/stream_dvdnav.c:522 implicit declaration pci_num_buttons",
+    "independent_review_additional_error": "player/orender_overlay.c:375 removed mp_client_set_weak call"
+  },
+  {
+    "id": "r6-duplicate-bluray-playitem",
+    "failed_ci_run": 41992716865,
+    "resolution": "Remove only obsolete duplicate PLAYITEM five-line assignment branch. Retain official 0.42 locked change-sensitive current_playitem/seg_pending/nav_change_id branch byte-for-byte; all private audio/PGS/title/VM handling remains.",
+    "files": [
+      "stream/stream_bluray.c"
+    ],
+    "compiler_first_error": "stream/stream_bluray.c:998 duplicate case; first case at960"
+  },
+  {
+    "id": "r7-render-gitlink-inventory-and-console-binding",
+    "failed_ci_run": 42006947909,
+    "resolution": "C compilation/link and exact mpv source binding passed. For compiled RENDER inputs only, generic git status ignores submodules before the unchanged dedicated render gate validates exact source bytes, external targets, Gitlinks, archive and link. Pass both mpv.exe/mpv.com to that gate as already required. No mpv/dependency source or acceptance predicate changed. Freeze the render/all-recipe inventory for the first time only after the reviewed 0.42 overlays; do not rewrite any earlier run receipt or relax final inventory SHA checks.",
+    "type": "build-gate-integration-only",
+    "files": [
+      "dependencies/source_gate.py",
+      ".github/workflows/build-mpv-042.yml"
+    ],
+    "first_failure": "git status: expected submodule path 3rdparty/fast_float not to be a symbolic link",
+    "additional_preempted_failure": "Final rendering gate requires both PE binaries; workflow previously supplied only mpv.exe; previous order captured 69 selected pre-overlay recipe hashes before adapting them, so unchanged render final would reject"
+  },
+  {
+    "id": "r8-ffmpeg-build-src-dependency-resolution",
+    "failed_ci_run": 42021887290,
+    "first_failure": "Compiled demux.d path substring assertion, both variants after successful compilation and source binding.",
+    "resolution": "Resolve the unique primary GCC Make rule relative to the actual build directory, require its exact object/source and the build/src symlink target; preserve raw dependency/configuration/Ninja evidence. Bind the unique expanded mpv link to an exact libavformat archive token. Retain source SHA, object freshness, archive member equality and runtime gates. No mpv or dependency source changed.",
+    "evidence": "r6 actual compiler logs in root/r8-binding-review/r6-compile-evidence.json show -MF libavformat/demux.d -MT libavformat/demux.o ... src/libavformat/demux.c",
+    "type": "compiled-provenance-path-integration-only",
+    "files": [
+      "dependencies/bind_compiled_dependencies.py"
+    ]
+  }
+]

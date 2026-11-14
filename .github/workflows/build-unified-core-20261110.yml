@@ -1,0 +1,47 @@
+name: Compile isolated unified 0.42 core preflight
+on:
+  pull_request:
+    types: [synchronize]
+    paths: ['build/unified-core-20261110/**', '.github/workflows/build-unified-core-20261110.yml']
+permissions:
+  contents: read
+jobs:
+  preflight:
+    if: github.event.pull_request.number == 35
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [main, atmos]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Restore the original pinned native ASIO SDK
+        if: matrix.variant == 'atmos'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: audiosdk/asio
+          ref: 496a0765b8bb9c26f764f22f9a9712a937177db2
+          path: third-party/asio
+          persist-credentials: false
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          fail-on-cache-miss: true
+          key: mpv-042-dependency-${{ matrix.variant }}-9c759137b540fd1d7229c2225282074c36e99164786f273d83a9bef33ec7b590
+          path: |
+            winbuild/mpv-winbuild-cmake/build64
+            winbuild/mpv-winbuild-cmake/src_packages
+            winbuild/mpv-winbuild-cmake/install_rustup
+            .ccache
+      - name: Verify preserved source and compile candidate
+        run: python3 build/unified-core-20261110/ci-preflight-build.py --variant '${{ matrix.variant }}'
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: unified-042-preflight-${{ matrix.variant }}
+          path: preflight-artifact/
+          retention-days: 14
+          if-no-files-found: error
