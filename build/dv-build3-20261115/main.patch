@@ -1,0 +1,3944 @@
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -2085,6 +2085,19 @@
+     pitch correction, then only the last one in the filter chain is used.
+     For details on the specifics of each available filter, see the audio filter
+     section.
++
++``--audio-device-channel-map=<speakers>``
++    Physical PCM output slots for WASAPI and ASIO (default: ``auto``).
++    Use speaker IDs separated by ``-``; ``na`` inserts a silent physical slot.
++    Every named input speaker must have exactly one slot. Encoded passthrough
++    and unnamed/partly unnamed transports are left untouched. If a valid
++    profile does not cover the input layout, automatic negotiation is used.
++    A channel count alone does not identify a device's physical speaker order.
++
++``--audio-device-channel-map-device=<device>``
++    Optional exact ``audio-device`` ID binding for the physical slot profile.
++    The profile is ignored for other devices, including automatic selection.
++    Empty (the default) leaves an explicit command-line profile unbound.
+ 
+ ``--audio-device=<name>``
+     Use the given audio device. This consists of the audio output name, e.g.
+--- a/audio/out/ao.c
++++ b/audio/out/ao.c
+@@ -27,6 +27,7 @@
+ #include "ao.h"
+ #include "internal.h"
+ #include "audio/format.h"
++#include "device_channel_map.h"
+ 
+ #include "options/options.h"
+ #include "options/m_config_frontend.h"
+@@ -146,6 +147,10 @@
+         {"ao", OPT_SETTINGSLIST(audio_driver_list, &ao_obj_list),
+             .flags = UPDATE_AUDIO},
+         {"audio-device", OPT_STRING(audio_device), .flags = UPDATE_AUDIO},
++        {"audio-device-channel-map", OPT_STRING(audio_device_channel_map),
++            .flags = UPDATE_AUDIO},
++        {"audio-device-channel-map-device", OPT_STRING(audio_device_channel_map_device),
++            .flags = UPDATE_AUDIO},
+         {"audio-client-name", OPT_STRING(audio_client_name), .flags = UPDATE_AUDIO},
+         {"audio-buffer", OPT_DOUBLE(audio_buffer),
+             .flags = UPDATE_AUDIO, M_RANGE(0, 10)},
+@@ -157,6 +162,8 @@
+     .defaults = &(const OPT_BASE_STRUCT){
+         .audio_buffer = 0.2,
+         .audio_device = "auto",
++        .audio_device_channel_map = "auto",
++        .audio_device_channel_map_device = "",
+         .audio_client_name = "mpv",
+     },
+ };
+@@ -186,6 +193,8 @@
+         .log = mp_log_new(ao, log, name),
+         .def_buffer = opts->audio_buffer,
+         .client_name = talloc_strdup(ao, opts->audio_client_name),
++        .device_channel_map = talloc_strdup(ao, opts->audio_device_channel_map),
++        .device_channel_map_device = talloc_strdup(ao, opts->audio_device_channel_map_device),
+         .set_media_role = opts->audio_set_media_role
+     };
+     talloc_free(opts);
+@@ -219,6 +228,42 @@
+     MP_VERBOSE(ao, "requested format: %d Hz, %s channels, %s\n",
+                ao->samplerate, mp_chmap_to_str(&ao->channels),
+                af_fmt_to_str(ao->format));
++
++    // This is an output-port contract, not another decoder/render layout.
++    // Unknown/partly unnamed transport PCM and encoded passthrough retain their
++    // existing semantics; they cannot safely be interpreted as speakers here.
++    // Menus bind saved profiles to an explicit stable device. A switch to
++    // auto, another AO, or another endpoint cannot inherit those speaker slots,
++    // even before a Lua observer has reacted to the device change.
++    if (!mp_device_chmap_device_matches(ao->device_channel_map_device, name, dev)) {
++        MP_VERBOSE(ao, "Physical speaker profile belongs to another device; using auto.\n");
++        talloc_free(ao->device_channel_map);
++        ao->device_channel_map = talloc_strdup(ao, "auto");
++    }
++    const char *profile = ao->device_channel_map;
++    if (profile && profile[0] && strcmp(profile, "auto") != 0) {
++        struct mp_chmap physical;
++        if (!mp_chmap_from_str(&physical, bstr0(profile)) ||
++            !mp_chmap_is_valid(&physical) || mp_chmap_is_unknown(&physical))
++        {
++            MP_ERR(ao, "Invalid audio-device-channel-map: %s\n", profile);
++            goto fail;
++        }
++        bool supported = strcmp(name, "wasapi") == 0 || strcmp(name, "asio") == 0 ||
++                         strcmp(name, "pcm") == 0 || strcmp(name, "null") == 0;
++        if (!supported) {
++            MP_WARN(ao, "audio-device-channel-map is not supported by this AO.\n");
++        } else if (!af_fmt_is_pcm(format) || !mp_device_chmap_fully_named(&channels)) {
++            MP_VERBOSE(ao, "Physical speaker profile ignored for encoded or unnamed audio.\n");
++        } else if (!mp_device_chmap_covers(&physical, &channels)) {
++            MP_WARN(ao, "Physical speaker profile does not cover this stream (%s); "
++                    "using automatic negotiation.\n", mp_chmap_to_str(&channels));
++        } else {
++            ao->device_channels = physical;
++            ao->channels = physical;
++            MP_INFO(ao, "Physical speaker slots: %s\n", mp_chmap_to_str(&physical));
++        }
++    }
+ 
+     ao->device = talloc_strdup(ao, dev);
+     ao->stream_silence = flags & AO_INIT_STREAM_SILENCE;
+--- a/audio/out/ao.h
++++ b/audio/out/ao.h
+@@ -77,6 +77,8 @@
+ struct ao_opts {
+     struct m_obj_settings *audio_driver_list;
+     char *audio_device;
++    char *audio_device_channel_map;
++    char *audio_device_channel_map_device; // optional stable device binding
+     char *audio_client_name;
+     double audio_buffer;
+     bool audio_set_media_role;
+--- a/audio/out/ao_sdl.c
++++ b/audio/out/ao_sdl.c
+@@ -89,6 +89,11 @@
+ 
+ static int init(struct ao *ao)
+ {
++    if (!af_fmt_is_pcm(ao->format)) {
++        MP_VERBOSE(ao, "SDL supports PCM only; declining compressed passthrough.\n");
++        return -1;
++    }
++
+     if (SDL_WasInit(SDL_INIT_AUDIO)) {
+         MP_ERR(ao, "already initialized\n");
+         return -1;
+--- a/audio/out/ao_wasapi_utils.c
++++ b/audio/out/ao_wasapi_utils.c
+@@ -41,6 +41,7 @@
+ #include "osdep/io.h"
+ #include "osdep/strnlen.h"
+ #include "ao_wasapi.h"
++#include "device_channel_map.h"
+ 
+ #ifdef _MSC_VER
+ // Define some GUIDs that are defined only in C++ interfaces.
+@@ -347,6 +348,15 @@
+             return false;
+         }
+ 
++        if (ao->device_channels.num) {
++            if (!mp_device_chmap_accepts(&ao->device_channels, &channels)) {
++                MP_ERR(ao, "Driver changed the physical channel slots: %s -> %s\n",
++                       mp_chmap_to_str(&ao->device_channels), mp_chmap_to_str(&channels));
++                return false;
++            }
++            channels = ao->device_channels;
++        }
++
+         struct ao_convert_fmt conv = {
+             .src_fmt    = format.mp_format,
+             .channels   = channels.num,
+@@ -498,6 +508,14 @@
+                 return true;
+         }
+         return false;
++    }
++
++    // Never substitute another layout for an explicit physical port profile.
++    // Sample format/rate changes are safe only while preserving its slot count.
++    if (ao->device_channels.num) {
++        struct mp_chmap transport;
++        mp_chmap_set_unknown(&transport, ao->device_channels.num);
++        return search_samplerates(ao, wformat, &transport);
+     }
+ 
+     // Fallback on the PCM format search
+@@ -573,8 +591,36 @@
+     struct wasapi_state *state = ao->priv;
+     struct mp_chmap channels = ao->channels;
+ 
+-    if (!mp_chmap_is_unknown(&channels))
++    if (!ao->device_channels.num && af_fmt_is_pcm(ao->format) &&
++        channels.num > 8 && mp_device_chmap_fully_named(&channels))
++    {
++        // Prefer a real endpoint speaker superset to a compact height layout.
++        // A zero/fabricated mask or a bare channel count is not such evidence.
++        WAVEFORMATEX *mix = NULL;
++        struct mp_chmap physical;
++        HRESULT hr = IAudioClient_GetMixFormat(state->pAudioClient, &mix);
++        if (SUCCEEDED(hr) && mix &&
++            chmap_from_waveformat(&physical, mix) &&
++            mp_chmap_is_valid(&physical) &&
++            mp_device_chmap_fully_named(&physical) &&
++            mp_device_chmap_covers(&physical, &channels))
++        {
++            channels = physical;
++            ao->device_channels = physical;
++            MP_VERBOSE(ao, "Using endpoint speaker slots: %s\n", mp_chmap_to_str(&physical));
++        }
++        CoTaskMemFree(mix);
++    }
++
++    if (ao->device_channels.num) {
++        // The semantic profile stays on ao. DIRECTOUT transports all slots,
++        // including NA padding and speaker IDs beyond the DWORD mask.
++        channels = ao->device_channels;
++        if (ao->device_channel_map && strcmp(ao->device_channel_map, "auto") != 0)
++            mp_chmap_set_unknown(&channels, channels.num);
++    } else if (!mp_chmap_is_unknown(&channels)) {
+         mp_chmap_reorder_to_waveext(&channels);
++    }
+     if (!mp_chmap_is_valid(&channels))
+         mp_chmap_from_channels(&channels, 2);
+ 
+--- /dev/null
++++ b/audio/out/device_channel_map.h
+@@ -0,0 +1,66 @@
++/* Physical output slots are separate from a stream's compact channel map.
++ * Never infer these slots from a channel count or reinterpret unnamed PCM.
++ * This file is part of mpv; LGPL-2.1-or-later.
++ */
++#ifndef MP_DEVICE_CHANNEL_MAP_H
++#define MP_DEVICE_CHANNEL_MAP_H
++
++#include "audio/chmap.h"
++#include <string.h>
++
++static inline bool mp_device_chmap_device_matches(const char *binding,
++                                                  const char *driver,
++                                                  const char *device)
++{
++    if (!binding || !binding[0])
++        return true; // explicit unbound command-line configuration
++    size_t n = strlen(driver);
++    return strncmp(binding, driver, n) == 0 && binding[n] == '/' &&
++           strcmp(binding + n + 1, device ? device : "") == 0;
++}
++
++static inline bool mp_device_chmap_fully_named(const struct mp_chmap *map)
++{
++    if (!map->num || map->num > MP_NUM_CHANNELS)
++        return false;
++    for (int c = 0; c < map->num; c++) {
++        if (map->speaker[c] >= MP_SPEAKER_ID_NA)
++            return false;
++    }
++    return true;
++}
++
++// Both maps must already have passed mp_chmap_is_valid(). A profile may contain
++// padding, but must have an unambiguous slot for every named input speaker.
++static inline bool mp_device_chmap_covers(const struct mp_chmap *profile,
++                                         const struct mp_chmap *input)
++{
++    if (!mp_device_chmap_fully_named(input) || profile->num < input->num ||
++        profile->num > MP_NUM_CHANNELS)
++        return false;
++    for (int c = 0; c < input->num; c++) {
++        int matches = 0;
++        for (int o = 0; o < profile->num; o++)
++            matches += input->speaker[c] == profile->speaker[o];
++        if (matches != 1)
++            return false;
++    }
++    return true;
++}
++
++// DIRECTOUT has no speaker semantics. Only an explicit/trusted profile can
++// supply them, and its count must equal the driver-accepted transport count.
++static inline bool mp_device_chmap_accepts(const struct mp_chmap *profile,
++                                          const struct mp_chmap *wire)
++{
++    if (!profile->num || wire->num != profile->num)
++        return false;
++    bool directout = true, same = true;
++    for (int c = 0; c < wire->num; c++) {
++        directout &= wire->speaker[c] == MP_SPEAKER_ID_NA;
++        same &= wire->speaker[c] == profile->speaker[c];
++    }
++    return directout || same;
++}
++
++#endif
+--- a/audio/out/internal.h
++++ b/audio/out/internal.h
+@@ -27,6 +27,9 @@
+ struct ao {
+     int samplerate;
+     struct mp_chmap channels;
++    struct mp_chmap device_channels; // physical slots; only if established
++    char *device_channel_map; // explicit profile, or auto
++    char *device_channel_map_device; // optional stable device binding
+     int format;                 // one of AF_FORMAT_...
+     int64_t bps;                // bytes per second (per plane)
+     int sstride;                // size of a sample on each plane
+--- a/common/av_common.c
++++ b/common/av_common.c
+@@ -198,6 +198,11 @@
+     }
+     if (mpkt && tb && tb->num > 0 && tb->den > 0)
+         dst->duration = mpkt->duration / av_q2d(*tb);
++    if (mpkt && mpkt->dovi_order.magic == MP_DOVI_ORDER_MAGIC) {
++        dst->opaque_ref = av_buffer_alloc(sizeof(mpkt->dovi_order));
++        MP_HANDLE_OOM(dst->opaque_ref);
++        memcpy(dst->opaque_ref->data, &mpkt->dovi_order, sizeof(mpkt->dovi_order));
++    }
+     dst->pts = mp_pts_to_av(mpkt ? mpkt->pts : MP_NOPTS_VALUE, tb);
+     dst->dts = mp_pts_to_av(mpkt ? mpkt->dts : MP_NOPTS_VALUE, tb);
+ }
+--- /dev/null
++++ b/common/dovi_order.h
+@@ -0,0 +1,11 @@
++// Per-access-unit display position for an interleaved Profile 7 layer.
++// Independent of presentation timestamps; separate-track sources keep their PTS.
++#pragma once
++#include <stdint.h>
++#define MP_DOVI_ORDER_MAGIC UINT64_C(0x594456504f433031)
++struct mp_dovi_order {
++    uint64_t magic;
++    int64_t position;
++    uint32_t valid;
++    uint32_t reserved;
++};
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -196,6 +196,25 @@
+     sh->commentary_track |= !!(req.flags & TRACK_COMMENTARY);
+ }
+ 
++static void get_bd_video_rate(struct demuxer *demuxer, int id, struct mp_codec_params *c)
++{
++    struct priv *p = demuxer->priv;
++    if (!p->is_bd || !c || c->type != STREAM_VIDEO || c->fps > 0)
++        return;
++
++    // Interactive Blu-ray playback deliberately uses nostreams to avoid deep
++    // probing auxiliary/menu PIDs. Keep that protection; obtain a missing
++    // frame rate from the current PlayItem, before publishing codec params.
++    struct stream_bd_video_rate_req req = {.id = id};
++    if (stream_control(demuxer->stream, STREAM_CTRL_GET_BD_VIDEO_RATE, &req) ==
++        STREAM_OK && req.fps > 0)
++    {
++        c->fps = req.fps;
++        MP_VERBOSE(demuxer, "Blu-ray video id=0x%x rate from PlayItem: %.6f fps\n",
++                   id, req.fps);
++    }
++}
++
+ static void get_bd_audio_rate(struct demuxer *demuxer, int id, struct mp_codec_params *c)
+ {
+     struct priv *p = demuxer->priv;
+@@ -265,6 +284,7 @@
+     c->decoder = NULL;
+     c->decoder_desc = NULL;
+     set_disc_aspect(demuxer, c);
++    get_bd_video_rate(demuxer, src->demuxer_id, c);
+     get_bd_audio_rate(demuxer, src->demuxer_id, c);
+     if (p->is_bd && src->type == STREAM_VIDEO && !c->dovi) {
+         struct sh_stream *el = sh_stream_dependent_sibling(src);
+--- a/demux/dovi_split.c
++++ b/demux/dovi_split.c
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include <string.h>
++#include <limits.h>
+ 
+ #include <libavcodec/avcodec.h>
+ #include <libavcodec/bsf.h>
+@@ -32,6 +33,69 @@
+ #include "dovi_split.h"
+ #include "mpv_talloc.h"
+ 
++
++// POC alignment adapted from dane-9's DoviEnhancementDecoder, commit
++// 2f74575334d29d109b450f3379c6548bc37af181 (GPL-2.0-or-later).
++struct dovi_order_parser {
++    AVCodecParserContext *parser;
++    AVCodecContext *context;
++    int64_t offset, last, parsed, start, start_parsed, leading, base;
++    bool have_last, started, have_base;
++};
++
++static void order_restart(struct dovi_order_parser *o)
++{
++    av_parser_close(o->parser);
++    o->parser = av_parser_init(AV_CODEC_ID_HEVC);
++    if (o->parser)
++        o->parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
++    o->offset = o->last = o->parsed = o->start = o->start_parsed = 0;
++    o->leading = o->base = 0;
++    o->have_last = o->started = o->have_base = false;
++}
++
++static bool order_open(struct dovi_order_parser *o, const AVCodecParameters *par)
++{
++    o->context = avcodec_alloc_context3(NULL);
++    if (!o->context || avcodec_parameters_to_context(o->context, par) < 0)
++        return false;
++    order_restart(o);
++    return o->parser != NULL;
++}
++
++static bool order_parse(struct dovi_order_parser *o, const uint8_t *data, int size,
++                        int64_t *position, bool *random_access)
++{
++    if (!o->parser || size <= 0)
++        return false;
++    uint8_t *out = NULL;
++    int out_size = 0;
++    o->parser->output_picture_number = INT_MIN;
++    if (av_parser_parse2(o->parser, o->context, &out, &out_size, data, size,
++                         AV_NOPTS_VALUE, AV_NOPTS_VALUE, -1) != size ||
++        out_size <= 0 || o->parser->output_picture_number == INT_MIN)
++        return false;
++    int order = o->parser->output_picture_number;
++    *random_access = o->parser->key_frame == 1;
++    if (o->have_last && *random_access && order == 0)
++        o->offset = o->last + 1;
++    *position = o->offset + order;
++    o->last = o->have_last ? MPMAX(o->last, *position) : *position;
++    o->have_last = true;
++    if (!o->started && *random_access) {
++        o->started = true;
++        o->start = *position;
++        o->start_parsed = o->parsed;
++    } else if (o->started && !o->have_base && *position < o->start) {
++        o->leading++;
++    } else if (o->started && !o->have_base) {
++        o->base = o->start - o->start_parsed - o->leading;
++        o->have_base = true;
++    }
++    o->parsed++;
++    return true;
++}
++
+ struct mp_dovi_split {
+     struct mp_log *log;
+     struct demuxer *demuxer;
+@@ -39,11 +103,18 @@
+     struct sh_stream *el;
+     AVBSFContext *bsf;
+     AVPacket *staging;
++    struct dovi_order_parser bl_order, el_order;
++    int64_t el_shift;
++    bool have_shift, logged_order;
+ };
+ 
+ static void mp_dovi_split_destructor(void *p)
+ {
+     struct mp_dovi_split *s = p;
++    av_parser_close(s->bl_order.parser);
++    av_parser_close(s->el_order.parser);
++    avcodec_free_context(&s->bl_order.context);
++    avcodec_free_context(&s->el_order.context);
+     av_packet_free(&s->staging);
+     av_bsf_free(&s->bsf);
+ }
+@@ -90,6 +161,9 @@
+     if (av_bsf_init(s->bsf) < 0)
+         goto fail;
+ 
++    if (!order_open(&s->bl_order, s->bsf->par_in) ||
++        !order_open(&s->el_order, s->bsf->par_out))
++        goto fail;
+     const AVCodecParameters *par_out = s->bsf->par_out;
+ 
+     // Allocate the virtual EL sh_stream.
+@@ -151,6 +225,10 @@
+     if (!s || !s->bsf)
+         return;
+     av_bsf_flush(s->bsf);
++    order_restart(&s->bl_order);
++    order_restart(&s->el_order);
++    s->have_shift = false;
++    s->logged_order = false;
+ }
+ 
+ struct sh_stream *mp_dovi_split_el_stream(struct mp_dovi_split *s)
+@@ -164,6 +242,13 @@
+     if (!s || !s->bsf || !bl_dp || !bl_dp->buffer || bl_dp->len <= 0)
+         return NULL;
+ 
++    int64_t bl_position = 0;
++    bool bl_random = false;
++    bool bl_valid = order_parse(&s->bl_order, bl_dp->buffer, bl_dp->len,
++                                &bl_position, &bl_random);
++    bl_dp->dovi_order = (struct mp_dovi_order) {
++        .magic = MP_DOVI_ORDER_MAGIC, .position = bl_position, .valid = bl_valid,
++    };
+     // av_bsf_send_packet takes ownership of the packet's buffer, so copy it,
+     // to not steal it from caller.
+     AVPacket *copy = av_packet_alloc();
+@@ -197,14 +282,39 @@
+         return NULL;
+     }
+ 
++    int64_t el_position = 0;
++    bool el_random = false;
++    bool el_started = s->el_order.started;
++    bool el_valid = order_parse(&s->el_order, s->staging->data, s->staging->size,
++                                &el_position, &el_random);
++    if (el_valid && !s->have_shift) {
++        if (!el_started && el_random && bl_valid && bl_random) {
++            s->el_shift = bl_position - el_position;
++            s->have_shift = true;
++        } else if (s->bl_order.have_base && s->el_order.have_base) {
++            s->el_shift = s->bl_order.base - s->el_order.base;
++            s->have_shift = true;
++        }
++    }
++    if (s->have_shift && !s->logged_order) {
++        s->logged_order = true;
++        MP_VERBOSE(s->demuxer, "Dolby Vision layers aligned by display position "
++                   "(POC shift %"PRId64").\n", s->el_shift);
++    }
+     struct demux_packet *dp =
+         new_demux_packet_from_avpacket(s->demuxer->packet_pool, s->staging);
+     if (dp) {
+-        // Mirror the BL packet's timing so the pairing filter can match by PTS.
++        // Keep timing for the decoder, but pair the independently reordered
++        // pictures by their tagged display positions, never by this packet PTS.
++        dp->dovi_order = (struct mp_dovi_order) {
++            .magic = MP_DOVI_ORDER_MAGIC,
++            .position = el_position + s->el_shift,
++            .valid = el_valid && s->have_shift && s->el_order.started,
++        };
+         dp->pts = bl_dp->pts;
+         dp->dts = bl_dp->dts;
+         dp->duration = bl_dp->duration;
+-        dp->keyframe = bl_dp->keyframe;
++        dp->keyframe = el_valid && el_random;
+         dp->stream = s->el->index;
+     }
+     av_packet_unref(s->staging);
+--- a/demux/packet.c
++++ b/demux/packet.c
+@@ -203,6 +203,7 @@
+     dst->back_restart = src->back_restart;
+     dst->back_preroll = src->back_preroll;
+     dst->keyframe = src->keyframe;
++    dst->dovi_order = src->dovi_order;
+     dst->stream = src->stream;
+ }
+ 
+--- a/demux/packet.h
++++ b/demux/packet.h
+@@ -21,6 +21,7 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <inttypes.h>
++#include "common/dovi_order.h"
+ 
+ // Holds one packet/frame/whatever
+ typedef struct demux_packet {
+@@ -45,6 +46,7 @@
+     int stream;         // source stream index (typically sh_stream.index)
+ 
+     bool keyframe;
++    struct mp_dovi_order dovi_order;
+ 
+     // backward playback
+     bool back_restart : 1;  // restart point (reverse and return previous frames)
+--- a/filters/f_enhancement_pair.c
++++ b/filters/f_enhancement_pair.c
+@@ -44,6 +44,7 @@
+     bool bl_eof;
+     bool el_eof;
+     bool el_seen;
++    unsigned ordered_preroll;
+ };
+ 
+ static int pts_cmp(double a, double b)
+@@ -137,8 +138,27 @@
+         }
+ 
+         struct mp_image *bl = p->bl_pending[0];
+-        int cmp = p->num_el_pending > 0
+-                ? pts_cmp(p->el_pending[0]->pts, bl->pts) : 0;
++        bool ordered = bl->dovi_order.magic == MP_DOVI_ORDER_MAGIC;
++        if (ordered && !bl->dovi_order.valid) {
++            pop_head(&p->bl_pending, &p->num_bl_pending);
++            continue;
++        }
++        if (ordered && p->num_el_pending &&
++            (p->el_pending[0]->dovi_order.magic != MP_DOVI_ORDER_MAGIC ||
++             !p->el_pending[0]->dovi_order.valid)) {
++            pop_head(&p->el_pending, &p->num_el_pending);
++            continue;
++        }
++        int cmp = 0;
++        if (p->num_el_pending > 0) {
++            if (ordered) {
++                int64_t a = p->el_pending[0]->dovi_order.position;
++                int64_t b = bl->dovi_order.position;
++                cmp = (a > b) - (a < b);
++            } else {
++                cmp = pts_cmp(p->el_pending[0]->pts, bl->pts);
++            }
++        }
+ 
+         // EL older than BL: its BL partner already left or never arrived.
+         if (p->num_el_pending > 0 && cmp < 0) {
+@@ -167,7 +187,15 @@
+         // arrive (notably after a seek).  Keep waiting until EOF or an
+         // affirmative newer-EL ordering signal is observed.
+         bool give_up = p->el_eof ||
+-                       (p->num_el_pending > 0 && cmp > 0);
++                       (p->num_el_pending > 0 && cmp > 0) ||
++                       (ordered && p->num_bl_pending == QUEUE_MAX);
++        // Bound preroll after an arbitrary seek. Do not combine a clean BL
++        // with an undecodable/wrong EL, and do not wait with a full queue forever.
++        if (give_up && ordered && !p->el_eof && p->ordered_preroll < 128) {
++            p->ordered_preroll++;
++            pop_head(&p->bl_pending, &p->num_bl_pending);
++            continue;
++        }
+         if (!give_up)
+             return;
+ 
+@@ -194,6 +222,7 @@
+     p->bl_eof = false;
+     p->el_eof = false;
+     p->el_seen = false;
++    p->ordered_preroll = 0;
+ }
+ 
+ static void pair_destroy(struct mp_filter *f)
+--- a/meson.build
++++ b/meson.build
+@@ -1072,6 +1072,10 @@
+     error_message: 'Either is not a win32 desktop or shaderc nor spirv-cross were found!',
+ )
+ features += {'d3d11': d3d11.allowed()}
++features += {'dovi-tunnel': features['d3d11'] and features['gpl']}
++if features['dovi-tunnel']
++    sources += files('video/out/gpu_next/dovi_tunnel.c')
++endif
+ if features['d3d11']
+     sources += files('video/out/d3d11/context.c',
+                      'video/out/d3d11/ra_d3d11.c',
+--- a/player/command.c
++++ b/player/command.c
+@@ -6397,8 +6397,10 @@
+         cmd->success = sub_control(t->d_sub, SD_CTRL_REPLACE_ASS, &data) == CONTROL_OK;
+         talloc_free(data.start);
+     }
+-    if (cmd->success)
++    if (cmd->success) {
++        osd_reset_secondary_fresh_pose(mpctx->osd);
+         osd_changed(mpctx->osd);
++    }
+ }
+ 
+ static void cmd_playlist_next_prev(void *p)
+--- a/player/loadfile.c
++++ b/player/loadfile.c
+@@ -1837,6 +1837,10 @@
+         .playlist_entry_id = start_event.playlist_entry_id,
+     };
+ 
++    // Retained VOs must retire per-file transport state before loading the
++    // next entry. Other outputs may ignore this notification.
++    if (mpctx->video_out)
++        vo_control(mpctx->video_out, VOCTRL_FILE_CHANGED, NULL);
+     mp_notify(mpctx, MPV_EVENT_START_FILE, &start_event);
+ 
+     mp_cancel_reset(mpctx->playback_abort);
+@@ -2071,6 +2075,8 @@
+     mpctx->playing->playlist_prev_attempt = false;
+     mpctx->playlist->playlist_completed = false;
+     mpctx->playlist->playlist_started = true;
++    if (mpctx->video_out)
++        vo_control(mpctx->video_out, VOCTRL_FILE_READY, NULL);
+     mp_notify(mpctx, MPV_EVENT_FILE_LOADED, NULL);
+     update_screensaver_state(mpctx);
+     clear_playlist_paths(mpctx);
+--- a/player/playloop.c
++++ b/player/playloop.c
+@@ -158,7 +158,8 @@
+ 
+ bool get_internal_paused(struct MPContext *mpctx)
+ {
+-    return mpctx->opts->pause || mpctx->paused_for_cache;
++    return mpctx->opts->pause || mpctx->paused_for_cache ||
++           (mpctx->video_out && vo_get_output_wait(mpctx->video_out));
+ }
+ 
+ // The value passed here is the new value for mpctx->opts->pause
+@@ -888,6 +889,8 @@
+ {
+     struct vo *vo = mpctx->video_out;
+     int events = vo ? vo_query_and_reset_events(vo, VO_EVENTS_USER) : 0;
++    if (events & VO_EVENT_OUTPUT_WAIT)
++        update_internal_pause_state(mpctx);
+     if (events & VO_EVENT_RESIZE)
+         mp_notify(mpctx, MP_EVENT_WIN_RESIZE, NULL);
+     if (events & VO_EVENT_WIN_STATE)
+--- a/player/video.c
++++ b/player/video.c
+@@ -135,6 +135,8 @@
+     if (mpctx->video_out) {
+         vo_destroy(mpctx->video_out);
+         mpctx->video_out = NULL;
++        // A destroyed VO can no longer own an output-transition pause.
++        update_internal_pause_state(mpctx);
+         mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
+     }
+ }
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -98,6 +98,7 @@
+     STREAM_CTRL_SET_PLAYBACK_TIME,   // double*, current presentation time
+     STREAM_CTRL_SET_PLAYBACK_RATE,   // double*, 0 = paused, 1 = normal
+     STREAM_CTRL_GET_BD_AUDIO_RATE,   // struct stream_bd_audio_rate_req*
++    STREAM_CTRL_GET_BD_VIDEO_RATE,   // struct stream_bd_video_rate_req*
+     STREAM_CTRL_GET_CURRENT_TITLE,
+     STREAM_CTRL_SET_CURRENT_TITLE,
+     STREAM_CTRL_NAV_CMD,             // struct stream_nav_cmd*
+@@ -240,6 +241,11 @@
+     int id;
+     char name[50];
+     enum track_flags flags;
++};
++
++struct stream_bd_video_rate_req {
++    int id;             // input: mpeg-ts PID
++    double fps;         // output: PlayItem frame rate, 0 when unknown
+ };
+ 
+ struct stream_bd_audio_rate_req {
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -1387,6 +1387,40 @@
+         bd_free_title_info(ti);
+         return STREAM_OK;
+     }
++    case STREAM_CTRL_GET_BD_VIDEO_RATE: {
++        struct stream_bd_video_rate_req *req = arg;
++        req->fps = 0;
++        mp_mutex_lock(&b->overlay_lock);
++        const BLURAY_CLIP_INFO *clip = bd_current_clip(b);
++        if (clip) {
++            const BLURAY_STREAM_INFO *streams[] = {
++                clip->video_streams, clip->sec_video_streams,
++            };
++            const int counts[] = {
++                clip->video_stream_count, clip->sec_video_stream_count,
++            };
++            for (int group = 0; group < 2 && !req->fps; group++) {
++                for (int n = 0; n < counts[group]; n++) {
++                    const BLURAY_STREAM_INFO *si = &streams[group][n];
++                    if (si->pid != req->id)
++                        continue;
++                    // The PlayItem declares this PID's presentation rate. Do
++                    // not estimate it from delivery cadence or guess 24 fps.
++                    switch (si->rate) {
++                    case BLURAY_VIDEO_RATE_24000_1001: req->fps = 24000.0 / 1001; break;
++                    case BLURAY_VIDEO_RATE_24:         req->fps = 24; break;
++                    case BLURAY_VIDEO_RATE_25:         req->fps = 25; break;
++                    case BLURAY_VIDEO_RATE_30000_1001: req->fps = 30000.0 / 1001; break;
++                    case BLURAY_VIDEO_RATE_50:         req->fps = 50; break;
++                    case BLURAY_VIDEO_RATE_60000_1001: req->fps = 60000.0 / 1001; break;
++                    }
++                    break;
++                }
++            }
++        }
++        mp_mutex_unlock(&b->overlay_lock);
++        return req->fps > 0 ? STREAM_OK : STREAM_UNSUPPORTED;
++    }
+     case STREAM_CTRL_GET_BD_AUDIO_RATE: {
+         struct stream_bd_audio_rate_req *req = arg;
+         req->samplerate = 0;
+--- a/sub/osd.c
++++ b/sub/osd.c
+@@ -218,12 +218,27 @@
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++static void reset_secondary_fresh_pose_locked(struct osd_state *osd)
++{
++    secondary_ass_fresh_pose_reset(&osd->secondary_fresh_pose);
++    osd->secondary_pose_scope = false;
++    osd->secondary_fresh_media_wall = 0;
++}
++
++void osd_reset_secondary_fresh_pose(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    reset_secondary_fresh_pose_locked(osd);
++    mp_mutex_unlock(&osd->lock);
++}
++
+ void osd_set_sub(struct osd_state *osd, int index, struct dec_sub *dec_sub)
+ {
+     mp_mutex_lock(&osd->lock);
+     if (index >= 0 && index < 2) {
+         struct osd_object *obj = osd->objs[OSDTYPE_SUB + index];
+         if (index == 1 && obj->sub != dec_sub) {
++            reset_secondary_fresh_pose_locked(osd);
+             secondary_ass_clock_reset(&osd->secondary_clock);
+             secondary_ass_sampler_reset(&osd->secondary_sampler);
+             osd->secondary_sample_held = false;
+@@ -329,6 +344,9 @@
+                                double requested_speed)
+ {
+     mp_mutex_lock(&osd->lock);
++    if (!rate || rate != osd->secondary_rate ||
++        requested_speed != osd->secondary_requested_speed)
++        reset_secondary_fresh_pose_locked(osd);
+     if (!rate || !osd->secondary_rate) {
+         secondary_ass_clock_reset(&osd->secondary_clock);
+         osd->secondary_sample_held = false;
+@@ -438,13 +456,16 @@
+ {
+     mp_mutex_lock(&osd->lock);
+     if (pts == MP_NOPTS_VALUE) {
++        reset_secondary_fresh_pose_locked(osd);
+         secondary_ass_clock_reset(&osd->secondary_clock);
+         secondary_ass_sampler_reset(&osd->secondary_sampler);
+     } else {
+         secondary_ass_clock_set_speed(&osd->secondary_clock, osd->secondary_speed,
+                                       mp_time_ns());
+-        if (secondary_ass_clock_anchor(&osd->secondary_clock, pts, wall, display_synced))
++        if (secondary_ass_clock_anchor(&osd->secondary_clock, pts, wall, display_synced)) {
+             secondary_ass_sampler_reset(&osd->secondary_sampler);
++            reset_secondary_fresh_pose_locked(osd);
++        }
+     }
+     mp_mutex_unlock(&osd->lock);
+ }
+@@ -548,6 +569,26 @@
+     mp_mutex_unlock(&osd->lock);
+ }
+ 
++void osd_begin_secondary_pose_scope(struct osd_state *osd, int64_t video_wall)
++{
++    mp_mutex_lock(&osd->lock);
++    osd->secondary_pose_scope = true;
++    osd->secondary_pose_thread = mp_thread_current_id();
++    osd->secondary_fresh_media_wall = video_wall > 0 ? video_wall : 0;
++    mp_mutex_unlock(&osd->lock);
++}
++
++void osd_end_secondary_pose_scope(struct osd_state *osd)
++{
++    mp_mutex_lock(&osd->lock);
++    if (osd->secondary_pose_scope &&
++        mp_thread_id_equal(osd->secondary_pose_thread, mp_thread_current_id())) {
++        osd->secondary_pose_scope = false;
++        osd->secondary_fresh_media_wall = 0;
++    }
++    mp_mutex_unlock(&osd->lock);
++}
++
+ void osd_set_ass_pacing_scope(struct osd_state *osd, uint64_t vo_seq,
+                             uint64_t draw_seq, uint64_t frame_id)
+ {
+@@ -564,6 +605,7 @@
+ void osd_reset_secondary_clock(struct osd_state *osd)
+ {
+     mp_mutex_lock(&osd->lock);
++    reset_secondary_fresh_pose_locked(osd);
+     secondary_ass_clock_reset(&osd->secondary_clock);
+     secondary_ass_sampler_reset(&osd->secondary_sampler);
+     osd->secondary_sample_held = false;
+@@ -645,6 +687,37 @@
+                         osd->secondary_submit_wall);
+             }
+         }
++        // Physical authority remains held/quarantined. A necessary fresh video
++        // may nevertheless emit its media-clock pose at its unchanged original F.
++        // Only this VO draw thread owns the scope; a screenshot or UI caller
++        // cannot consume a pending fresh-media request.
++        bool pose_scope = osd->secondary_pose_scope &&
++            mp_thread_id_equal(osd->secondary_pose_thread, mp_thread_current_id());
++        bool fresh_media_pose = false;
++        bool media_floor_clamped = false;
++        double physical_pts = video_pts;
++        if (pose_scope) {
++            if (osd->secondary_fresh_media_wall > 0 && osd->secondary_rate > 0)
++                fresh_media_pose = secondary_ass_fresh_pose_sample(
++                    &osd->secondary_fresh_pose, &osd->secondary_clock,
++                    osd->secondary_fresh_media_wall,
++                    osd->secondary_sampler.valid, osd->secondary_sampler.pts,
++                    &video_pts);
++            if (!fresh_media_pose) {
++                bool accepted = changed_sample && !osd->secondary_sample_held &&
++                    osd->secondary_physical_phase && osd->secondary_sampler.valid &&
++                    osd->secondary_sampler.epoch == osd->secondary_physical_epoch;
++                video_pts = secondary_ass_fresh_pose_resume(
++                    &osd->secondary_fresh_pose, video_pts, accepted);
++                media_floor_clamped = video_pts != physical_pts;
++            }
++        } else {
++            // Screenshots/UI callers may retain the emitted floor, but cannot
++            // consume the VO's F request or clear it as physical recovery.
++            video_pts = secondary_ass_fresh_pose_resume(
++                &osd->secondary_fresh_pose, video_pts, false);
++            media_floor_clamped = video_pts != physical_pts;
++        }
+         struct mp_ass_pacing_record scope = {0};
+         if (pacing) {
+             struct secondary_ass_sampler *sampler = &osd->secondary_sampler;
+@@ -665,7 +738,9 @@
+                     ((uint64_t)sampler->physical_slots << 4) |
+                     ((uint64_t)clock->display_synced << 5) |
+                     ((uint64_t)draw_scope << 6) |
+-                    ((uint64_t)osd->secondary_display_forecast << 7),
++                    ((uint64_t)osd->secondary_display_forecast << 7) |
++                    ((uint64_t)fresh_media_pose << 8) |
++                    ((uint64_t)media_floor_clamped << 9),
+                 .v = {sampler->sample_wall, (int64_t)sampler->tick,
+                     mp_ass_pacing_double_bits(video_pts), clock->wall,
+                     mp_ass_pacing_double_bits(clock->pts),
+@@ -678,6 +753,17 @@
+                     sampler->divisor, sampler->origin_slot},
+             };
+             mp_ass_pacing_record(osd->global, MP_ASS_PACING_SAMPLE, &scope);
++            if (fresh_media_pose || media_floor_clamped) {
++                struct mp_ass_pacing_record media = scope;
++                media.flags = (uint64_t)fresh_media_pose |
++                    ((uint64_t)media_floor_clamped << 1);
++                media.v[0] = osd->secondary_fresh_media_wall;
++                media.v[1] = mp_ass_pacing_double_bits(physical_pts);
++                media.v[2] = mp_ass_pacing_double_bits(video_pts);
++                media.v[3] = mp_ass_pacing_double_bits(osd->secondary_fresh_pose.floor_pts);
++                // Kind-local media-pose marker: no physical plan or Display claim.
++                mp_ass_pacing_record(osd->global, MP_ASS_PACING_ANCHOR, &media);
++            }
+         }
+         // Pausing disables the refresh clock and clears its sampler. A UI
+         // repaint can still request the held pose; with refresh disabled use
+--- a/sub/osd.h
++++ b/sub/osd.h
+@@ -237,6 +237,11 @@
+                                         int64_t vsync_interval, int64_t submit_wall,
+                                         bool physical_phase);
+ void osd_hold_secondary_sample(struct osd_state *osd);
++// Scope is owned by the calling VO draw thread. A positive wall is the
++// mandatory video's original F, never an independent physical Present target.
++void osd_begin_secondary_pose_scope(struct osd_state *osd, int64_t video_wall);
++void osd_end_secondary_pose_scope(struct osd_state *osd);
++void osd_reset_secondary_fresh_pose(struct osd_state *osd);
+ // Opt-in recording scope, never a clock authority. Only the calling draw
+ // thread may use it; unrelated OSD/filter calls keep an invalid draw identity.
+ void osd_set_ass_pacing_scope(struct osd_state *osd, uint64_t vo_seq,
+--- a/sub/osd_state.h
++++ b/sub/osd_state.h
+@@ -6,6 +6,7 @@
+ #include "osd.h"
+ #include "osdep/threads.h"
+ #include "secondary_ass_clock.h"
++#include "secondary_ass_fresh_pose.h"
+ 
+ enum mp_osdtype {
+     OSDTYPE_SUB,
+@@ -84,6 +85,10 @@
+     struct secondary_ass_clock secondary_clock;
+     struct secondary_ass_sampler secondary_sampler;
+     bool secondary_sample_held;
++    struct secondary_ass_fresh_pose secondary_fresh_pose;
++    bool secondary_pose_scope;
++    mp_thread_id secondary_pose_thread;
++    int64_t secondary_fresh_media_wall;
+     int64_t secondary_present_wall;
+     int64_t secondary_submit_wall;
+     int64_t secondary_vsync_interval;
+--- /dev/null
++++ b/sub/secondary_ass_fresh_pose.h
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_FRESH_POSE_H
++#define MP_SECONDARY_ASS_FRESH_POSE_H
++
++#include "secondary_ass_clock.h"
++
++// A media pose emitted by a mandatory video draw, not a physical G/D sample.
++// It must never grant cache admission or mutate the physical sampler identity.
++struct secondary_ass_fresh_pose {
++    bool floor_valid;
++    double floor_pts;
++};
++
++static inline void secondary_ass_fresh_pose_reset(struct secondary_ass_fresh_pose *p)
++{
++    *p = (struct secondary_ass_fresh_pose){0};
++}
++
++static inline bool secondary_ass_fresh_pose_sample(
++    struct secondary_ass_fresh_pose *p, const struct secondary_ass_clock *clock,
++    int64_t video_wall, bool retained_valid, double retained_pts, double *pts)
++{
++    if (!pts || !clock->valid || clock->display_synced || video_wall <= 0 ||
++        clock->wall <= 0 ||
++        !isfinite(clock->speed) || clock->speed <= 0 ||
++        !isfinite(clock->phase_rate) ||
++        !isfinite(clock->speed + clock->phase_rate) ||
++        clock->speed + clock->phase_rate <= 0)
++        return false;
++    double next = secondary_ass_clock_sample(clock, video_wall);
++    if (!isfinite(next))
++        return false;
++    if (retained_valid && isfinite(retained_pts) && retained_pts > next)
++        next = retained_pts;
++    if (p->floor_valid && p->floor_pts > next)
++        next = p->floor_pts;
++    p->floor_valid = true;
++    p->floor_pts = next;
++    *pts = next;
++    return true;
++}
++
++// Clamp only the emitted subtitle input. The physical sample's PTS, G/D,
++// origin, tick and epoch remain intact. A newly accepted physical pose clears
++// this temporary floor once it catches up; a UI repaint cannot clear it.
++static inline double secondary_ass_fresh_pose_resume(
++    struct secondary_ass_fresh_pose *p, double physical_pts, bool physical_accepted)
++{
++    if (!p->floor_valid || !isfinite(physical_pts))
++        return physical_pts;
++    if (physical_pts < p->floor_pts)
++        return p->floor_pts;
++    if (physical_accepted)
++        secondary_ass_fresh_pose_reset(p);
++    return physical_pts;
++}
++
++#endif
+--- /dev/null
++++ b/test/secondary_ass_fresh_recovery.c
+@@ -0,0 +1,176 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include <stdio.h>
++#include <string.h>
++#include <math.h>
++#include <limits.h>
++#include "sub/secondary_ass_fresh_pose.h"
++#include "video/out/secondary_ass_quiet_recovery.h"
++
++static int checks, failures;
++#define CHECK(test, label) do { checks++; if (!(test)) { \
++    fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__); failures++; \
++} } while (0)
++#define CLOSE(a,b) (fabs((a)-(b)) < 1e-8)
++
++static struct secondary_ass_physical authority(void)
++{
++    return (struct secondary_ass_physical){
++        .epoch = 95, .phase = 17528663100LL, .phase_slot = 4294967296LL,
++        .interval = 6250000, .sync_slot = 4294967296LL,
++        .sync_qpc_ns = 277260075217800LL, .sync_count = 40004778,
++        .sync_segment_consistent = true, .success_generation = 10,
++        .success_contiguous = true, .success_first_id = 328,
++        .success_last_id = 329, .last_submit_id = 329, .historical_id = 326,
++    };
++}
++
++static bool quiet_eligible(const struct secondary_ass_physical *p,
++                           uint64_t old_epoch, int64_t divisor, double rate)
++{
++#ifdef LEGACY_FRESH_HOLD
++    // Exact old failure consequence: secondary_next_sample refuses to map
++    // old epoch94 into physical95, quiet forecast receives first_slot=0.
++    struct secondary_ass_physical_point zero = {0};
++    return secondary_ass_present_plan_make_fixed_forecast(p, zero, 0).valid;
++#else
++    return secondary_ass_quiet_recovery_eligible(p, old_epoch, divisor, rate);
++#endif
++}
++
++static bool emit_pose(struct secondary_ass_fresh_pose *pose,
++                      const struct secondary_ass_clock *clock, int64_t F,
++                      bool retained_valid, double retained, double *out)
++{
++#ifdef LEGACY_FRESH_HOLD
++    // The old held-render path emits sampler->pts for every fresh video draw.
++    *out = retained;
++    return true;
++#else
++    return secondary_ass_fresh_pose_sample(pose, clock, F, retained_valid, retained, out);
++#endif
++}
++
++static void test_quiet_epoch(void)
++{
++    struct secondary_ass_physical p = authority();
++    CHECK(quiet_eligible(&p, 94, 2, 80), "run2 recovered epoch95 can bootstrap quiet sampler94");
++    struct secondary_ass_physical view = secondary_ass_present_plan_view(&p);
++    int64_t F = 17680000000LL, ready = 17682000000LL;
++    struct secondary_ass_physical_point first = secondary_ass_physical_predict_point(&view, ready);
++    struct secondary_ass_present_fixed_offset fixed = {0};
++    int offset = secondary_ass_present_fixed_offset_get(&fixed, &p, first, 2, 80);
++    CHECK(offset == 0, "real recovered authority supplies a fixed forecast offset");
++    struct secondary_ass_present_plan plan = secondary_ass_present_plan_fresh_clock(
++        &p, first, 2, offset, ready, F);
++    CHECK(plan.valid && plan.fresh_clock_only, "existing fresh-clock helper accepts new-namespace candidate");
++    CHECK(plan.epoch == 95 && plan.target.slot > 0 && plan.base.slot > 0,
++          "bootstrap uses new physical namespace, not old zero/slot identity");
++    CHECK(plan.submit == F && plan.fallback_submit == F && plan.lifecycle_safe_wait == F,
++          "mandatory video F and lifecycle wait remain unchanged");
++    CHECK(!quiet_eligible(&p, 95, 2, 80), "same-epoch ordinary quiet path stays unchanged");
++    CHECK(!quiet_eligible(&p, 0, 2, 80), "unidentified sampler is not an epoch-recovery task");
++    CHECK(!quiet_eligible(&p, 94, 0, 80), "zero divisor is not physical authority");
++    CHECK(!quiet_eligible(&p, 94, 2, NAN), "NaN configured rate rejected");
++    CHECK(!quiet_eligible(&p, 94, 2, INFINITY), "infinite rate rejected");
++    CHECK(!quiet_eligible(&p, 94, 2, 0), "disabled clock rejected");
++#define BAD(field,value,label) do { struct secondary_ass_physical q=p; q.field=value; \
++    CHECK(!quiet_eligible(&q,94,2,80),label); } while (0)
++    BAD(epoch,0,"unknown physical epoch rejected");
++    BAD(epoch_exhausted,true,"exhausted physical epoch rejected");
++    BAD(outlier_pending,true,"outlier does not grant quiet bootstrap");
++    BAD(sync_segment_consistent,false,"inconsistent feedback cannot bootstrap");
++    BAD(success_generation,0,"no successful generation rejected");
++    BAD(success_contiguous,false,"noncontiguous successful prefix rejected");
++    BAD(phase,0,"missing phase wall rejected");
++    BAD(phase_slot,0,"missing physical phase slot rejected");
++    BAD(sync_qpc_ns,0,"missing raw observed QPC rejected");
++    BAD(sync_slot,0,"missing observed sync slot rejected");
++    BAD(interval,0,"missing physical interval rejected");
++    BAD(interval,6944444,"old divisor80 cannot silently carry into144Hz");
++#undef BAD
++    p.interval = 6250275;
++    CHECK(quiet_eligible(&p,94,2,80), "small observed period refinement retains 80/160 eligibility");
++}
++
++static void test_fresh_media_pose(void)
++{
++    struct secondary_ass_clock clock = {
++        .valid = true, .pts = 16.258242280082655, .wall = 18804847200LL, .speed = 1,
++    };
++    struct secondary_ass_sampler sampler = {
++        .valid = true, .physical_slots = true, .display_forecast = true,
++        .epoch = 75, .origin_slot = 4294969001LL, .tick = 227,
++        .sample_wall = 18804847200LL, .pts = clock.pts, .divisor = 2,
++    }, retained = sampler;
++    struct secondary_ass_fresh_pose pose = {0};
++    double out = sampler.pts, previous = out;
++    // Actual original-video F timestamps from run1's eight held fresh draws.
++    int64_t Fs[] = {18826610200LL,18866592267LL,18906592267LL,18946593000LL,
++                    18986592167LL,19026612133LL,19066600600LL,19106597800LL};
++    for (unsigned n=0; n<sizeof(Fs)/sizeof(Fs[0]); n++) {
++        CHECK(emit_pose(&pose,&clock,Fs[n],true,sampler.pts,&out),
++              "mandatory fresh draw can emit its anchored media pose");
++        CHECK(out > previous, "run1 fresh inputs no longer repeat for300ms");
++        previous = out;
++    }
++    CHECK(out - sampler.pts > .300, "eight necessary fresh draws advance media input through observed quarantine");
++    CHECK(memcmp(&sampler,&retained,sizeof(sampler))==0,
++          "fallback never rewrites retained physical sampler origin/tick/epoch/PTS");
++    CHECK(pose.floor_valid && CLOSE(pose.floor_pts,out), "fallback publishes a separate pose floor");
++    double floor = pose.floor_pts;
++    double behind = floor - .050;
++    CHECK(CLOSE(secondary_ass_fresh_pose_resume(&pose,behind,true),floor),
++          "recovered but lagging physical pose cannot move emitted input backward");
++    CHECK(pose.floor_valid, "lagging physical tick cannot clear recovery floor");
++    CHECK(CLOSE(secondary_ass_fresh_pose_resume(&pose,floor,false),floor) && pose.floor_valid,
++          "manual repaint cannot clear floor even at equal input");
++    CHECK(CLOSE(secondary_ass_fresh_pose_resume(&pose,floor+.001,true),floor+.001) && !pose.floor_valid,
++          "accepted physical sample clears floor once it catches up");
++    // If a captured prior D is slightly ahead of new mandatory F, keep one pose.
++    double ahead=secondary_ass_clock_sample(&clock,Fs[0])+.010;
++    CHECK(secondary_ass_fresh_pose_sample(&pose,&clock,Fs[0],true,ahead,&out) && CLOSE(out,ahead),
++          "future retained physical pose is never pulled backward to an earlier F");
++    CHECK(secondary_ass_fresh_pose_sample(&pose,&clock,Fs[1],true,ahead,&out) && out>ahead,
++          "retained-future clamp releases as the real F advances");
++}
++
++static void test_lifecycle(void)
++{
++    struct secondary_ass_fresh_pose p={0};
++    struct secondary_ass_clock c={.valid=true,.wall=1000000000,.pts=100,.speed=1};
++    double out=0;
++    CHECK(secondary_ass_fresh_pose_sample(&p,&c,1100000000,false,0,&out) && CLOSE(out,100.1),
++          "clock-based pose uses original F rather than CPU wake time");
++    secondary_ass_fresh_pose_reset(&p); // pause/rate0/sub replacement scope reset
++    CHECK(!p.floor_valid, "lifecycle reset removes stale pose floor");
++    secondary_ass_clock_reset(&c);
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,1200000000,false,0,&out),
++          "paused/unanchored clock grants no media pose");
++    c=(struct secondary_ass_clock){.valid=true,.wall=1000000000,.pts=100,.speed=1};
++    CHECK(secondary_ass_clock_anchor(&c,10,2000000000,false), "backward seek is a real clock discontinuity");
++    secondary_ass_fresh_pose_reset(&p);
++    CHECK(secondary_ass_fresh_pose_sample(&p,&c,2100000000,false,0,&out) && CLOSE(out,10.1),
++          "seek/reload may legitimately return to an earlier media timeline");
++    secondary_ass_clock_set_speed(&c,2,2200000000);
++    secondary_ass_fresh_pose_reset(&p);
++    CHECK(secondary_ass_fresh_pose_sample(&p,&c,2300000000,false,0,&out) && CLOSE(out,10.4),
++          "speed change integrates old speed before applying new slope");
++    c.display_synced=true;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out),
++          "display-synced video never receives this fallback");
++    c.display_synced=false;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,0,false,0,&out), "unknown F rejected");
++    c.wall=0;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out), "unanchored wall rejected");
++    c.wall=2000000000; c.speed=NAN;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out), "invalid speed rejected");
++    c.speed=1; c.phase_rate=-2;
++    CHECK(!secondary_ass_fresh_pose_sample(&p,&c,2400000000,false,0,&out), "non-forward clock slope rejected");
++}
++
++int main(void)
++{
++    test_quiet_epoch(); test_fresh_media_pose(); test_lifecycle();
++    printf("{\"checks\":%d,\"failures\":%d,\"display_verified\":false,\"core_built\":false}\n",checks,failures);
++    return failures ? 1 : 0;
++}
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -71,7 +71,7 @@
+ static int hwdec_opt_help(struct mp_log *log, const m_option_t *opt,
+                           struct bstr name);
+ 
+-#define HWDEC_DELAY_QUEUE_COUNT 2
++#define HWDEC_DELAY_QUEUE_COUNT 4
+ #define HWDEC_WAIT_KEYFRAME_COUNT 96
+ 
+ // Fallback number of extra surfaces for fixed-size hw frame pools, if the
+@@ -811,9 +811,11 @@
+         if (ctx->hwdec.pix_fmt != AV_PIX_FMT_NONE)
+             avctx->get_format = get_format_hwdec;
+ 
+-        // Some APIs benefit from this, for others it's additional bloat.
+-        if (ctx->hwdec.copying)
++        // Allow the decoder to finish before hardware frames reach the VO.
++        if (ctx->hwdec.copying || ctx->hwdec.use_hw_frames)
+             ctx->max_delay_queue = HWDEC_DELAY_QUEUE_COUNT;
++        if (ctx->max_delay_queue && !ctx->hwdec.use_hw_frames)
++            avctx->extra_hw_frames = ctx->max_delay_queue;
+         ctx->hw_probing = true;
+ 
+         threads = ctx->hwdec_opts->hwdec_threads;
+@@ -832,6 +834,8 @@
+         avctx->get_buffer2 = get_buffer2_direct;
+     }
+ 
++    if (c->dovi && c->dv_profile == 7)
++        avctx->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
+     avctx->flags |= lavc_param->bitexact ? AV_CODEC_FLAG_BITEXACT : 0;
+     avctx->flags2 |= lavc_param->fast ? AV_CODEC_FLAG2_FAST : 0;
+ 
+@@ -983,9 +987,8 @@
+ // on to at any given time.
+ static int hwdec_get_extra_frames(vd_ffmpeg_ctx *ctx)
+ {
+-    // Structural surface requirement of the player (e.g. the enhancement-layer
+-    // pairing queue); applies on top of any user override.
+-    int hint = ctx->extra_hw_frames_hint;
++    // Structural player requirements (including EL pairing) plus decoder queue.
++    int hint = ctx->extra_hw_frames_hint + ctx->max_delay_queue;
+ 
+     int extra = ctx->hwdec_opts->hwdec_extra_frames;
+     if (extra >= 0)
+--- a/video/mp_image.c
++++ b/video/mp_image.c
+@@ -565,6 +565,7 @@
+     dst->params.chroma_location = src->params.chroma_location;
+     dst->params.crop = src->params.crop;
+     dst->nominal_fps = src->nominal_fps;
++    dst->dovi_order = src->dovi_order;
+     dst->params.primaries_orig = src->params.primaries_orig;
+     dst->params.transfer_orig = src->params.transfer_orig;
+     dst->params.sys_orig = src->params.sys_orig;
+@@ -1158,7 +1159,12 @@
+     if (sd)
+         dst->params.stereo3d = mp_stereo3d_from_av((const AVStereo3D *)sd->data);
+ 
+-    if (src->opaque_ref) {
++    // Codec COPY_OPAQUE carries the split layer's display position. Never
++    // interpret that small tagged buffer as legacy mp_image_params.
++    if (src->opaque_ref && src->opaque_ref->size == sizeof(struct mp_dovi_order) &&
++        ((struct mp_dovi_order *)src->opaque_ref->data)->magic == MP_DOVI_ORDER_MAGIC) {
++        dst->dovi_order = *(struct mp_dovi_order *)src->opaque_ref->data;
++    } else if (src->opaque_ref && src->opaque_ref->size >= sizeof(struct mp_image_params)) {
+         struct mp_image_params *p = (void *)src->opaque_ref->data;
+         dst->params.stereo3d = p->stereo3d;
+         // Might be incorrect if colorspace changes.
+--- a/video/mp_image.h
++++ b/video/mp_image.h
+@@ -19,6 +19,7 @@
+ #define MPLAYER_MP_IMAGE_H
+ 
+ #include <stdbool.h>
++#include "common/dovi_order.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -108,6 +109,7 @@
+     double dts, pkt_duration;
+     /* container reported FPS; can be incorrect, or 0 if unknown */
+     double nominal_fps;
++    struct mp_dovi_order dovi_order;
+     /* for private use */
+     void* priv;
+ 
+--- a/video/out/d3d11/context.c
++++ b/video/out/d3d11/context.c
+@@ -128,6 +128,8 @@
+     IDXGISwapChain *swapchain;
+     struct pl_color_space swapchain_csp;
+     BOOL fullscreen_state;
++    bool dovi_transport;
++    bool dovi_present_blocked;
+ 
+     int64_t perf_freq;
+     unsigned last_sync_refresh_count;
+@@ -757,6 +759,11 @@
+ static void d3d11_swap_buffers(struct ra_swapchain *sw)
+ {
+     struct priv *p = sw->priv;
++    // The DV worker is changing the display, not accepting carrier frames.
++    // Keep the last scanned-out image; do not submit black/ordinary buffers
++    // into a simultaneous refresh, colour or HDR transition.
++    if (p->dovi_present_blocked)
++        return;
+ 
+     bool trace = p->schedule_trace;
+     bool recording = mp_ass_pacing_enabled(sw->ctx->global);
+@@ -771,7 +778,7 @@
+         // Options and swapchain state are checked again at the actual API
+         // call site. A change after the VO decision restores the old wait;
+         // it must never turn a guarded Sync1 submission into an early Sync0.
+-        bool still_valid = p->opts->sync_interval == 1 &&
++        bool still_valid = (p->dovi_transport || p->opts->sync_interval == 1) &&
+             p->present_generation == p->early_present_generation &&
+             p->last_present_valid &&
+             p->last_present_generation == p->early_present_generation &&
+@@ -796,13 +803,13 @@
+     p->last_present_valid = false;
+     p->last_present_desc_valid = false;
+     p->last_present_generation = 0;
+-    p->last_present_sync_interval = p->opts->sync_interval;
++    p->last_present_sync_interval = p->dovi_transport ? 1 : p->opts->sync_interval;
+ 
+     LARGE_INTEGER api_begin = {0}, api_end = {0};
+     if (capture)
+         QueryPerformanceCounter(&api_begin);
+     HRESULT present_hr = IDXGISwapChain_Present(p->swapchain,
+-                                                 p->opts->sync_interval, 0);
++                                                 p->last_present_sync_interval, 0);
+     if (capture)
+         QueryPerformanceCounter(&api_end);
+     p->last_present_hr = present_hr;
+@@ -869,7 +876,7 @@
+             .vo_seq = vo->pacing_vo_seq, .draw_seq = vo->pacing_draw_seq,
+             .frame_id = vo->pacing_frame_id, .generation = p->present_generation,
+             .flags = UINT64_C(1) << 63, // error/unsupported; no raw stats
+-            .v = {(uint32_t)hr, tag, p->opts->sync_interval,
++            .v = {(uint32_t)hr, tag, p->last_present_sync_interval,
+                 p->last_submit_qpc, p->perf_freq},
+         };
+         mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
+@@ -877,19 +884,26 @@
+     if (p->secondary_trace)
+         MP_INFO(sw->ctx, "native-ass-dxgi: status=%s hr=0x%08"PRIx32
+                 " sync_interval=%d last_submit_qpc=%"PRId64"\n",
+-                status, (uint32_t)hr, p->opts->sync_interval,
++                status, (uint32_t)hr, p->last_present_sync_interval,
+                 p->last_submit_qpc);
+ }
+ 
+ static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
+ {
+     struct priv *p = sw->priv;
++    if (p->dovi_present_blocked) {
++        info->secondary_phase_reset = true;
++        d3d11_trace_vsync_status(sw, "dovi_output_transition", S_OK);
++        return;
++    }
+     HRESULT hr;
+ 
+     m_config_cache_update(p->opts_cache);
+ 
+     // The calculations below are only valid if mpv presents on every vsync
+-    if (p->opts->sync_interval != 1) {
++    // Classify the actual submission, including the DV carrier's Sync1
++    // transport override. The configured interval can differ from Present.
++    if (p->last_present_sync_interval != 1) {
+         info->secondary_phase_reset = true;
+         d3d11_trace_vsync_status(sw, "unsupported_sync_interval", S_OK);
+         return;
+@@ -1056,7 +1070,7 @@
+                     stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart,
+                     p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
+                     now_qpc.QuadPart, now_ns, info->last_queue_display_time,
+-                    p->opts->sync_interval, desc.SwapEffect,
++                    p->last_present_sync_interval, desc.SwapEffect,
+                     info->secondary_sync_time, info->secondary_display_time},
+             };
+             mp_ass_pacing_record(sw->ctx->global, MP_ASS_PACING_DXGI, &record);
+@@ -1073,7 +1087,7 @@
+                 stats.SyncRefreshCount, (int64_t)stats.SyncQPCTime.QuadPart,
+                 p->vsync_duration_qpc, p->perf_freq, p->last_submit_qpc,
+                 (int64_t)now_qpc.QuadPart, now_ns,
+-                info->last_queue_display_time, p->opts->sync_interval,
++                info->last_queue_display_time, p->last_present_sync_interval,
+                 (unsigned)desc.SwapEffect);
+     }
+ }
+@@ -1385,7 +1399,7 @@
+     // Re-read the current option immediately before the decision. If a config
+     // update changes SyncInterval, the FIFO lower bound no longer applies.
+     m_config_cache_update(p->opts_cache);
+-    if (p->opts->sync_interval != 1 || p->early_present_wait)
++    if ((!p->dovi_transport && p->opts->sync_interval != 1) || p->early_present_wait)
+         return false;
+     if (!d3d11_fifo_queue_unchanged(p))
+         return false;
+@@ -1393,6 +1407,87 @@
+     p->early_present_target = original_target;
+     p->early_present_wait = wait;
+     return true;
++}
++
++void ra_d3d11_ctx_set_dovi_transport(struct ra_ctx *ra, bool active)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return;
++    struct priv *p = ra->priv;
++    p->dovi_transport = active;
++}
++
++void ra_d3d11_ctx_set_dovi_present_blocked(struct ra_ctx *ra, bool blocked)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return;
++    struct priv *p = ra->priv;
++    if (p->dovi_present_blocked == blocked)
++        return;
++    p->dovi_present_blocked = blocked;
++    d3d11_present_generation_invalidate(p);
++    p->early_present_wait = NULL;
++    p->early_present_generation = 0;
++    p->early_present_target = 0;
++    p->last_sync_refresh_count = 0;
++    p->last_sync_qpc_time = 0;
++    p->vsync_duration_qpc = 0;
++    p->early_statistics_disjoint = true;
++    MP_VERBOSE(ra, "Dolby Vision Present %s during output transition.\n",
++               blocked ? "held" : "resumed");
++}
++
++uint64_t ra_d3d11_ctx_dovi_generation(struct ra_ctx *ra)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return 0;
++    struct priv *p = ra->priv;
++    return p->present_generation;
++}
++
++bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra, bool reset_hdr_state)
++{
++    if (!ra || !ra->swapchain || ra->swapchain->fns != &d3d11_swapchain)
++        return false;
++    struct priv *p = ra->priv;
++    // Keep the existing read-only path when entering from an SDR desktop.
++    // An external Windows HDR transition can invalidate the actual DXGI state
++    // without invalidating libplacebo's cached SDR hint. Support is not state:
++    // an HDR-origin request rebinds before the worker sends any DV signalling.
++    DXGI_SWAP_CHAIN_DESC desc = {0};
++    HRESULT hr = IDXGISwapChain_GetDesc(p->swapchain, &desc);
++    bool rgb8 = desc.BufferDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
++                desc.BufferDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
++    if (FAILED(hr) || !rgb8 || desc.SampleDesc.Count != 1) {
++        MP_WARN(ra, "Dolby Vision carrier is not an unmodified 8-bit RGB swapchain.\n");
++        return false;
++    }
++    IDXGISwapChain3 *sc3 = NULL;
++    hr = IDXGISwapChain_QueryInterface(p->swapchain, &IID_IDXGISwapChain3, (void **)&sc3);
++    UINT support = 0;
++    if (SUCCEEDED(hr))
++        hr = IDXGISwapChain3_CheckColorSpaceSupport(sc3, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
++                                                  &support);
++    bool supported = SUCCEEDED(hr) && (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT);
++    IDXGISwapChain4 *sc4 = NULL;
++    if (supported && reset_hdr_state) {
++        hr = IDXGISwapChain_QueryInterface(p->swapchain, &IID_IDXGISwapChain4, (void **)&sc4);
++        if (SUCCEEDED(hr))
++            hr = IDXGISwapChain3_SetColorSpace1(sc3, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
++        if (SUCCEEDED(hr))
++            hr = IDXGISwapChain4_SetHDRMetaData(sc4, DXGI_HDR_METADATA_TYPE_NONE, 0, NULL);
++        supported = SUCCEEDED(hr);
++    }
++    SAFE_RELEASE(sc4);
++    SAFE_RELEASE(sc3);
++    if (!supported)
++        MP_WARN(ra, "Could not prepare Dolby Vision SDR carrier (HDR reset %d): %s\n",
++                reset_hdr_state, mp_HRESULT_to_str(hr));
++    else if (reset_hdr_state)
++        MP_INFO(ra, "Dolby Vision carrier: SDR RGB full prepared before Dolby Vision signalling, HDR10 metadata cleared.\n");
++    else
++        MP_INFO(ra, "Dolby Vision carrier: 8-bit RGB verified; preserving driver HDMI signalling.\n");
++    return supported;
+ }
+ 
+ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
+--- a/video/out/d3d11/context.h
++++ b/video/out/d3d11/context.h
+@@ -8,6 +8,15 @@
+ // Get the underlying D3D11 swap chain from an RA context. The returned swap chain is
+ // refcounted and must be released by the caller.
+ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra);
++
++// Raw TV-led DV transport is SDR RGB8 with synchronized whole-frame Present.
++// No display settings or user options are changed by these functions.
++void ra_d3d11_ctx_set_dovi_transport(struct ra_ctx *ra, bool active);
++// VO thread only: suppress Present while the DV output worker changes the link.
++void ra_d3d11_ctx_set_dovi_present_blocked(struct ra_ctx *ra, bool blocked);
++// Rebind SDR state only for a request that began with Windows HDR enabled.
++bool ra_d3d11_ctx_prepare_dovi_carrier(struct ra_ctx *ra, bool reset_hdr_state);
++uint64_t ra_d3d11_ctx_dovi_generation(struct ra_ctx *ra);
+ 
+ // Returns true only when the current swapchain generation still permits a
+ // fail-closed early Sync1 Present.
+--- a/video/out/gpu/context.h
++++ b/video/out/gpu/context.h
+@@ -8,6 +8,7 @@
+ #include "ra.h"
+ 
+ struct ra_ctx_opts {
++    bool sdr_8bit;       // optional TV-led DV carrier
+     bool allow_sw;        // allow software renderers
+     bool want_alpha;      // create an alpha framebuffer if possible
+     bool debug;           // enable debugging layers/callbacks etc.
+--- a/video/out/gpu_next/context.c
++++ b/video/out/gpu_next/context.c
+@@ -89,6 +89,8 @@
+          .swapchain = swapchain,
+     );
+     ra_d3d11_ctx_set_swapchain_params(ctx->ra_ctx, params);
++    if (ctx_opts->sdr_8bit)
++        params->disable_10bit_sdr = true;
+     ctx->swapchain = pl_d3d11_create_swapchain(d3d11, params);
+     if (!ctx->swapchain) {
+         mp_err(ctx->log, "Failed to acquire a d3d11 libplacebo swap chain!\n");
+--- /dev/null
++++ b/video/out/gpu_next/dovi_tunnel.c
+@@ -0,0 +1,1557 @@
++/*
++ * TV-led Dolby Vision output for vo_gpu_next on D3D11. See dovi_tunnel.h.
++ *
++ * This file is part of mpv; GPL-2.0-or-later (dvtunnel.dll is GPL).
++ */
++
++#include <math.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include <wchar.h>
++
++#include <windows.h>
++#include <d3d11.h>
++
++#include <libavutil/buffer.h>
++#include <libavutil/dovi_meta.h>
++#include <libavutil/frame.h>
++#include <libavutil/pixfmt.h>
++#include <libplacebo/d3d11.h>
++
++#include "common/common.h"
++#include "common/msg.h"
++#include "input/input.h"
++#include "mpv_talloc.h"
++#include "osdep/timer.h"
++#include "video/fmt-conversion.h"
++#include "video/img_format.h"
++#include "video/mp_image.h"
++#include "video/out/d3d11/context.h"
++#include "video/out/d3d11/ra_d3d11.h"
++#include "video/out/gpu/context.h"
++#include "video/out/vo.h"
++#include "options/options.h"
++#include "video/out/w32_common.h"
++
++#include "dovi_tunnel.h"
++#include "dvtunnel.h"
++
++// Frames in a row without the tunnel before Dolby Vision output is left
++// (a stream may lack metadata on a few frames).
++#define MISSES_BEFORE_LEAVE 24
++// ...or after this long, whichever comes first: a slow card (GT 1030 at 4K) may draw
++// only a few frames a second, and 24 of them kept the TV black for 8 s after the
++// next file (not Dolby Vision) started.
++#define MISS_MS_BEFORE_LEAVE 500
++// Budget for the original HDMI attempt, rollback and one paired-rate attempt.
++#define SWITCH_TIMEOUT_MS 30000
++
++// Info for the panel (vision.lua): user-data/yaozhi-dv/<key>, sent when a value changes.
++#define INFO_KEYS 26
++
++struct dovi_tunnel {
++    struct mp_log *log;
++    struct vo *vo;
++    struct ra_ctx *ra_ctx;
++    pl_gpu gpu;
++    pl_log pllog;
++    pl_renderer rr;
++
++    HMODULE dll;
++    bool dll_tried;      // dvtunnel.dll load attempted (once)
++    bool load_failed;    // no tunnel on this device (logged once)
++    struct {
++        dvt_create_fn create;
++        dvt_destroy_fn destroy;
++        dvt_render_fn render;
++        dvt_gui_texture_fn gui_texture;
++        dvt_finish_fn finish;
++        dvt_output_fn output;
++        dvt_remove_leftover_fn remove_leftover;
++        dvt_log_fn2 log;
++        dvt_diag_fn diag;
++        dvt_monitor_gpu_fn monitor_gpu;
++        dvt_set_options_fn set_options;
++        dvt_windows_hdr_fn windows_hdr;
++        dvt_check_output_fn check_output;
++        dvt_poll_output_fn poll_output;
++        dvt_content_type_fn content_type; // optional
++        dvt_set_frame_options_fn set_frame_options;
++        dvt_get_frame_status_fn get_frame_status;
++    } fn;
++    dvt_ctx *ctx;
++    uint64_t timeline;
++    float gui_peak;
++    int cmv40_policy, cmv40_peak;
++    bool diag_attached;
++    int diag_paused;     // last state sent: -1 none, 0 playing, 1 paused
++
++    // The graphics card driving the video's monitor (NVIDIA: NVAPI).
++    int gpu_mode;        // --dovi-tunnel-gpu
++    int resolution;      // 0 desktop, 1 follow source, 1920/3840 fixed
++    int req_mode;
++    bool display_busy;   // the ordinary Windows mode switch is in progress
++    int req_low60;
++    int low60_mode;      // --dovi-tunnel-60p: 0 ask, 1 1080p, 2 map
++    int ct_mode;         // --dovi-tunnel-content-type
++    int ct_done;         // ct_mode applied on ct_mon (-1 none)
++    HMONITOR ct_mon;
++    int ask_count;       // incremented for each prompt
++    int options_sent;    // DVT_OPT_* given to the DLL, -1 none
++    HMONITOR gpu_mon;
++    int gpu_vendor;      // enum dvt_gpu
++    char gpu_name[128];
++    bool gpu_logged;
++    bool no_gpu;         // this frame: tone mapped because the card has no Dolby Vision output
++    HANDLE wake;         // timer that redraws while waiting (paused: no frames would come)
++
++    // HDR10 sources sent as Dolby Vision (--dovi-tunnel-hdr10): metadata made from the
++    // stream's HDR10 values, Profile 8.1 style (the picture itself is unchanged).
++    bool hdr10_to_dv;
++    AVBufferRef *synth;
++    float synth_key[4];
++    bool synth_active;   // this frame's metadata was made here
++
++    // Windows HDR: reported to the scripts; turned on while --vision-windows-hdr asks
++    // for HDR output, and off again afterwards.
++    bool want_hdr;
++    bool want_sdr;
++    HMONITOR hdr_off_mon; // originally HDR, temporarily disabled for SDR
++    bool hdr_tried;      // turned on once for this wish (the user may turn it off again)
++    HMONITOR hdr_on_mon; // turned on here
++    HMONITOR hdr_mon;
++    int64_t hdr_check_at;
++
++    ID3D11Texture2D *gui_raw;
++    pl_tex gui_tex;
++
++    wchar_t req_display[CCHDEVICENAME]; // stable target across HMONITOR rebuilds
++    int req_windows_hdr; // Windows HDR at request: 2 on, 1 off, 0 unsupported, -1 unknown
++    int entry_blocked; // preflight result; reset by a new explicit off/on
++    bool entry_pending, entry_query_started;
++    int64_t entry_query_start;
++    bool requested;      // Dolby Vision output asked for
++    double req_fps;      // the frame rate it was asked for
++    int state;           // last enum dvt_output_state seen
++    bool failed;         // gave up: mpv tone maps until turned off and on
++    bool limit60;        // the TV cannot output this file at 2160p60
++    int64_t switch_start;
++    int64_t canvas_wait;
++    int64_t canvas_sync;
++    bool was_enabled;
++    bool waiting_for_output;   // playback paused while the output switches
++    int misses;
++    int64_t miss_since;  // mp_time_ns() of the first of the misses
++    int format_waits;    // frames in a row with a swapchain that is not 8-bit yet
++    bool warned_format, warned_pixfmt, warned_render, warned_window;
++    uint64_t packed, failed_frames, rpu_frames, black_frames;
++    int pack_fails;      // packing failures in a row (gives up to tone mapping)
++
++    // Blending the OSD into Dolby Vision frames costs several full-screen passes; a weak
++    // card (GT 1030 at 4K) falls far behind the film, and the TV loses the signal. The
++    // rate is measured with passive OSD. A user-opened menu or panel takes priority.
++    int64_t gui_since;   // start of the measuring window, 0: none
++    int gui_frames;      // frames with the OSD blended in this window
++    bool gui_off;        // rate warning already logged; overlays are never omitted
++    bool gui_interactive; // last frame included user-opened OSD
++    // The same for the frames themselves: a card that cannot decode and pack the video
++    // in time (GT 1030 with 4K 60 fps: 1-4 fps) leaves the TV black or frozen.
++    int64_t speed_since;
++    int speed_frames;
++    bool speed_warned;
++    bool carrier_prepared; // carrier checked/rebound after the HDMI handshake
++    uint64_t carrier_generation; // recheck after a real swapchain lifecycle change
++    bool reset_context; // retire old RPU/EL/GUI resources after output restore completes
++    bool window_change_pending; // native window options held until HDMI is Off
++    bool window_change_failed; // do not repeat a failed native window commit
++
++    // the stream last logged
++    int stream_w, stream_h;
++    bool stream_el;
++    int stream_profile;
++
++    int64_t gap_since;           // no frames since (between files)
++    const char *out_state;     // off, entering, on, leaving, failed, test, mapped
++    const char *published_state;
++    int publish_countdown;
++    char info_val[INFO_KEYS][96];
++};
++
++// About every 2 seconds (each value sent is two lines in mpv's log file).
++#define PUBLISH_EVERY 48
++
++// A line to mpv's log and to mpv-dv.log (the file people send in reports).
++static void dlog(struct dovi_tunnel *t, int lev, const char *fmt, ...) MP_PRINTF_ATTRIBUTE(3, 4);
++static void dlog(struct dovi_tunnel *t, int lev, const char *fmt, ...)
++{
++    char line[512];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(line, sizeof(line), fmt, ap);
++    va_end(ap);
++    MP_MSG(t, lev, "%s\n", line);
++    if (t->fn.log) {
++        char tagged[540];
++        snprintf(tagged, sizeof(tagged), "mpv: %s", line);
++        t->fn.log(tagged);
++    }
++}
++
++// From the DLL's thread: the output state changed, draw again to act on it
++// (playback may be paused, so no new frame would come otherwise).
++static void notify_cb(void *opaque)
++{
++    struct dovi_tunnel *t = opaque;
++    vo_redraw(t->vo);
++}
++
++static VOID CALLBACK wake_cb(PVOID opaque, BOOLEAN fired)
++{
++    struct dovi_tunnel *t = opaque;
++    vo_redraw(t->vo);
++}
++
++// While waiting for the switch (playback paused by us), redraw twice a second so the
++// retry and the timeout run even when the output state does not change.
++static void set_wake(struct dovi_tunnel *t, bool on)
++{
++    if (on && !t->wake) {
++        if (!CreateTimerQueueTimer(&t->wake, NULL, wake_cb, t, 500, 500, WT_EXECUTEDEFAULT))
++            t->wake = NULL;
++    } else if (!on && t->wake) {
++        DeleteTimerQueueTimer(NULL, t->wake, INVALID_HANDLE_VALUE); // waits for a running callback
++        t->wake = NULL;
++    }
++}
++
++// MPV_DOVI_TUNNEL_TEST=1: pack in any window and never switch the output
++// (for checking the packing without a TV).
++static bool test_mode(void)
++{
++    const char *v = getenv("MPV_DOVI_TUNNEL_TEST");
++    return v && v[0] == '1';
++}
++
++static void run_cmd(struct dovi_tunnel *t, const char **cmd)
++{
++    if (t->vo->input_ctx)
++        mp_input_run_cmd(t->vo->input_ctx, cmd);
++}
++
++static void set_pause(struct dovi_tunnel *t, bool pause)
++{
++    if (pause == t->waiting_for_output)
++        return;
++    t->waiting_for_output = pause;
++    vo_set_output_wait(t->vo, pause);
++}
++
++static void show_text(struct dovi_tunnel *t, const char *text, const char *ms)
++{
++    run_cmd(t, (const char *[]) { "show-text", text, ms, NULL });
++}
++
++static const char *const info_keys[INFO_KEYS] = {
++    "dv-out", "dv-packed", "dv-failed", "dv-rpu", "dv-el", "dv-master",
++    "dv-trims", "dv-cm", "dv-l1", "dv-l6", "dv-stream", "dv-black",
++    "dv-gpu", "win-hdr", "gpu", "dv-source",
++    "dv-ask", "dv-slow", "ct-ask", // events for the scripts (the value changes each time)
++    "dv-cm-output", "dv-cm-appended", "dv-active-area", "dv-el-used",
++    "dv-gui-peak", "dv-scene-refresh", "dv-build",
++};
++
++// Sends a panel value only when it changed (each send is a line in mpv's log).
++static void set_info(struct dovi_tunnel *t, const char *key, const char *value)
++{
++    for (int i = 0; i < INFO_KEYS; i++) {
++        if (strcmp(info_keys[i], key) != 0)
++            continue;
++        if (strcmp(t->info_val[i], value) == 0)
++            return;
++        snprintf(t->info_val[i], sizeof(t->info_val[i]), "%s", value);
++        break;
++    }
++    char name[64];
++    snprintf(name, sizeof(name), "user-data/yaozhi-dv/%s", key);
++    run_cmd(t, (const char *[]) { "set", name, value, NULL });
++}
++
++// 12-bit PQ code to cd/m2 (SMPTE ST 2084).
++static double pq_nits(int code)
++{
++    const double m1 = 0.1593017578125, m2 = 78.84375;
++    const double c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
++    double p = pow(MPCLAMP(code, 0, 4095) / 4095.0, 1.0 / m2);
++    return 10000.0 * pow(MPMAX(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
++}
++
++// MEL: an enhancement layer whose residual is all zero (no NLQ dead zone).
++static bool is_mel(const AVDOVIDataMapping *map)
++{
++    for (int c = 0; c < 3; c++) {
++        if (map->nlq[c].linear_deadzone_slope || map->nlq[c].linear_deadzone_threshold)
++            return false;
++    }
++    return true;
++}
++
++static void publish_info(struct dovi_tunnel *t, AVBufferRef *buf, bool have_el)
++{
++    if (buf)
++        t->rpu_frames++;
++    bool state_changed = t->published_state != t->out_state;
++    if (!state_changed && --t->publish_countdown > 0)
++        return;
++    t->publish_countdown = PUBLISH_EVERY;
++    t->published_state = t->out_state;
++
++    char s[160];
++    set_info(t, "dv-out", t->out_state ? t->out_state : "off");
++    snprintf(s, sizeof(s), "%llu", (unsigned long long) t->packed);
++    set_info(t, "dv-packed", s);
++    snprintf(s, sizeof(s), "%llu", (unsigned long long) t->failed_frames);
++    set_info(t, "dv-failed", s);
++    snprintf(s, sizeof(s), "%llu", (unsigned long long) t->rpu_frames);
++    set_info(t, "dv-rpu", s);
++    if (!buf) {
++        set_info(t, "dv-el", "none");
++        set_info(t, "dv-stream", "");
++        set_info(t, "dv-master", "");
++        set_info(t, "dv-trims", "");
++        set_info(t, "dv-cm", "");
++        set_info(t, "dv-l1", "");
++        set_info(t, "dv-l6", "");
++        return;
++    }
++
++    const AVDOVIMetadata *md = (const AVDOVIMetadata *) buf->data;
++    const AVDOVIRpuDataHeader *hdr = av_dovi_get_header(md);
++    const AVDOVIColorMetadata *col = av_dovi_get_color(md);
++    const char *el = have_el ? (is_mel(av_dovi_get_mapping(md)) ? "MEL" : "FEL")
++                   : hdr->disable_residual_flag ? "none" : "missing";
++    set_info(t, "dv-el", el);
++    snprintf(s, sizeof(s), "%.4f – %.0f", pq_nits(col->source_min_pq), pq_nits(col->source_max_pq));
++    set_info(t, "dv-master", s);
++
++    int l2 = 0, l8 = 0, cm4 = 0;
++    for (int i = 0; i < md->num_ext_blocks; i++) {
++        int level = av_dovi_get_ext(md, i)->level;
++        l2 += level == 2;
++        l8 += level == 8;
++        cm4 |= level == 3 || level == 8 || level == 9 || level == 10 || level == 11 || level == 254;
++    }
++    snprintf(s, sizeof(s), "%d %d", l2, l8);
++    set_info(t, "dv-trims", s);
++    set_info(t, "dv-cm", cm4 ? "v4.0" : "v2.9");
++
++    const AVDOVIDmData *l1 = av_dovi_find_level(md, 1);
++    if (l1) {
++        snprintf(s, sizeof(s), "%.4f %.1f %.0f", pq_nits(l1->l1.min_pq),
++                 pq_nits(l1->l1.avg_pq), pq_nits(l1->l1.max_pq));
++        set_info(t, "dv-l1", s);
++    }
++    const AVDOVIDmData *l6 = av_dovi_find_level(md, 6);
++    snprintf(s, sizeof(s), "%d %d %d", l6 ? l6->l6.max_cll : 0, l6 ? l6->l6.max_fall : 0,
++             l6 ? l6->l6.max_luminance : 0);
++    set_info(t, "dv-l6", s);
++}
++
++struct dovi_tunnel *dovi_tunnel_create(struct vo *vo, struct mp_log *log, struct ra_ctx *ra_ctx,
++                                       pl_gpu gpu, pl_log pllog)
++{
++    struct dovi_tunnel *t = talloc_zero(NULL, struct dovi_tunnel);
++    t->vo = vo;
++    t->log = mp_log_new(t, log, "dovi-tunnel");
++    t->ra_ctx = ra_ctx;
++    t->gpu = gpu;
++    t->pllog = pllog;
++    t->diag_paused = -1;
++    t->options_sent = -1;
++    return t;
++}
++
++void dovi_tunnel_destroy(struct dovi_tunnel **tp)
++{
++    struct dovi_tunnel *t = *tp;
++    if (!t)
++        return;
++    set_wake(t, false);
++    pl_tex_destroy(t->gpu, &t->gui_tex);
++    if (t->ctx) {
++        dlog(t, MSGL_INFO, "closing: %llu frames sent as Dolby Vision, %llu not packed, "
++             "%llu black while switching.", (unsigned long long) t->packed,
++             (unsigned long long) t->failed_frames, (unsigned long long) t->black_frames);
++        if (t->requested || t->state != DVT_OUTPUT_OFF)
++            ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++        t->fn.destroy(t->ctx); // leaves Dolby Vision output (waits for it)
++    }
++    if (t->hdr_on_mon) {
++        dlog(t, MSGL_INFO, "Windows HDR off again (it was turned on for HDR output).");
++        t->fn.windows_hdr(t->hdr_on_mon, 0);
++    }
++    if (t->hdr_off_mon) {
++        dlog(t, MSGL_INFO, "Windows HDR restored on (temporarily disabled for SDR).");
++        t->fn.windows_hdr(t->hdr_off_mon, 1);
++    }
++    av_buffer_unref(&t->synth);
++    set_pause(t, false);
++    pl_renderer_destroy(&t->rr);
++    // dvtunnel.dll stays loaded: its guard and output thread may outlive this VO.
++    talloc_free(t);
++    *tp = NULL;
++}
++
++void dovi_tunnel_reset(struct dovi_tunnel *t)
++{
++    if (!t)
++        return;
++    t->timeline++; // force display scene refresh, without redoing HDMI
++    // A seek changes decoded frames, not the HDMI output or its capability.
++    // Keep the established carrier, a failed request and an in-flight switch's
++    // deadline. Only a new file or an explicit off/on starts a fresh request.
++    t->pack_fails = t->misses = 0;
++    t->miss_since = t->gap_since = 0;
++    t->gui_since = t->speed_since = 0;
++    t->gui_off = t->speed_warned = false;
++    t->publish_countdown = 0;
++}
++
++void dovi_tunnel_start_file(struct dovi_tunnel *t)
++{
++    if (!t)
++        return;
++    t->timeline++;
++    t->failed = t->limit60 = false;
++    t->pack_fails = t->format_waits = 0;
++    t->switch_start = 0;
++    t->gui_since = t->speed_since = 0;
++    t->gui_off = t->speed_warned = false;
++    t->carrier_prepared = false;
++    t->entry_blocked = 0;
++    t->entry_pending = t->entry_query_started = false;
++    t->gui_interactive = false;
++    set_info(t, "dv-why", "");
++    set_info(t, "dv-slow", "");
++}
++
++// Loads dvtunnel.dll from mpv's folder (once): the diagnostics run for every file,
++// the tunnel context is created with the first Dolby Vision frame.
++static bool load_dll(struct dovi_tunnel *t)
++{
++    if (t->dll)
++        return true;
++    if (t->dll_tried)
++        return false;
++    t->dll_tried = true;
++    if (!ra_is_d3d11(t->ra_ctx->ra))
++        return false;
++
++    wchar_t path[MAX_PATH];
++    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
++    wchar_t *slash = n ? wcsrchr(path, L'\\') : NULL;
++    if (!slash || (size_t)(slash - path) + 14 >= MAX_PATH) {
++        MP_ERR(t, "Cannot locate mpv's folder.\n");
++        return false;
++    }
++    wcscpy(slash + 1, L"dvtunnel.dll");
++    HMODULE dll = LoadLibraryW(path);
++    if (!dll) {
++        MP_ERR(t, "dvtunnel.dll was not found next to mpv.exe (error %lu).\n", GetLastError());
++        return false;
++    }
++
++    dvt_api_version_fn version = (void *) GetProcAddress(dll, "dvt_api_version");
++#define LOAD(name) (t->fn.name = (void *) GetProcAddress(dll, "dvt_" #name))
++    LOAD(content_type);
++    LOAD(set_frame_options);
++    LOAD(get_frame_status);
++    if (!version || version() != DVT_API_VERSION || !LOAD(create) || !LOAD(destroy) ||
++        !LOAD(render) || !LOAD(gui_texture) || !LOAD(finish) || !LOAD(output) ||
++        !LOAD(remove_leftover) || !LOAD(log) || !LOAD(monitor_gpu) ||
++        !LOAD(set_options) || !LOAD(windows_hdr) || !LOAD(check_output) || !LOAD(poll_output))
++    {
++        MP_ERR(t, "dvtunnel.dll is not the version this mpv expects (%d).\n",
++               DVT_API_VERSION);
++        memset(&t->fn, 0, sizeof(t->fn));
++        FreeLibrary(dll);
++        return false;
++    }
++#undef LOAD
++    t->dll = dll;
++    dlog(t, MSGL_INFO, "DV Build3 adapted transport: frame extension %s; build DV3-20261115.",
++         t->fn.set_frame_options && t->fn.get_frame_status ? "available" : "legacy");
++    set_info(t, "dv-build", t->fn.set_frame_options && t->fn.get_frame_status ?
++             "DV3-20261115" : "legacy API8");
++    return true;
++}
++
++// Creates the tunnel context (first Dolby Vision frame).
++static bool load(struct dovi_tunnel *t)
++{
++    if (t->ctx)
++        return true;
++    if (t->load_failed)
++        return false;
++    t->load_failed = true; // until it works
++
++    if (!ra_is_d3d11(t->ra_ctx->ra)) {
++        MP_WARN(t, "--dovi-tunnel needs --gpu-api=d3d11; Dolby Vision is tone mapped instead.\n");
++        return false;
++    }
++    if (!load_dll(t))
++        return false;
++
++    ID3D11Device *device = ra_d3d11_get_device(t->ra_ctx->ra);
++    // The process-wide output worker can outlive this VO. Do not register a
++    // process-wide logging callback with a VO-owned opaque pointer.
++    t->ctx = t->fn.create(device, NULL, notify_cb, t);
++    ID3D11Device_Release(device);
++    if (!t->ctx) {
++        dlog(t, MSGL_ERR, "dvtunnel.dll could not start on this graphics device; Dolby Vision "
++             "is tone mapped by mpv.");
++        return false;
++    }
++    t->rr = pl_renderer_create(t->pllog, t->gpu);
++    t->load_failed = false;
++    dlog(t, MSGL_INFO, "Dolby Vision tunnel ready.");
++    return true;
++}
++
++static bool fill_picture(struct mp_image *mpi, struct dvt_picture *pic)
++{
++    *pic = (struct dvt_picture) { .width = mpi->w, .height = mpi->h };
++    if (mpi->imgfmt == IMGFMT_D3D11) {
++        if (mpi->params.hw_subfmt != IMGFMT_P010)
++            return false;
++        pic->format = DVT_FMT_D3D11;
++        pic->texture = (ID3D11Texture2D *) mpi->planes[0];
++        pic->slice = (unsigned) (intptr_t) mpi->planes[1];
++        return true;
++    }
++    if (mpi->imgfmt == IMGFMT_P010) {
++        pic->format = DVT_FMT_P010;
++        for (int i = 0; i < 2; i++) {
++            pic->planes[i] = mpi->planes[i];
++            pic->strides[i] = mpi->stride[i];
++        }
++        return true;
++    }
++    if (imgfmt2pixfmt(mpi->imgfmt) == AV_PIX_FMT_YUV420P10LE) {
++        pic->format = DVT_FMT_YUV420P10;
++        for (int i = 0; i < 3; i++) {
++            pic->planes[i] = mpi->planes[i];
++            pic->strides[i] = mpi->stride[i];
++        }
++        return true;
++    }
++    return false;
++}
++
++static HMONITOR video_monitor(struct dovi_tunnel *t)
++{
++    HWND wnd = vo_w32_hwnd(t->vo);
++    return wnd ? MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST) : NULL;
++}
++
++// The output covers the whole monitor (the TV reads every pixel of the frame).
++static bool covers_monitor(struct dovi_tunnel *t, int w, int h)
++{
++    if (test_mode())
++        return w > 0 && h > 0;
++    MONITORINFO mi = { .cbSize = sizeof(mi) };
++    HMONITOR mon = video_monitor(t);
++    if (!mon || !GetMonitorInfoW(mon, &mi))
++        return false;
++    HWND wnd = vo_w32_hwnd(t->vo);
++    RECT client;
++    POINT origin = {0};
++    return wnd && !IsIconic(wnd) && GetClientRect(wnd, &client) &&
++           ClientToScreen(wnd, &origin) && origin.x == mi.rcMonitor.left &&
++           origin.y == mi.rcMonitor.top && client.right == w && client.bottom == h &&
++           w == mi.rcMonitor.right - mi.rcMonitor.left &&
++           h == mi.rcMonitor.bottom - mi.rcMonitor.top;
++}
++
++static AVBufferRef *find_dovi(struct mp_image *mpi)
++{
++    for (int n = 0; mpi && n < mpi->num_ff_side_data; n++) {
++        AVBufferRef *buf = mpi->ff_side_data[n].buf;
++        if (mpi->ff_side_data[n].type == AV_FRAME_DATA_DOVI_METADATA && buf && buf->size)
++            return buf;
++    }
++    return NULL;
++}
++
++// The decoder's AVDOVIMetadata side data (mpi->dovi holds libplacebo's mapping
++// of it, which the tunnel cannot use). In dual-track sources (Blu-ray m2ts) it
++// stays on the enhancement-layer frame.
++static AVBufferRef *dovi_metadata(struct mp_image *mpi)
++{
++    AVBufferRef *buf = find_dovi(mpi);
++    if (!buf && mpi && !mpi->params.no_dovi)
++        buf = find_dovi(mpi->enhancement_layer);
++    return buf;
++}
++
++// ---------------------------------------------------------------- HDR10 -> Dolby Vision
++
++// 12-bit PQ code of a luminance (inverse SMPTE ST 2084).
++// Only original stream metadata is eligible; HDR10 synthesis is not enabled.
++static AVBufferRef *stream_dovi(struct dovi_tunnel *t, struct mp_image *mpi)
++{
++    return dovi_metadata(mpi);
++}
++
++void dovi_tunnel_set_gpu(struct dovi_tunnel *t, int mode)
++{
++    if (!t || mode == t->gpu_mode)
++        return;
++    t->gpu_mode = mode;
++    t->gpu_logged = false;
++    t->failed = false; // another choice: try again
++}
++
++void dovi_tunnel_set_content_type(struct dovi_tunnel *t, int mode)
++{
++    if (t && mode >= 0 && mode <= 6)
++        t->ct_mode = mode; // applied by gpu_can_switch (ct_done differs)
++}
++
++void dovi_tunnel_set_mode(struct dovi_tunnel *t, int resolution, int low60, bool busy)
++{
++    if (!t)
++        return;
++    t->display_busy = busy;
++    if (resolution == t->resolution && low60 == t->low60_mode)
++        return;
++    t->resolution = resolution;
++    t->low60_mode = low60;
++    t->failed = false; // another choice: try again
++}
++
++static int dll_options(struct dovi_tunnel *t)
++{
++    return DVT_OPT_COMPAT_ATTEMPT | (t->low60_mode == 1 ? DVT_OPT_LOWRES_60 : 0);
++}
++
++static const char *gpu_vendor_name(int vendor)
++{
++    return vendor == DVT_GPU_NVIDIA ? "nvidia" : vendor == DVT_GPU_AMD ? "amd" :
++           vendor == DVT_GPU_INTEL ? "intel" : vendor == DVT_GPU_OTHER ? "other" : "unknown";
++}
++
++// Only the NVIDIA adapter driving the display may enter the HDMI tunnel.
++static bool gpu_can_switch(struct dovi_tunnel *t)
++{
++    if (test_mode() || !load_dll(t))
++        return true; // (without the DLL load() fails and mpv tone maps)
++    if (t->options_sent != dll_options(t)) {
++        t->options_sent = dll_options(t);
++        t->fn.set_options(t->options_sent);
++    }
++    HMONITOR mon = video_monitor(t);
++    if (mon != t->gpu_mon) {
++        t->gpu_mon = mon;
++        t->gpu_vendor = t->fn.monitor_gpu(mon, t->gpu_name, sizeof(t->gpu_name));
++        t->gpu_logged = false;
++    }
++    int v = t->gpu_vendor;
++    // The former AMD values remain valid in existing mpv.conf files, as mapping.
++    bool ok = t->gpu_mode != 1 && v == DVT_GPU_NVIDIA;
++    char s[160];
++    snprintf(s, sizeof(s), "%s|%s", gpu_vendor_name(v), t->gpu_name);
++    set_info(t, "dv-gpu", s);
++    if (!t->gpu_logged) {
++        t->gpu_logged = true;
++        dlog(t, ok ? MSGL_V : MSGL_INFO, "the screen is on %s (%s)%s.\n",
++             t->gpu_name[0] ? t->gpu_name : "?", gpu_vendor_name(v),
++             ok ? "" : "; Dolby Vision is mapped by mpv");
++    }
++    // NVIDIA's "content type reported to the display" (auto breaks Dolby Vision on some
++    // TVs), once per display and choice. ask (default): read it first; on auto the
++    // scripts ask the viewer (user-data/yaozhi-dv/ct-ask). A choice is written and read back.
++    if (v == DVT_GPU_NVIDIA && !t->entry_blocked && !t->entry_pending && t->fn.content_type && t->ct_mode != 6 &&
++        (t->ct_mon != mon || t->ct_done != t->ct_mode))
++    {
++        // DLL values (as the control panel lists them): 0 full-screen video, 1 desktop,
++        // 2 game, 3 photo, 4 cinema, 7 auto
++        static const char *const names[] = {"全屏视频", "桌面程序", "游戏", "照片", "电影"};
++        t->ct_mon = mon;
++        t->ct_done = t->ct_mode;
++        int was = t->fn.content_type(mon, -1);
++        dlog(t, MSGL_V, "NVIDIA content type reported to the display: %d.", was);
++        if (t->ct_mode == 0) {
++            if (was == 7) {
++                char a[32];
++                snprintf(a, sizeof(a), "auto %d", ++t->ask_count);
++                set_info(t, "ct-ask", a);
++                dlog(t, MSGL_INFO, "NVIDIA content type reported to the display is auto; asking.");
++            }
++        } else if (was >= 0 && was != t->ct_mode - 1) {
++            int want = t->ct_mode - 1;
++            int r = t->fn.content_type(mon, want);
++            int now = r == -2 ? -2 : t->fn.content_type(mon, -1);
++            dlog(t, MSGL_INFO, "NVIDIA content type reported to the display %d -> %d (now %d).",
++                 was, want, now);
++            char m[320];
++            if (now != want) {
++                snprintf(m, sizeof(m), "这块显卡没能设为\"%s\"：请在 K → 显卡内容类型 换一项，"
++                         "或在 NVIDIA 控制面板里选（不要选自动）", names[want]);
++            } else {
++                snprintf(m, sizeof(m), "显卡报告给显示器的内容类型已设为\"%s\"", names[want]);
++            }
++            show_text(t, m, "6000");
++        }
++    }
++    return ok;
++}
++
++static bool can_pack_geometry(struct mp_image *mpi, struct mp_rect src)
++{
++    return mpi && mpi->nominal_fps > 1 && mpi->nominal_fps <= 240 &&
++           !mpi->params.rotate && !mpi->params.vflip && !src.x0 && !src.y0 &&
++           src.x1 == mpi->w && src.y1 == mpi->h;
++}
++
++static bool check_sdr_entry(struct dovi_tunnel *t)
++{
++    if (test_mode() || t->requested || t->state != DVT_OUTPUT_OFF)
++        return true; // do not infer entry state from an established DV link
++    if (!load_dll(t)) return false;
++    t->fn.set_options(dll_options(t));
++    struct dvt_preflight info = {0};
++    bool refresh = !t->entry_query_started;
++    if (refresh) { t->entry_query_started = true; t->entry_query_start = mp_time_ns(); }
++    int result = t->fn.poll_output(video_monitor(t), refresh, &info);
++    t->entry_pending = result == -2;
++    if (t->entry_pending && mp_time_ns() - t->entry_query_start < MP_TIME_MS_TO_NS(10000)) {
++        set_info(t, "dv-preflight", "checking");
++        set_info(t, "dv-check-reason", "checking");
++        set_wake(t, true);
++        return false; // normal mapped frames continue, no carrier/setter changes
++    }
++    if (t->entry_pending) { t->entry_pending = false; result = -1; snprintf(info.reason, sizeof(info.reason), "query-timeout"); }
++    char value[32];
++    snprintf(value, sizeof(value), "%d", result);
++    set_info(t, "dv-preflight", value);
++    snprintf(value, sizeof(value), "%d", info.source);
++    set_info(t, "dv-check-source", value);
++    set_info(t, "dv-target", info.target);
++    set_info(t, "dv-check-reason", info.reason);
++    set_info(t, "win-hdr", info.windows_mode == 2 ? "on" : info.windows_mode == 1 ? "wcg" :
++             info.windows_mode == 0 ? "off" : result == 0 ? "off-fallback" : "unknown");
++    // Unknown colour state and unverified ACM are advisory on an explicit
++    // user request. The output worker performs the actual bounded preparation.
++    bool advisory = result == -1 || result == 2 || result == 5;
++    if (result == 0 || advisory) {
++        if (advisory)
++            dlog(t, MSGL_WARN, "DV condition unconfirmed (%s); attempting output once with rollback.", info.reason);
++        t->entry_blocked = 0;
++        set_info(t, "dv-why", "");
++        return true;
++    }
++    t->entry_blocked = result == 1 ? 1 : result == 2 ? 2 : result == 3 ? 3 : result == 4 ? 4 : -1;
++    t->failed = true;
++    set_info(t, "dv-why", info.reason);
++    dlog(t, MSGL_WARN, "Dolby Vision entry rejected before carrier/display changes: %s (source %d, target %s).",
++         info.reason, info.source, info.target);
++    return false;
++}
++
++bool dovi_tunnel_wanted(struct dovi_tunnel *t, bool enabled, struct mp_image *mpi,
++                        struct mp_rect src)
++{
++    if (t && (t->window_change_pending || t->requested || t->state != DVT_OUTPUT_OFF))
++        return true; // keep the swapchain in SDR until the HDMI switch has left
++    return t && enabled && !t->display_busy && !t->load_failed && !(t->failed && enabled == t->was_enabled) &&
++           can_pack_geometry(mpi, src) && stream_dovi(t, mpi) && covers_monitor(t, t->vo->dwidth, t->vo->dheight) &&
++           check_sdr_entry(t) && gpu_can_switch(t);
++}
++
++// Stops asking for Dolby Vision output; the DLL leaves it in the background.
++static void release_output(struct dovi_tunnel *t, const char *why)
++{
++    if (t->ctx && t->requested) {
++        dlog(t, MSGL_INFO, "leaving Dolby Vision output: %s.", why);
++        set_info(t, "dv-why", why); // shown in the info panel
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
++    }
++    // A new output lifecycle must get its own fresh SDR query and timeout.
++    // The previous successful query may be minutes old after leaving fullscreen.
++    // Never carry that elapsed time into the next asynchronous entry attempt.
++    t->entry_pending = t->entry_query_started = false;
++    t->entry_query_start = 0;
++    t->requested = false;
++    t->req_display[0] = L'\0';
++    t->req_windows_hdr = -1;
++    t->misses = 0;
++    t->switch_start = 0;
++    t->gap_since = t->canvas_wait = 0;
++    t->carrier_prepared = false;
++    set_wake(t, false);
++    if (t->state == DVT_OUTPUT_OFF && !t->window_change_pending) {
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, false);
++        set_pause(t, false);
++    }
++}
++
++bool dovi_tunnel_window_change_pending(struct dovi_tunnel *t)
++{
++    return t && t->window_change_pending;
++}
++
++bool dovi_tunnel_defer_window_change(struct dovi_tunnel *t, bool fullscreen)
++{
++    if (!t || !t->ctx)
++        return false; // ordinary playback never loads or queries the DLL
++    if (t->window_change_pending)
++        return true; // coalesce further option changes, including a reversal
++    if (fullscreen || (!t->requested && t->state == DVT_OUTPUT_OFF))
++        return false;
++
++    t->window_change_pending = true;
++    t->window_change_failed = false;
++    dlog(t, MSGL_INFO, "deferring native window change until Dolby Vision output is restored.");
++    ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++    set_pause(t, true);
++    release_output(t, "leaving fullscreen before changing the native window");
++    set_wake(t, t->state != DVT_OUTPUT_RECOVERY_FAILED);
++    return true;
++}
++
++bool dovi_tunnel_window_change_ready(struct dovi_tunnel *t)
++{
++    if (!dovi_tunnel_window_change_pending(t) || t->window_change_failed)
++        return false;
++    // This is a nonblocking state query/request to the existing worker. It does
++    // not wait for NVAPI on the VO or GUI thread, including during user pause.
++    if (t->state != DVT_OUTPUT_OFF && t->state != DVT_OUTPUT_RECOVERY_FAILED)
++        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
++    if (t->state == DVT_OUTPUT_RECOVERY_FAILED) {
++        t->out_state = "recovery-failed";
++        set_info(t, "dv-out", t->out_state);
++        set_info(t, "dv-why", "HDMI recovery failed; fullscreen held, no automatic retry");
++        set_wake(t, false);
++        return false;
++    }
++    if (t->state != DVT_OUTPUT_OFF && t->state != DVT_OUTPUT_ENTERING &&
++        t->state != DVT_OUTPUT_ON && t->state != DVT_OUTPUT_LEAVING)
++    {
++        dovi_tunnel_finish_window_change(t, false);
++        return false;
++    }
++    t->out_state = "leaving";
++    set_info(t, "dv-out", t->out_state);
++    set_wake(t, t->state != DVT_OUTPUT_OFF);
++    return t->state == DVT_OUTPUT_OFF;
++}
++
++void dovi_tunnel_finish_window_change(struct dovi_tunnel *t, bool applied)
++{
++    if (!dovi_tunnel_window_change_pending(t))
++        return;
++    if (!applied || t->state != DVT_OUTPUT_OFF) {
++        t->window_change_failed = true;
++        t->out_state = "window-change-failed";
++        set_info(t, "dv-out", t->out_state);
++        set_info(t, "dv-why", "Window transition failed; output held, close playback to recover");
++        set_wake(t, false);
++        return;
++    }
++    dlog(t, MSGL_INFO, "Dolby Vision output restored; latest native window options applied.");
++    t->window_change_pending = false;
++    t->out_state = "off";
++    set_info(t, "dv-out", t->out_state);
++    set_info(t, "dv-why", "");
++    ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, false);
++    set_pause(t, false);
++    set_wake(t, false);
++}
++
++// A frame that is not sent through the tunnel. Returns true when it must be drawn
++// black: the TV is (or is about to be) in Dolby Vision and would show a normal
++// picture as garbled colours.
++static bool missed(struct dovi_tunnel *t, bool enabled, bool fullscreen)
++{
++    if (!t->requested)
++        return false;
++    if (!enabled) {
++        release_output(t, "turned off");
++        return false;
++    }
++    if (!fullscreen) {
++        release_output(t, "the video no longer fills the screen");
++        return false;
++    }
++    int64_t now = mp_time_ns();
++    if (t->misses == 0)
++        t->miss_since = now;
++    if (++t->misses >= MISSES_BEFORE_LEAVE ||
++        now - t->miss_since >= MP_TIME_MS_TO_NS(MISS_MS_BEFORE_LEAVE))
++    {
++        release_output(t, "the video has no Dolby Vision metadata");
++        return false;
++    }
++    return true;
++}
++
++static pl_tex wrap_gui(struct dovi_tunnel *t, ID3D11Texture2D *raw)
++{
++    if (t->gui_raw != raw) {
++        pl_tex_destroy(t->gpu, &t->gui_tex);
++        t->gui_raw = NULL;
++        t->gui_tex = pl_d3d11_wrap(t->gpu, pl_d3d11_wrap_params(.tex = (ID3D11Resource *) raw));
++        if (t->gui_tex)
++            t->gui_raw = raw;
++    }
++    return t->gui_tex;
++}
++
++// Draws the overlays (OSD, subtitles) once into the transparent GUI texture.
++static bool draw_gui(struct dovi_tunnel *t, ID3D11Texture2D *raw, const struct pl_frame *target)
++{
++    pl_tex tex = wrap_gui(t, raw);
++    if (!tex)
++        return false;
++    struct pl_frame gui = {
++        .num_planes = 1,
++        .planes = {{
++            .texture = tex,
++            .components = 4,
++            .component_mapping = { 0, 1, 2, 3 },
++        }},
++        .repr = {
++            .sys = PL_COLOR_SYSTEM_RGB,
++            .levels = PL_COLOR_LEVELS_FULL,
++            .alpha = PL_ALPHA_PREMULTIPLIED,
++        },
++        .color = pl_color_space_srgb,
++        .crop = { 0, 0, tex->params.w, tex->params.h },
++        .overlays = target->overlays,
++        .num_overlays = target->num_overlays,
++    };
++    struct pl_render_params params = pl_render_fast_params;
++    params.border = PL_CLEAR_SKIP;
++    params.background = PL_CLEAR_SKIP;
++    return pl_render_image(t->rr, NULL, &gui, &params);
++}
++
++// A black frame, with the OSD when with_osd (the switching notice, while the TV
++// is not in Dolby Vision yet).
++static bool draw_black(struct dovi_tunnel *t, const struct pl_frame *target, bool with_osd)
++{
++    pl_tex fbo = target->num_planes ? target->planes[0].texture : NULL;
++    if (!fbo || !fbo->params.blit_dst)
++        return false;
++    pl_tex_clear(t->gpu, fbo, (float[4]) { 0.0f, 0.0f, 0.0f, 1.0f });
++    t->black_frames++;
++    if (!with_osd || !target->num_overlays || !t->rr)
++        return true;
++    struct pl_render_params params = pl_render_fast_params;
++    params.border = PL_CLEAR_SKIP;
++    params.background = PL_CLEAR_SKIP;
++    pl_render_image(t->rr, NULL, target, &params);
++    return true;
++}
++
++static const char *state_name(int state)
++{
++    return state == DVT_OUTPUT_PREPARING ? "preparing" : state == DVT_OUTPUT_ON ? "on" : state == DVT_OUTPUT_LEAVING ? "leaving" :
++           state == DVT_OUTPUT_RECOVERY_FAILED ? "recovery-failed" :
++           state == DVT_OUTPUT_LIMIT60 ? "limit60" :
++           state == DVT_OUTPUT_FAILED ? "failed" : state == DVT_OUTPUT_ENTERING ? "entering" : "off";
++}
++
++// A failed handshake ends this request before ordinary frames may resume.
++static void switch_failed(struct dovi_tunnel *t, const char *why)
++{
++    t->failed = true;
++    dlog(t, MSGL_WARN, "the TV did not switch to Dolby Vision (%s); mpv tone maps the video "
++         "instead. Toggle dovi-tunnel off and on to retry.", why);
++    release_output(t, "the switch failed");
++    show_text(t, "电视没有进入杜比视界，改由 mpv 映射（重新开关杜比视界可重试，详见 mpv-dv.log）", "6000");
++}
++
++// Asks for Dolby Vision output and follows the switch. Returns true when the
++// frame must be a waiting frame (black, playback paused), false to send it.
++static bool follow_output(struct dovi_tunnel *t, bool paused, double fps, int mode,
++                          bool fullscreen, unsigned buffer_w, unsigned buffer_h)
++{
++    if (test_mode())
++        return false;
++    int64_t now = mp_time_ns();
++    struct dvt_link link = {0};
++    HMONITOR monitor = video_monitor(t);
++    MONITORINFOEXW mi = {.cbSize = sizeof(mi)};
++    bool have_display = monitor && GetMonitorInfoW(monitor, (MONITORINFO *)&mi);
++    bool target_changed = t->requested && have_display &&
++                          _wcsicmp(t->req_display, mi.szDevice) != 0;
++    // Capture before the worker can turn HDR off. Never re-read it every frame
++    // or after a seek: the temporary SDR state is not the request's origin.
++    // Bind it to the GDI name, not HMONITOR, which a mode switch may rebuild.
++    if (!t->requested || target_changed) {
++        if (!t->requested && !check_sdr_entry(t)) return false;
++        set_info(t, "dv-out", "entering");
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++        t->req_windows_hdr = t->fn.windows_hdr(monitor, -1);
++        memcpy(t->req_display, mi.szDevice, sizeof(t->req_display));
++        t->carrier_prepared = false;
++        dlog(t, MSGL_INFO, "Windows HDR at Dolby Vision request: %d; SDR carrier rebind %s.",
++             t->req_windows_hdr, t->req_windows_hdr == 2 ? "required" : "not requested");
++    }
++    int state = t->fn.output(t->ctx, 1, monitor, fps, mode, &link);
++    if (!t->requested) {
++        t->requested = true;
++        t->req_fps = fps;
++        t->req_mode = mode;
++        t->req_low60 = t->low60_mode;
++        dlog(t, MSGL_INFO, "switching the TV to Dolby Vision (%.3f fps).", fps);
++    }
++    if (state != t->state) {
++        dlog(t, MSGL_V, "output %s -> %s.", state_name(t->state), state_name(state));
++        t->state = state;
++        t->carrier_prepared = false;
++    }
++    switch (state) {
++    case DVT_OUTPUT_PREPARING:
++    case DVT_OUTPUT_ON:
++        if (!fullscreen || buffer_w != link.width || buffer_h != link.height) {
++            if (!t->canvas_wait) {
++                t->canvas_wait = now;
++                dlog(t, MSGL_INFO, "waiting for the fullscreen buffer %ux%u to match HDMI %ux%u.",
++                     buffer_w, buffer_h, link.width, link.height);
++            }
++            // WM_DPICHANGED can leave the suggested logical size in place
++            // while update_fullscreen_state sees no fullscreen-flag change.
++            // Correct the physical rectangle on the GUI thread, then let the
++            // normal VO resize recreate its buffer; never fake buffer sizes.
++            if (fullscreen && (!t->canvas_sync || now - t->canvas_sync >= MP_TIME_MS_TO_NS(250))) {
++                vo_w32_sync_dovi_fullscreen(t->vo);
++                t->canvas_sync = now;
++            }
++            if (now - t->canvas_wait < MP_TIME_MS_TO_NS(3000))
++                goto waiting;
++            switch_failed(t, "fullscreen buffer does not match the HDMI signal");
++            return false;
++        }
++        // Original HDR-on requests yield here while the worker is still
++        // on SDR, before custom timing and final DV signalling. ON is strictly
++        // read-only: never clobber an established HDMI DV signal with DXGI.
++        uint64_t carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
++        bool preparing = state == DVT_OUTPUT_PREPARING;
++        if (!t->carrier_prepared || t->carrier_generation != carrier_generation) {
++            ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++            if (!ra_d3d11_ctx_prepare_dovi_carrier(t->ra_ctx, preparing)) {
++                switch_failed(t, "could not prepare the 8-bit SDR RGB carrier");
++                return false;
++            }
++            t->carrier_prepared = true;
++            t->carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
++        }
++        if (preparing) {
++            t->fn.output(t->ctx, 2, monitor, fps, mode, NULL);
++            goto waiting;
++        }
++        t->canvas_wait = t->canvas_sync = 0;
++        t->switch_start = 0;
++        set_wake(t, false);
++        if (t->waiting_for_output) {
++            set_pause(t, false);
++            show_text(t, "杜比视界", "2000");
++            dlog(t, MSGL_INFO, "the HDMI Dolby Vision mode and buffer match at %ux%u.",
++                 link.width, link.height);
++        }
++        t->out_state = "on";
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, false);
++        // Resuming invalidates old presentation statistics too; remember the
++        // resulting epoch, not the held epoch that preceded this carrier.
++        t->carrier_generation = ra_d3d11_ctx_dovi_generation(t->ra_ctx);
++        return false;
++    case DVT_OUTPUT_LIMIT60:
++        t->failed = t->limit60 = true;
++        release_output(t, "4K high-rate TV-led capability was not verified for this connection");
++        show_text(t, "当前连接未确认 4K 高帧率杜比视界能力，已改用 mpv 映射", "6000");
++        if (t->low60_mode == 0) {
++            char ask[64];
++            snprintf(ask, sizeof(ask), "%.3f %d", fps, ++t->ask_count);
++            set_info(t, "dv-ask", ask);
++        }
++        return false;
++    case DVT_OUTPUT_RECOVERY_FAILED:
++        t->failed = true;
++        t->requested = false;
++        t->req_display[0] = L'\0';
++        t->req_windows_hdr = -1;
++        t->out_state = "recovery-failed";
++        set_info(t, "dv-out", "recovery-failed");
++        set_info(t, "dv-why", "HDMI recovery failed; output held, no automatic retry");
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++        set_pause(t, true);
++        set_wake(t, false);
++        return true;
++    case DVT_OUTPUT_ENTRY_BLOCKED:
++        release_output(t, "entry state changed before signalling");
++        t->failed = true;
++        check_sdr_entry(t);
++        return false;
++    case DVT_OUTPUT_FAILED:
++        switch_failed(t, "see the lines above");
++        return false;
++    default: // entering, or leaving another monitor first
++        if (!t->switch_start)
++            t->switch_start = now;
++        else if (now - t->switch_start > MP_TIME_MS_TO_NS(SWITCH_TIMEOUT_MS)) {
++            switch_failed(t, "no answer within 30 s");
++            return false;
++        }
++        goto waiting;
++    }
++
++waiting:
++    ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, true);
++    t->out_state = "entering";
++    set_wake(t, true);
++    if (!t->waiting_for_output) {
++        set_pause(t, true);
++        show_text(t, "正在切换到杜比视界…", "30000");
++    }
++    return true;
++}
++
++// The stream, logged when it changes (start, next file, another track).
++// About every 2 s (and when the window moves to another monitor): publishes the card and
++// the Windows HDR state for the scripts' source schemes, and turns Windows HDR on while a
++// scheme asks for HDR output (--vision-windows-hdr), off again when it no longer does.
++// Never while Dolby Vision output is asked for: that switch handles Windows HDR itself.
++static void log_stream(struct dovi_tunnel *t, struct mp_image *mpi, AVBufferRef *meta, bool have_el)
++{
++    const AVDOVIRpuDataHeader *hdr = av_dovi_get_header((const AVDOVIMetadata *) meta->data);
++    int profile = hdr->vdr_rpu_profile;
++    if (mpi->w == t->stream_w && mpi->h == t->stream_h && have_el == t->stream_el &&
++        profile == t->stream_profile)
++        return;
++    t->stream_w = mpi->w;
++    t->stream_h = mpi->h;
++    t->stream_el = have_el;
++    t->stream_profile = profile;
++    t->publish_countdown = 0; // refresh EL/HDR details on the first new stream frame
++    char fmt[64];
++    snprintf(fmt, sizeof(fmt), "%s", mp_imgfmt_to_name(mpi->imgfmt));
++    if (mpi->imgfmt == IMGFMT_D3D11)
++        snprintf(fmt, sizeof(fmt), "d3d11 %s", mp_imgfmt_to_name(mpi->params.hw_subfmt));
++    char s[96];
++    snprintf(s, sizeof(s), "%dx%d RPU %d%s %.3f fps", mpi->w, mpi->h, profile,
++             have_el ? " +EL" : "", mpi->nominal_fps);
++    set_info(t, "dv-stream", s);
++    dlog(t, MSGL_INFO, "Dolby Vision stream: %dx%d, RPU profile %d%s%s, %.3f fps, frames %s.",
++         mpi->w, mpi->h, profile, have_el ? " with the enhancement layer" : "",
++         t->synth_active ? " (made from HDR10)" : "", mpi->nominal_fps, fmt);
++    const AVDOVIColorMetadata *c = av_dovi_get_color((const AVDOVIMetadata *) meta->data);
++    dlog(t, MSGL_V, "colour: ycc %d %d %d %d %d %d %d %d %d / %d, offset %d %d %d / %d, "
++         "lms %d %d %d %d %d %d %d %d %d / %d, source %u-%u.",
++         c->ycc_to_rgb_matrix[0].num, c->ycc_to_rgb_matrix[1].num, c->ycc_to_rgb_matrix[2].num,
++         c->ycc_to_rgb_matrix[3].num, c->ycc_to_rgb_matrix[4].num, c->ycc_to_rgb_matrix[5].num,
++         c->ycc_to_rgb_matrix[6].num, c->ycc_to_rgb_matrix[7].num, c->ycc_to_rgb_matrix[8].num,
++         c->ycc_to_rgb_matrix[0].den, c->ycc_to_rgb_offset[0].num, c->ycc_to_rgb_offset[1].num,
++         c->ycc_to_rgb_offset[2].num, c->ycc_to_rgb_offset[0].den,
++         c->rgb_to_lms_matrix[0].num, c->rgb_to_lms_matrix[1].num, c->rgb_to_lms_matrix[2].num,
++         c->rgb_to_lms_matrix[3].num, c->rgb_to_lms_matrix[4].num, c->rgb_to_lms_matrix[5].num,
++         c->rgb_to_lms_matrix[6].num, c->rgb_to_lms_matrix[7].num, c->rgb_to_lms_matrix[8].num,
++         c->rgb_to_lms_matrix[0].den, c->source_min_pq, c->source_max_pq);
++}
++
++bool dovi_tunnel_file_changed(struct dovi_tunnel *t)
++{
++    if (!t || !t->ctx)
++        return false; // default-off never loads or participates
++    release_output(t, "the playlist entry changed");
++    t->reset_context = true;
++    dovi_tunnel_start_file(t);
++    return true;
++}
++
++static void reset_file_context(struct dovi_tunnel *t)
++{
++    // Retire the old frame resources only after its worker restored output.
++    if (!t->reset_context || t->requested || t->state != DVT_OUTPUT_OFF)
++        return;
++    pl_tex_destroy(t->gpu, &t->gui_tex);
++    t->gui_raw = NULL;
++    pl_renderer_destroy(&t->rr);
++    if (t->ctx) t->fn.destroy(t->ctx);
++    t->ctx = NULL;
++    t->options_sent = -1;
++    t->diag_paused = -1;
++    t->stream_w = t->stream_h = 0;
++    t->publish_countdown = 0;
++    t->published_state = NULL;
++    t->reset_context = false;
++    dlog(t, MSGL_INFO, "previous Dolby Vision file retired; the next stream gets fresh RPU/EL/GUI state.");
++}
++
++void dovi_tunnel_set_picture_options(struct dovi_tunnel *t, float gui_peak,
++                                     int cmv40, int cmv40_peak)
++{
++    if (!t) return;
++    t->gui_peak = gui_peak;
++    t->cmv40_policy = cmv40;
++    t->cmv40_peak = cmv40_peak;
++}
++
++static unsigned nits_to_pq(double nits)
++{
++    double y = pow(MPCLAMP(nits / 10000.0, 0, 1), 2610.0 / 16384.0);
++    return lround(pow((3424.0 / 4096.0 + 2413.0 / 128.0 * y) /
++                      (1 + 2392.0 / 128.0 * y), 2523.0 / 32.0) * 4095.0);
++}
++
++static void publish_transport(struct dovi_tunnel *t)
++{
++    if (!t->fn.get_frame_status) return;
++    struct dvt_frame_status info = {.size = sizeof(info), .version = 1};
++    if (!t->fn.get_frame_status(t->ctx, &info)) return;
++    char text[96];
++    set_info(t, "dv-cm-output", info.output_cmv40 ? "v4.0" : "v2.9");
++    set_info(t, "dv-cm-appended", info.appended_cmv40 ? "yes" : "no");
++    snprintf(text, sizeof(text), "%u %u %u %u", info.active_area[0], info.active_area[1],
++             info.active_area[2], info.active_area[3]);
++    set_info(t, "dv-active-area", text);
++    set_info(t, "dv-el-used", info.el_used ? "yes" : "no");
++    snprintf(text, sizeof(text), "%.0f", info.gui_peak_nits);
++    set_info(t, "dv-gui-peak", text);
++    set_info(t, "dv-scene-refresh", info.scene_refreshed ? "yes" : "no");
++}
++
++static bool draw_inner(struct dovi_tunnel *t, bool enabled, bool paused, bool interactive_osd,
++                       struct mp_image *mpi, struct mp_rect src,
++                       const struct pl_frame *target);
++
++bool dovi_tunnel_draw(struct dovi_tunnel *t, bool enabled, bool paused, bool interactive_osd,
++                      struct mp_image *mpi, struct mp_rect src,
++                      const struct pl_frame *target)
++{
++    // Default-off must not load a DLL, start diagnostics, or touch the display.
++    if (!t || (!enabled && !t->ctx))
++        return false;
++    // CHECK_EVENTS polls the worker even while paused. Do not re-enter or
++    // retire the old context before its deferred window options are committed.
++    if (t->window_change_pending)
++        return draw_black(t, target, false);
++    reset_file_context(t);
++    bool tunneled = draw_inner(t, enabled, paused, interactive_osd, mpi, src, target);
++    // The driver switches back asynchronously. While it is leaving, keep
++    // normal frames off the wire and keep polling even if playback is paused.
++    if (!tunneled && t->ctx && !t->requested && t->state != DVT_OUTPUT_OFF) {
++        t->state = t->fn.output(t->ctx, 0, NULL, 0, 0, NULL);
++        bool leaving = t->state != DVT_OUTPUT_OFF;
++        if (t->state == DVT_OUTPUT_RECOVERY_FAILED) {
++            t->out_state = "recovery-failed";
++            set_info(t, "dv-out", "recovery-failed");
++            set_info(t, "dv-why", "HDMI recovery failed; output held, no automatic retry");
++            set_pause(t, true);
++        }
++        ra_d3d11_ctx_set_dovi_present_blocked(t->ra_ctx, leaving);
++        set_wake(t, leaving && t->state != DVT_OUTPUT_RECOVERY_FAILED);
++        if (leaving) {
++            set_pause(t, true);
++            t->out_state = t->state == DVT_OUTPUT_RECOVERY_FAILED ? "recovery-failed" : "leaving";
++            tunneled = draw_black(t, target, false);
++        } else {
++            set_pause(t, false);
++        }
++    }
++    if (!tunneled && !t->requested && t->state == DVT_OUTPUT_OFF)
++        set_wake(t, enabled && t->entry_pending);
++    AVBufferRef *meta = stream_dovi(t, mpi);
++    set_info(t, "dv-source", !meta ? "none" : t->synth_active ? "hdr10" : "dv");
++    if (meta)
++        gpu_can_switch(t); // the card for the panel and the log, in a window too
++    if (!tunneled)
++        t->out_state = !meta ? "off" : enabled && t->entry_pending ? "checking" : enabled && t->entry_blocked ?
++            (t->entry_blocked == 1 ? "requires-sdr" : t->entry_blocked == 2 ? "requires-sdr" : "preflight-unknown") :
++            t->failed ? (t->limit60 ? "limit60" : "failed")
++                                             : t->no_gpu ? "nogpu" : "mapped";
++    else if (test_mode())
++        t->out_state = "test";
++    if (meta || t->published_state != t->out_state)
++        publish_info(t, meta, mpi && mpi->enhancement_layer);
++    return tunneled;
++}
++
++// Delivery cadence includes pauses, redraw scheduling, HDMI transitions and Present.
++// It is useful diagnostic evidence, not a measurement of GPU overlay cost. Never
++// leave a successfully established link based on this wall-clock counter alone.
++static void gui_rate(struct dovi_tunnel *t, bool blended, bool paused, struct mp_image *mpi)
++{
++    if (!blended || paused) {
++        t->gui_since = 0;
++        return;
++    }
++    int64_t now = mp_time_ns();
++    if (!t->gui_since) {
++        t->gui_since = now;
++        t->gui_frames = 0;
++        return;
++    }
++    t->gui_frames++;
++    double secs = (now - t->gui_since) / 1e9;
++    if (secs < 2.0)
++        return;
++    double fps = mpi && mpi->nominal_fps > 0 ? mpi->nominal_fps : 24000.0 / 1001.0;
++    double rate = t->gui_frames / secs;
++    t->gui_since = 0;
++    if (rate < fps * 0.8 && !t->gui_off) {
++        t->gui_off = true;
++        dlog(t, MSGL_WARN, "Dolby Vision presentation with subtitles/OSD measured %.1f of %.3f fps; "
++             "keeping Dolby Vision and all overlays. Delivery rate alone cannot identify a GPU failure.",
++             rate, fps);
++    }
++}
++
++// Keep delivery-rate diagnostics for direct frames too. Actual packing/link
++// errors still use their bounded failure paths, independently of this counter.
++static void pack_rate(struct dovi_tunnel *t, bool direct, bool paused, struct mp_image *mpi)
++{
++    if (!direct || paused) {
++        t->speed_since = 0;
++        return;
++    }
++    int64_t now = mp_time_ns();
++    if (!t->speed_since) {
++        t->speed_since = now;
++        t->speed_frames = 0;
++        return;
++    }
++    t->speed_frames++;
++    double secs = (now - t->speed_since) / 1e9;
++    if (secs < 4.0)
++        return;
++    double fps = mpi && mpi->nominal_fps > 0 ? mpi->nominal_fps : 24000.0 / 1001.0;
++    double rate = t->speed_frames / secs;
++    t->speed_since = 0;
++    if (rate < fps * 0.5 && !t->speed_warned) {
++        t->speed_warned = true;
++        dlog(t, MSGL_WARN, "Dolby Vision presentation measured %.1f of %.3f fps; "
++             "keeping the valid carrier. Check decode, presentation and display timing separately.", rate, fps);
++    }
++}
++
++static bool draw_inner(struct dovi_tunnel *t, bool enabled, bool paused, bool interactive_osd,
++                       struct mp_image *mpi, struct mp_rect src,
++                       const struct pl_frame *target)
++{
++    if (enabled != t->was_enabled) {
++        if (enabled && t->failed)
++            dlog(t, MSGL_INFO, "Dolby Vision tunnel on again; trying the switch again.");
++        t->failed = false; // turned on again: try again
++        t->entry_blocked = 0;
++        t->entry_pending = t->entry_query_started = false;
++    }
++    t->was_enabled = enabled;
++    if (!t->requested && (t->state != DVT_OUTPUT_OFF || t->display_busy))
++        return false; // let the previous HDMI mode finish restoring
++
++    pl_tex fbo = target->num_planes ? target->planes[0].texture : NULL;
++    bool fullscreen = fbo && covers_monitor(t, fbo->params.w, fbo->params.h);
++    // WM_DISPLAYCHANGE resizes the fullscreen window asynchronously. Keep the
++    // request alive during that resize, but only pack once the canvas matches.
++    bool fullscreen_pending = t->requested && t->vo->opts->fullscreen;
++    AVBufferRef *meta = stream_dovi(t, mpi);
++    if (enabled && meta && fbo && !fullscreen && !fullscreen_pending && !t->warned_window) {
++        t->warned_window = true;
++        MONITORINFO mi = { .cbSize = sizeof(mi) };
++        HMONITOR mon = video_monitor(t);
++        if (mon && GetMonitorInfoW(mon, &mi)) {
++            dlog(t, MSGL_INFO, "the window is %dx%d, the screen %ldx%ld: Dolby Vision goes to "
++                 "the TV in full screen only.", fbo->params.w, fbo->params.h,
++                 mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top);
++        }
++    }
++    if (fullscreen)
++        t->warned_window = false;
++    if (enabled && meta && fullscreen && !t->requested && !t->failed && !check_sdr_entry(t))
++        return false;
++    if (t->failed && enabled) {
++        missed(t, enabled, fullscreen);
++        return false; // given up: mpv tone maps (never the raw tunnel signal)
++    }
++    t->limit60 = false;
++    t->no_gpu = false;
++    if (enabled && meta && !gpu_can_switch(t)) {
++        t->no_gpu = true;
++        if (t->requested)
++            release_output(t, "this screen's graphics card has no Dolby Vision output");
++        return false; // mpv tone maps
++    }
++    // No frame at all (the next episode is loading): keep the TV in Dolby Vision for a
++    // while instead of leaving and handshaking again when the next file is Dolby Vision too.
++    if (!mpi && enabled && fullscreen && t->requested) {
++        int64_t now = mp_time_ns();
++        if (!t->gap_since)
++            t->gap_since = now;
++        if (now - t->gap_since < MP_TIME_MS_TO_NS(8000)) {
++            set_wake(t, true);
++            return draw_black(t, target, false);
++        }
++    } else if (mpi) {
++        t->gap_since = 0;
++    }
++    if (!enabled || !meta || (!fullscreen && !fullscreen_pending) || !load(t))
++        return missed(t, enabled, fullscreen) && draw_black(t, target, false);
++
++    double fps = mpi->nominal_fps;
++    if (!can_pack_geometry(mpi, src)) {
++        // Cropping/rotation of BL and EL must happen before packing. Use the
++        // ordinary renderer for those transforms, or while the rate is unknown.
++        release_output(t, "the frame requires a source transform or has no frame rate");
++        return false;
++    }
++    int mode = t->resolution == 1 ?
++        (mpi->w >= 2560 || mpi->h >= 1440 ? DVT_MODE_PREFER_2160 : DVT_MODE_DESKTOP) :
++        t->resolution;
++    struct dvt_picture bl, el;
++    bool have_el = false;
++    if (!fill_picture(mpi, &bl)) {
++        if (!t->warned_pixfmt) {
++            dlog(t, MSGL_WARN, "frames in %s cannot be sent as Dolby Vision (P010 or "
++                 "yuv420p10 needed); check hwdec=d3d11va.", mp_imgfmt_to_name(mpi->imgfmt));
++            t->warned_pixfmt = true;
++        }
++        return missed(t, enabled, fullscreen) && draw_black(t, target, false);
++    }
++    if (mpi->enhancement_layer && !(test_mode() && getenv("MPV_DOVI_TUNNEL_NO_EL")))
++        have_el = fill_picture(mpi->enhancement_layer, &el);
++    log_stream(t, mpi, meta, have_el);
++
++    // The back buffer, which the tunnel writes directly.
++    IDXGISwapChain *sc = ra_d3d11_ctx_get_swapchain(t->ra_ctx);
++    ID3D11Texture2D *bb = NULL;
++    if (sc) {
++        IDXGISwapChain_GetBuffer(sc, 0, &IID_ID3D11Texture2D, (void **) &bb);
++        IDXGISwapChain_Release(sc);
++    }
++    if (!bb)
++        return missed(t, enabled, fullscreen) && draw_black(t, target, false);
++    D3D11_TEXTURE2D_DESC desc;
++    ID3D11Texture2D_GetDesc(bb, &desc);
++    bool ok = false, with_gui = false;
++    if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
++        // The swapchain is reconfigured to 8-bit at the next frame (see dovi_tunnel_wanted);
++        // a configuration that forces 10-bit output never gets there.
++        ID3D11Texture2D_Release(bb);
++        if (++t->format_waits == 1)
++            dlog(t, MSGL_V, "the swapchain is format %d; waiting for 8-bit.", (int) desc.Format);
++        if (t->format_waits < 48) {
++            set_wake(t, true);
++            t->out_state = "entering";
++            return draw_black(t, target, true);
++        }
++        if (!t->warned_format) {
++            dlog(t, MSGL_WARN, "the swapchain stays %d (not 8-bit): remove d3d11-output-format "
++                 "from mpv.conf or set it to rgba8; mpv tone maps meanwhile.", (int) desc.Format);
++            t->warned_format = true;
++        }
++        t->failed = true;
++        release_output(t, "the swapchain did not become 8-bit");
++        return false;
++    }
++    t->format_waits = 0;
++
++    t->misses = 0;
++    if (t->requested && (fabs(fps - t->req_fps) > 0.012 ||
++                         mode != t->req_mode || t->low60_mode != t->req_low60)) {
++        release_output(t, "the requested output mode changed");
++        ID3D11Texture2D_Release(bb);
++        return false;
++    }
++
++    if (follow_output(t, paused, fps, mode, fullscreen, desc.Width, desc.Height)) {
++        ok = draw_black(t, target, false);
++        ID3D11Texture2D_Release(bb);
++        return ok;
++    }
++    if (t->failed) {
++        ID3D11Texture2D_Release(bb);
++        return false;
++    }
++
++    // Use mpv's display rectangle (including pixel aspect ratio and letterbox
++    // positioning). Align it for the 4:2:0 planes before the RGB carrier is made.
++    struct dvt_rect dest = {
++        .left = lroundf(MPCLAMP(target->crop.x0, 0, desc.Width & ~1u) / 2) * 2,
++        .top = lroundf(MPCLAMP(target->crop.y0, 0, desc.Height & ~1u) / 2) * 2,
++        .right = lroundf(MPCLAMP(target->crop.x1, 0, desc.Width & ~1u) / 2) * 2,
++        .bottom = lroundf(MPCLAMP(target->crop.y1, 0, desc.Height & ~1u) / 2) * 2,
++    };
++    // Nothing to overlay: pack straight into the back buffer.
++    int flags = target->num_overlays ? 0 : DVT_RENDER_DIRECT;
++    if (test_mode() && getenv("MPV_DOVI_TUNNEL_NO_DIRECT"))
++        flags = 0;
++    if (t->fn.set_frame_options) {
++        struct dvt_frame_options options = {
++            .size = sizeof(options), .version = 1, .pts = mpi->pts,
++            .timeline = t->timeline,
++            .chroma_top_left = mpi->params.chroma_location == PL_CHROMA_TOP_LEFT,
++            .gui_visible = target->num_overlays > 0,
++            .gui_peak_nits = t->gui_peak > 0 ? t->gui_peak : 200.0f,
++            .cmv40_policy = t->cmv40_policy,
++            .cmv40_max_pq = nits_to_pq(t->cmv40_peak),
++        };
++        if (!t->fn.set_frame_options(t->ctx, &options)) {
++            dlog(t, MSGL_ERR, "DV frame extension rejected the current options.");
++            goto out;
++        }
++    }
++    if (!t->fn.render(t->ctx, meta->data, meta->size, &bl, have_el ? &el : NULL, bb, flags, &dest)) {
++        if (!t->warned_render) {
++            dlog(t, MSGL_WARN, "a frame could not be packed; see the lines above.");
++            t->warned_render = true;
++        }
++        t->failed_frames++;
++        goto out;
++    }
++    ID3D11Texture2D *gui = NULL;
++    if (!(flags & DVT_RENDER_DIRECT)) {
++        with_gui = t->fn.gui_texture(t->ctx, &gui) && draw_gui(t, gui, target);
++        if (!with_gui)
++            goto out; // missing subtitles/OSD is a failed frame, never success
++    }
++    ok = t->fn.finish(t->ctx, with_gui, bb);
++
++out:
++    ID3D11Texture2D_Release(bb);
++    if (!ok) {
++        // misses is reset above every frame, so missed() alone would draw black forever:
++        // after about a second of failures give up and let mpv tone map (no black screen).
++        if (++t->pack_fails >= 24) {
++            t->pack_fails = 0;
++            t->failed = true;
++            dlog(t, MSGL_WARN, "frames keep failing to pack; mpv tone maps the video instead. "
++                 "Toggle dovi-tunnel off and on to retry.");
++            release_output(t, "frames cannot be packed");
++            show_text(t, "杜比视界输出失败，已改由 mpv 映射（重新开关杜比视界可重试，详见 mpv-dv.log）", "6000");
++            return false;
++        }
++        return missed(t, enabled, fullscreen) && draw_black(t, target, false);
++    }
++    t->pack_fails = 0;
++    t->packed++;
++    publish_transport(t);
++    bool interactive = with_gui && interactive_osd;
++    if (interactive != t->gui_interactive) {
++        dlog(t, MSGL_V, "interactive Dolby Vision OSD %s%s.",
++             interactive ? "visible" : "closed",
++             "");
++        t->gui_interactive = interactive;
++    }
++    gui_rate(t, with_gui, paused, mpi);
++    pack_rate(t, flags & DVT_RENDER_DIRECT, paused, mpi);
++    if (test_mode() && (t->packed == 1 || t->packed % 48 == 0)) {
++        MP_INFO(t, "Test mode: %llu frames packed (%ux%u, enhancement layer %s, GUI %s).\n",
++                (unsigned long long) t->packed, (unsigned) desc.Width, (unsigned) desc.Height,
++                have_el ? "yes" : "no", with_gui ? "yes" : (flags & DVT_RENDER_DIRECT) ? "direct" : "no");
++    }
++    return true;
++}
+--- /dev/null
++++ b/video/out/gpu_next/dovi_tunnel.h
+@@ -0,0 +1,69 @@
++/*
++ * TV-led Dolby Vision output for vo_gpu_next on D3D11 (--dovi-tunnel).
++ *
++ * The picture and its Dolby Vision metadata are packed into an 8-bit RGB frame
++ * by dvtunnel.dll (the Vision Renderer tunnel, ported from Kodi), and the NVIDIA
++ * HDMI output is switched into Dolby Vision, so the TV does the tone mapping.
++ * The switch runs on the DLL's own thread; playback pauses on a black screen
++ * meanwhile and resumes once the TV is in Dolby Vision.
++ *
++ * This file is part of mpv; GPL-2.0-or-later (dvtunnel.dll is GPL).
++ */
++
++#pragma once
++
++#include <stdbool.h>
++
++#include <libplacebo/renderer.h>
++
++#include "common/common.h"
++
++struct vo;
++struct mp_log;
++struct mp_image;
++struct ra_ctx;
++struct dovi_tunnel;
++
++struct dovi_tunnel *dovi_tunnel_create(struct vo *vo, struct mp_log *log, struct ra_ctx *ra_ctx,
++                                       pl_gpu gpu, pl_log pllog);
++void dovi_tunnel_destroy(struct dovi_tunnel **t);
++
++// Before the frame starts: true if this frame will go through the tunnel, so the
++// swapchain must stay SDR.
++bool dovi_tunnel_wanted(struct dovi_tunnel *t, bool enabled, struct mp_image *mpi,
++                        struct mp_rect src);
++
++// Packs mpi into the back buffer with target's overlays (OSD and subtitles), or
++// draws a black frame while the output switches. Returns false when the frame
++// must be rendered normally. paused: playback is paused (by the user).
++bool dovi_tunnel_draw(struct dovi_tunnel *t, bool enabled, bool paused, bool interactive_osd,
++                      struct mp_image *mpi, struct mp_rect src,
++                      const struct pl_frame *target);
++
++// Seek-only decoded-frame diagnostics; preserves the HDMI request and carrier.
++void dovi_tunnel_reset(struct dovi_tunnel *t);
++void dovi_tunnel_start_file(struct dovi_tunnel *t);
++// Retire the old file's HDMI/metadata state; false is a no-op when never used.
++bool dovi_tunnel_file_changed(struct dovi_tunnel *t);
++
++// Keep native window options unchanged until an active HDMI output is restored.
++// All calls belong to the VO thread; the DLL does the display work asynchronously.
++bool dovi_tunnel_defer_window_change(struct dovi_tunnel *t, bool fullscreen);
++bool dovi_tunnel_window_change_pending(struct dovi_tunnel *t);
++bool dovi_tunnel_window_change_ready(struct dovi_tunnel *t);
++void dovi_tunnel_finish_window_change(struct dovi_tunnel *t, bool applied);
++
++// --dovi-tunnel-gpu: legacy AMD options map through mpv. TV output is NVIDIA only.
++void dovi_tunnel_set_gpu(struct dovi_tunnel *t, int mode);
++
++// Preferred HDMI resolution and policy for TVs without 2160p60 Dolby Vision.
++void dovi_tunnel_set_mode(struct dovi_tunnel *t, int resolution, int low60, bool busy);
++
++// --dovi-tunnel-content-type: what NVIDIA reports to the display as the content type
++// (0 ask when it is on auto, 1 full-screen video, 2 desktop, 3 game, 4 photo, 5 cinema,
++// 6 leave it). Set before entering.
++void dovi_tunnel_set_content_type(struct dovi_tunnel *t, int mode);
++
++// Per-picture transport options; live changes do not restart HDMI output.
++void dovi_tunnel_set_picture_options(struct dovi_tunnel *t, float gui_peak,
++                                     int cmv40, int cmv40_peak);
+--- /dev/null
++++ b/video/out/gpu_next/dvtunnel.h
+@@ -0,0 +1,261 @@
++/*
++ * dvtunnel.dll: TV-led Dolby Vision output for a D3D11 video player.
++ *
++ * The 视界渲染器 tunnel (ported from Kodi's dolby-vision-test branch, GPL-2.0-or-later)
++ * behind a plain C interface, so a MinGW-built mpv can load it at run time.
++ *
++ * Per frame:
++ *   dvt_render()       packs the picture and its Dolby Vision metadata; with
++ *                      DVT_RENDER_DIRECT straight into the back buffer (nothing to overlay)
++ *   dvt_gui_texture()  a transparent texture the player draws its OSD/subtitles into
++ *   dvt_finish()       blends that GUI into the packed frame and writes the back buffer
++ * Output (on a background thread, so the render thread never waits):
++ *   dvt_output()       asks for Dolby Vision output on a monitor, or for leaving it, and
++ *                      returns the current state; the notify callback runs on each change
++ *
++ * All calls for one context except the callbacks come from one thread, the one using
++ * the device's immediate context.
++ */
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define DVT_API_VERSION 8
++
++#ifdef DVT_BUILD
++#define DVT_API __declspec(dllexport)
++#else
++#define DVT_API
++#endif
++
++typedef struct dvt_ctx dvt_ctx;
++
++struct ID3D11Device;
++struct ID3D11Texture2D;
++
++enum dvt_log_level {
++    DVT_LOG_ERROR = 0,
++    DVT_LOG_WARN = 1,
++    DVT_LOG_INFO = 2,
++    DVT_LOG_DEBUG = 3,
++};
++
++typedef void (*dvt_log_fn)(void *opaque, int level, const char *line);
++// Called from the output thread when the output state changes.
++typedef void (*dvt_notify_fn)(void *opaque);
++
++enum dvt_format {
++    DVT_FMT_D3D11 = 0,     // texture/slice: a P010 texture (array) on the context's device
++    DVT_FMT_P010 = 1,      // planes[0] luma, planes[1] interleaved CbCr; 16-bit, MSB aligned
++    DVT_FMT_YUV420P10 = 2, // planes[0..2]; 16-bit, LSB aligned (FFmpeg yuv420p10le)
++};
++
++struct dvt_rect { unsigned left, top, right, bottom; };
++
++struct dvt_picture {
++    int format; // enum dvt_format
++    unsigned width, height;
++    struct ID3D11Texture2D *texture;
++    unsigned slice;
++    const uint8_t *planes[3];
++    ptrdiff_t strides[3];
++};
++
++enum dvt_render_flags {
++    DVT_RENDER_DIRECT = 1, // pack straight into the target; no GUI, no dvt_finish
++};
++
++enum dvt_output_state {
++    DVT_OUTPUT_OFF = 0,
++    DVT_OUTPUT_ENTRY_BLOCKED = 8, // read-only preflight rejected; no display changes
++    DVT_OUTPUT_PREPARING = 7, // SDR swapchain acknowledgement before DV signalling
++    DVT_OUTPUT_RECOVERY_FAILED = 6, // hold Present; explicit recovery required
++    DVT_OUTPUT_ENTERING = 1, // switching; takes a few seconds
++    DVT_OUTPUT_ON = 2,
++    DVT_OUTPUT_LEAVING = 3,
++    DVT_OUTPUT_LIMIT60 = 5, // the selected 4K mode exceeds the TV capability
++    DVT_OUTPUT_FAILED = 4,   // stays until Dolby Vision output is no longer asked for
++};
++
++// Read-only entry preflight. Result: 0 entry permitted, 1 HDR, 2 WCG,
++// 3 conflict, 4 unsafe target, 5 manually eligible colour-state unknown, -1 unavailable.
++// result 0 may use explicit process-only SDR authorization; reason identifies it.
++// source: 1 current Windows API, 2 compatible Windows API, 3 NVAPI-backed fallback (DXGI SDR or explicit SDR consent; see reason).
++struct dvt_preflight {
++    int result, source, windows_mode, driver_hdr, driver_output, dxgi_mode;
++    char target[96];
++    char reason[160];
++};
++typedef int (*dvt_check_output_fn)(void *hmonitor, struct dvt_preflight *info);
++DVT_API int dvt_check_output(void *hmonitor, struct dvt_preflight *info);
++// Nonblocking render-thread form: -2 means checking. refresh starts a new
++// explicit request. At most one read-only driver probe is in flight.
++typedef int (*dvt_poll_output_fn)(void *hmonitor, int refresh, struct dvt_preflight *info);
++DVT_API int dvt_poll_output(void *hmonitor, int refresh, struct dvt_preflight *info);
++
++// Optional extension v1, ABI8 unchanged. action 0 revoke (NULL monitor allowed),
++// 1 explicitly grant key[65], 2 read a fresh eligible target key, 3 version.
++// Authorization is target-bound process memory, never a display operation.
++DVT_API int dvt_unknown_sdr(void* hmonitor,int action,char* key,int bytes);
++
++typedef int (*dvt_api_version_fn)(void);
++DVT_API int dvt_api_version(void);
++
++// Creates a context on the player's device. log and notify may be NULL; log lines
++// also go to %ProgramData%\VisionRenderer\mpv-dv.log.
++typedef dvt_ctx *(*dvt_create_fn)(struct ID3D11Device *device, dvt_log_fn log,
++                                  dvt_notify_fn notify, void *opaque);
++DVT_API dvt_ctx *dvt_create(struct ID3D11Device *device, dvt_log_fn log,
++                            dvt_notify_fn notify, void *opaque);
++
++// Leaves Dolby Vision output (waits for it) and frees the context.
++typedef void (*dvt_destroy_fn)(dvt_ctx *ctx);
++DVT_API void dvt_destroy(dvt_ctx *ctx);
++
++// Packs one picture. dovi/dovi_size: the frame's AVDOVIMetadata side data. el: the
++// Profile 7 enhancement layer (half size) or NULL. target: the back buffer (8-bit
++// RGBA or BGRA); without DVT_RENDER_DIRECT only its size and format are used here.
++// dest is the even-aligned destination rectangle, or NULL for centered aspect fit.
++// Returns 1 on success, 0 when this picture cannot be sent.
++typedef int (*dvt_render_fn)(dvt_ctx *ctx, const void *dovi, size_t dovi_size,
++                             const struct dvt_picture *bl, const struct dvt_picture *el,
++                             struct ID3D11Texture2D *target, int flags,
++                       const struct dvt_rect *dest);
++DVT_API int dvt_render(dvt_ctx *ctx, const void *dovi, size_t dovi_size,
++                       const struct dvt_picture *bl, const struct dvt_picture *el,
++                       struct ID3D11Texture2D *target, int flags,
++                       const struct dvt_rect *dest);
++
++// After dvt_render without DVT_RENDER_DIRECT: an R8G8B8A8 render target the size of
++// the output, cleared to transparent, for the GUI (premultiplied sRGB with alpha).
++// Returns 0 when the stream allows no GUI.
++typedef int (*dvt_gui_texture_fn)(dvt_ctx *ctx, struct ID3D11Texture2D **gui);
++DVT_API int dvt_gui_texture(dvt_ctx *ctx, struct ID3D11Texture2D **gui);
++
++// Writes the packed frame to target (the texture given to dvt_render), with the
++// GUI blended in when with_gui is set. Returns 1 on success.
++typedef int (*dvt_finish_fn)(dvt_ctx *ctx, int with_gui, struct ID3D11Texture2D *target);
++DVT_API int dvt_finish(dvt_ctx *ctx, int with_gui, struct ID3D11Texture2D *target);
++
++// want: Dolby Vision output on hmonitor for a stream of fps frames per second, or
++// (want = 0) leave it. Never blocks. Moving to another monitor leaves and re-enters.
++// mode is a preferred or fixed HDMI width, or the desktop mode.
++// On success link receives the confirmed HDMI dimensions (optional).
++enum dvt_mode {
++    DVT_MODE_DESKTOP = 0,
++    DVT_MODE_1080 = 1920,
++    DVT_MODE_2160 = 3840,
++    DVT_MODE_PREFER_2160 = -3840,
++};
++struct dvt_link { unsigned width, height; };
++// want=2 acknowledges DVT_OUTPUT_PREPARING for the same current request.
++// Returns the current enum dvt_output_state.
++typedef int (*dvt_output_fn)(dvt_ctx *ctx, int want, void *hmonitor, double fps,
++                             int mode, struct dvt_link *link);
++DVT_API int dvt_output(dvt_ctx *ctx, int want, void *hmonitor, double fps,
++                       int mode, struct dvt_link *link);
++
++// Restores a display a crashed player left in Dolby Vision. Blocks; call at start.
++typedef void (*dvt_remove_leftover_fn)(void);
++DVT_API void dvt_remove_leftover(void);
++
++// Writes the player's own line to mpv-dv.log (not passed back to the log callback).
++typedef void (*dvt_log_fn2)(const char *line);
++DVT_API void dvt_log(const char *line);
++
++// Playback diagnostics (any thread, any stream, no context needed): with ATTACH the DLL
++// logs the system once, starts a guard process that logs how the player ends and
++// restores the TV, a crash log with a dump file, and a watchdog for a frozen window or
++// picture (it records every thread's call stack when stuck).
++enum dvt_diag_event {
++    DVT_DIAG_ATTACH = 0,  // value: the player's HWND
++    DVT_DIAG_DETACH = 1,
++    DVT_DIAG_PLAYING = 2,
++    DVT_DIAG_PAUSED = 3,
++    DVT_DIAG_SEEK = 4,
++    DVT_DIAG_FRAME = 5,   // a picture was shown; value: its time in 100 ns units
++};
++typedef void (*dvt_diag_fn)(int event, long long value);
++DVT_API void dvt_diag(int event, long long value);
++
++// The graphics card driving a monitor. Only NVIDIA cards switch through NVAPI.
++enum dvt_gpu {
++    DVT_GPU_UNKNOWN = 0,
++    DVT_GPU_NVIDIA = 1,
++    DVT_GPU_AMD = 2,
++    DVT_GPU_INTEL = 3,
++    DVT_GPU_OTHER = 4,
++};
++// Returns enum dvt_gpu; name (may be NULL) gets the card's name in UTF-8.
++typedef int (*dvt_monitor_gpu_fn)(void *hmonitor, char *name, size_t name_size);
++DVT_API int dvt_monitor_gpu(void *hmonitor, char *name, size_t name_size);
++
++enum dvt_options {
++    // 50/60 fps films on a TV without 2160p60 Dolby Vision go out at 1080p60 Dolby Vision
++    // (the desktop is switched for the film); without it they are refused.
++    DVT_OPT_LOWRES_60 = 2,
++    // An explicit request may try an unconfirmed colour/capability condition.
++    // Actual output still requires a unique target, a saved state and rollback.
++    DVT_OPT_COMPAT_ATTEMPT = 4,
++};
++typedef void (*dvt_set_options_fn)(int options);
++DVT_API void dvt_set_options(int options);
++
++// NVIDIA "content type reported to the display" on a monitor, as the control panel
++// lists it: 0 full-screen video, 1 desktop programs, 2 game, 3 photo, 4 cinema, 7 auto.
++// set_to >= 0 also sets it (7 is never written). Returns the value before, -1 unknown
++// (not NVIDIA), -2 the set failed.
++typedef int (*dvt_content_type_fn)(void *hmonitor, int set_to);
++DVT_API int dvt_content_type(void *hmonitor, int set_to);
++
++// Windows HDR on a monitor. set: -1 only reads it, 0 turns it off, 1 on.
++// Returns 2 on, 1 off, 0 the display has no HDR, -1 unknown.
++typedef int (*dvt_windows_hdr_fn)(void *hmonitor, int set);
++DVT_API int dvt_windows_hdr(void *hmonitor, int set);
++
++#ifdef __cplusplus
++}
++#endif
++
++// API8 additive extension: 1 means this process has no pending/active DV output,
++// 0 means busy/active, -1 means failed/unknown. No switch is created by the read.
++#ifdef __cplusplus
++extern "C" {
++#endif
++DVT_API int dvt_output_idle(void);
++#ifdef __cplusplus
++}
++#endif
++
++
++// Additive API8 extension. Size/version make mixed components detectable.
++#ifdef __cplusplus
++extern "C" {
++#endif
++struct dvt_frame_options {
++    uint32_t size, version;
++    double pts;
++    uint64_t timeline;
++    uint32_t chroma_top_left, gui_visible;
++    float gui_peak_nits;
++    uint32_t cmv40_policy, cmv40_max_pq, reserved;
++};
++struct dvt_frame_status {
++    uint32_t size, version;
++    uint32_t source_cmv40, output_cmv40, appended_cmv40, el_used;
++    uint16_t active_area[4];
++    uint32_t scene_refreshed;
++    float gui_peak_nits;
++};
++typedef int (*dvt_set_frame_options_fn)(dvt_ctx*, const struct dvt_frame_options*);
++typedef int (*dvt_get_frame_status_fn)(dvt_ctx*, struct dvt_frame_status*);
++DVT_API int dvt_set_frame_options(dvt_ctx*, const struct dvt_frame_options*);
++DVT_API int dvt_get_frame_status(dvt_ctx*, struct dvt_frame_status*);
++#ifdef __cplusplus
++}
++#endif
+--- /dev/null
++++ b/video/out/secondary_ass_quiet_recovery.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef MP_SECONDARY_ASS_QUIET_RECOVERY_H
++#define MP_SECONDARY_ASS_QUIET_RECOVERY_H
++
++#include "secondary_ass_present_plan.h"
++
++// A quiet/static ASS track still needs its media clock to reach future events.
++// A new physical namespace may bootstrap only from recovered real feedback;
++// this predicate does not translate any old slot or manufacture a plan.
++static inline bool secondary_ass_quiet_recovery_eligible(
++    const struct secondary_ass_physical *p, uint64_t sampler_epoch,
++    int64_t divisor, double configured_rate)
++{
++    if (!sampler_epoch || !p->epoch || sampler_epoch == p->epoch ||
++        p->epoch_exhausted || p->outlier_pending || !p->sync_segment_consistent ||
++        !p->success_generation || !p->success_contiguous ||
++        p->phase <= 0 || p->phase_slot <= 0 ||
++        p->sync_qpc_ns <= 0 || p->sync_slot <= 0 ||
++        !secondary_ass_physical_interval_valid(p->interval) || divisor <= 0 ||
++        !isfinite(configured_rate) || configured_rate <= 0)
++        return false;
++    // Retain the existing physical sampler's integer-divisor eligibility.
++    // A display/rate change must not silently reuse an incompatible divisor.
++    return fabs(configured_rate * p->interval * 1e-9 * divisor - 1) <= 0.005;
++}
++
++#endif
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -45,6 +45,7 @@
+ #include "secondary_ass_physical.h"
+ #include "secondary_ass_present_plan.h"
+ #include "secondary_ass_fresh_video.h"
++#include "secondary_ass_quiet_recovery.h"
+ #include "secondary_ass_neutral_pose.h"
+ #include "secondary_ass_queue_lead.h"
+ #include "secondary_ass_queue_stage.h"
+@@ -137,6 +138,7 @@
+ };
+ 
+ struct vo_internal {
++    bool output_wait; // guarded by lock; never a user pause preference
+     mp_thread thread;
+     struct mp_dispatch_queue *dispatch;
+     struct dr_helper *dr_helper;
+@@ -2717,6 +2719,38 @@
+                 display_interval = in->secondary_physical.interval;
+             }
+         }
++        // Quiet/static output has no optional redraw rate. It still needs one
++        // mandatory video draw to bootstrap a recovered physical namespace;
++        // projecting its old sampler slot would be invalid, while holding it
++        // forever would prevent the next animated event from becoming active.
++        if (!neutral_admitted && !frame->repeat && !frame->display_synced &&
++            clock_rate > 0 && native_rate <= 0 && planned_audio &&
++            in->secondary_fixed_forecast && !in->paused && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            in->secondary_render_cost >= 0) {
++            struct secondary_ass_sample_snapshot quiet_sample =
++                osd_get_secondary_sample_snapshot(vo->osd);
++            int64_t recovery_now = mp_time_ns();
++            if (secondary_ass_quiet_recovery_eligible(&in->secondary_physical,
++                    quiet_sample.epoch, sample_divisor, clock_rate) &&
++                recovery_now <= INT64_MAX - in->secondary_render_cost) {
++                struct secondary_ass_present_plan recovery =
++                    secondary_forecast_fresh_clock_plan(vo,
++                        MPMAX(original_video_target,
++                              recovery_now + in->secondary_render_cost),
++                        original_video_target,
++                        (struct secondary_ass_physical_point){0},
++                        sample_divisor, clock_rate);
++                if (recovery.valid) {
++                    present_plan = recovery;
++                    physical_point = recovery.target;
++                    presentation_time = physical_point.wall;
++                    display_interval = in->secondary_physical.interval;
++                    target = original_video_target;
++                    present_ready = original_video_target;
++                }
++            }
++        }
+         physical_phase = physical_point.slot > 0 && !frame->display_synced;
+         bool secondary_target_updated = false;
+         if (neutral_admitted)
+@@ -2782,7 +2816,20 @@
+             };
+             mp_ass_pacing_record(vo->global, MP_ASS_PACING_SPAN, &reuse);
+         }
++        bool pose_scope = in->secondary_fixed_forecast && clock_rate > 0;
++        int64_t fresh_media_wall = 0;
++        if (pose_scope && !frame->repeat && !frame->display_synced &&
++            !neutral_admitted && native_rate > 0 && !secondary_target_updated &&
++            !in->paused && !in->send_reset &&
++            !(in->queued_events & VO_EVENT_LIVE_RESIZING) &&
++            (in->secondary_physical.outlier_pending ||
++             !in->secondary_physical.sync_segment_consistent))
++            fresh_media_wall = original_video_target;
++        if (pose_scope)
++            osd_begin_secondary_pose_scope(vo->osd, fresh_media_wall);
+         in->visible = vo->driver->draw_frame(vo, frame);
++        if (pose_scope)
++            osd_end_secondary_pose_scope(vo->osd);
+         fresh_drawn = true;
+ 
+         int64_t cpu_cost = mp_time_ns() - in->secondary_last_draw;
+@@ -3251,7 +3298,12 @@
+     secondary_record_begin(vo, frame, 0, trace_submit, presentation_time,
+         trace_deadline, &physical_point, planned_audio ? &present_plan : NULL,
+         false, secondary_target_updated, full_redraw);
++    bool pose_scope = in->secondary_fixed_forecast && clock_rate > 0;
++    if (pose_scope)
++        osd_begin_secondary_pose_scope(vo->osd, 0);
+     vo->driver->draw_frame(vo, frame);
++    if (pose_scope)
++        osd_end_secondary_pose_scope(vo->osd);
+     int64_t cpu_end = mp_time_ns();
+     if (vo->pacing_draw_seq)
+         in->pacing_cpu_end = cpu_end;
+@@ -4055,6 +4107,28 @@
+     mp_mutex_unlock(&in->lock);
+ }
+ 
++// Set the current level before publishing an event. Coalesced events are fine:
++// the core always re-reads the current level, never treats the bit as a toggle.
++void vo_set_output_wait(struct vo *vo, bool waiting)
++{
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    bool changed = in->output_wait != waiting;
++    in->output_wait = waiting;
++    mp_mutex_unlock(&in->lock);
++    if (changed)
++        vo_event(vo, VO_EVENT_OUTPUT_WAIT);
++}
++
++bool vo_get_output_wait(struct vo *vo)
++{
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    bool waiting = in->output_wait;
++    mp_mutex_unlock(&in->lock);
++    return waiting;
++}
++
+ // Check event flags set with vo_event(). Return the mask of events that was
+ // set and included in the events parameter. Clear the returned events.
+ int vo_query_and_reset_events(struct vo *vo, int events)
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -48,10 +48,12 @@
+     // For VOCTRL_GET_HIDPI_SCALE changes.
+     VO_EVENT_DPI                        = 1 << 6,
+     VO_EVENT_FOCUS                      = 1 << 7,
++    // A level change; the core reads vo_get_output_wait() after wakeup.
++    VO_EVENT_OUTPUT_WAIT                = 1 << 8,
+ 
+     // Set of events the player core may be interested in.
+     VO_EVENTS_USER = VO_EVENT_RESIZE | VO_EVENT_WIN_STATE | VO_EVENT_DPI |
+-                     VO_EVENT_FOCUS | VO_EVENT_AMBIENT_LIGHTING_CHANGED,
++                     VO_EVENT_FOCUS | VO_EVENT_AMBIENT_LIGHTING_CHANGED | VO_EVENT_OUTPUT_WAIT,
+ };
+ 
+ enum mp_voctrl {
+@@ -133,6 +135,10 @@
+     // Clipboard
+     VOCTRL_GET_CLIPBOARD,               // struct voctrl_clipboard*
+     VOCTRL_SET_CLIPBOARD,
++
++    // New playlist entry, distinct from seek/reset; private output handoff.
++    VOCTRL_FILE_CHANGED,
++    VOCTRL_FILE_READY,
+ };
+ 
+ // Helper to expose what kind of content is currently playing to the VO.
+@@ -572,6 +578,8 @@
+ int64_t vo_get_delayed_count(struct vo *vo);
+ void vo_query_formats(struct vo *vo, uint8_t *list);
+ void vo_event(struct vo *vo, int event);
++void vo_set_output_wait(struct vo *vo, bool waiting);
++bool vo_get_output_wait(struct vo *vo);
+ int vo_query_and_reset_events(struct vo *vo, int events);
+ struct mp_image *vo_get_current_frame(struct vo *vo);
+ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames,
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -52,6 +52,9 @@
+ #include "gpu/video_shaders.h"
+ #include "sub/osd.h"
+ #include "gpu_next/context.h"
++#if HAVE_DOVI_TUNNEL
++#include "gpu_next/dovi_tunnel.h"
++#endif
+ 
+ #if HAVE_GL && defined(PL_HAVE_OPENGL)
+ #include <libplacebo/opengl.h>
+@@ -121,6 +124,12 @@
+ };
+ 
+ struct priv {
++#if HAVE_DOVI_TUNNEL
++    struct dovi_tunnel *dovi_tunnel;
++    bool dovi_file_pending;
++    bool dovi_wait_file_ready;
++    uint64_t dovi_file_boundary;
++#endif
+     struct mp_log *log;
+     struct mpv_global *global;
+     struct stats_ctx *stats;
+@@ -233,6 +242,9 @@
+ };
+ 
+ struct gl_next_opts {
++    bool dovi_tunnel;
++    float dovi_gui_peak;
++    int dovi_cmv40, dovi_cmv40_peak;
+     struct pl_tone_map_constants tone_constants;
+     bool delayed_peak;
+     int sub_hdr_peak;
+@@ -262,6 +274,13 @@
+ #define OPT_BASE_STRUCT struct gl_next_opts
+ const struct m_sub_options gl_next_conf = {
+     .opts = (const struct m_option[]) {
++#if HAVE_DOVI_TUNNEL
++        {"dovi-tunnel", OPT_BOOL(dovi_tunnel), .flags = UPDATE_VO},
++        {"dovi-tunnel-gui-peak", OPT_FLOAT(dovi_gui_peak), M_RANGE(10, 1000)},
++        {"dovi-tunnel-cmv40", OPT_CHOICE(dovi_cmv40, {"off", 0}, {"no-trims", 1},
++            {"always", 2}, {"auto", 3})},
++        {"dovi-tunnel-cmv40-peak", OPT_INT(dovi_cmv40_peak), M_RANGE(0, 10000)},
++#endif
+         {"tone-mapping-knee-adaptation", OPT_FLOAT(tone_constants.knee_adaptation), M_RANGE(0, 1)},
+         {"tone-mapping-knee-minimum", OPT_FLOAT(tone_constants.knee_minimum), M_RANGE(0, 0.5)},
+         {"tone-mapping-knee-maximum", OPT_FLOAT(tone_constants.knee_maximum), M_RANGE(0.5, 1)},
+@@ -303,6 +322,8 @@
+         {0},
+     },
+     .defaults = &(struct gl_next_opts) {
++        .dovi_gui_peak = 200.0f,
++        .dovi_cmv40_peak = 1000,
+         .tone_constants = { PL_TONE_MAP_CONSTANTS },
+         .border_background = BACKGROUND_COLOR,
+         .background_blur_radius = 16.0f,
+@@ -1502,16 +1523,36 @@
+ 
+     struct pl_render_params params = pars->params;
+     const struct gl_video_opts *opts = p->opts_cache->opts;
++    bool dovi_wanted = false;
++#if HAVE_DOVI_TUNNEL
++    const bool dovi_enabled = p->next_opts->dovi_tunnel;
++    struct mp_image *dovi_frame = frame->current;
++    if (p->dovi_file_pending) {
++        if (!p->dovi_wait_file_ready && frame->num_frames && frame->frame_id > p->dovi_file_boundary)
++            p->dovi_file_pending = false;
++        else
++            dovi_frame = NULL; // a retained old frame must not re-enter DV
++    }
++    dovi_tunnel_set_mode(p->dovi_tunnel, 1, 2, false);
++    dovi_tunnel_set_content_type(p->dovi_tunnel, 6); // leave driver preference intact
++    dovi_wanted = dovi_tunnel_wanted(p->dovi_tunnel, dovi_enabled, dovi_frame, p->src);
++#endif
++#if HAVE_D3D11 && defined(PL_HAVE_D3D11)
++    // Only the raw DV carrier requires a synchronized transport. Ordinary
++    // rendering retains the configured Present interval, including Sync0.
++    ra_d3d11_ctx_set_dovi_transport(p->ra_ctx, dovi_wanted);
++#endif
++    bool blend_subs = opts->blend_subs && !dovi_wanted;
+     bool will_redraw = frame->display_synced && frame->num_vsyncs > 1;
+     // Independent subtitle ticks are not represented by num_vsyncs. Cache the
+     // fresh video frame too, otherwise its first subtitle redraw renders it a
+     // second time before subsequent redraws can reuse it. Keep video-blended
+     // subtitles on their original path, where subtitle changes affect the image.
+     double secondary_rate = osd_get_secondary_refresh(vo->osd);
+-    bool secondary_redraw = !opts->blend_subs && secondary_rate > 0 &&
++    bool secondary_redraw = !blend_subs && secondary_rate > 0 &&
+         frame->duration > MP_TIME_S_TO_NS(1.0 / secondary_rate);
+     bool cache_frame = will_redraw || secondary_redraw || frame->still || p->paused;
+-    bool can_interpolate = opts->interpolation && frame->display_synced &&
++    bool can_interpolate = !dovi_wanted && opts->interpolation && frame->display_synced &&
+                            !frame->still && frame->num_frames > 1 && !p->paused;
+     if (p->timing_diagnostics) {
+         p->timing_draw++;
+@@ -1526,7 +1567,7 @@
+     params.info_priv = vo;
+     params.skip_caching_single_frame = !cache_frame;
+     params.preserve_mixing_cache = p->next_opts->inter_preserve && !frame->still;
+-    if (frame->still || p->paused)
++    if (frame->still || p->paused || dovi_wanted)
+         params.frame_mixer = NULL;
+ 
+     if (frame->current && frame->current->params.vflip) {
+@@ -1634,7 +1675,7 @@
+         target_ref_luma = get_ref_luma(p);
+     }
+     bool external_params = false;
+-    if (target_hint && frame->current) {
++    if (target_hint && frame->current && !dovi_wanted) {
+         const struct pl_color_space *source = &frame->current->params.color;
+         const struct pl_color_space *target = &target_csp;
+         hint = *source;
+@@ -1736,6 +1777,9 @@
+         if (p->icc_profile)
+             hint = p->icc_profile->csp;
+         external_params = set_colorspace_hint(p, &hint);
++    } else if (dovi_wanted) {
++        hint = pl_color_space_srgb;
++        external_params = set_colorspace_hint(p, &hint);
+     } else if (!target_hint) {
+         if (!hint.hdr.min_luma)
+             hint.hdr.min_luma = target_csp.hdr.min_luma;
+@@ -1824,7 +1868,7 @@
+     }
+     stats_time_start(p->stats, "osd-update");
+     update_overlays(vo, p->osd_res,
+-                    (frame->current && opts->blend_subs) ? OSD_DRAW_OSD_ONLY : 0,
++                    (frame->current && blend_subs) ? OSD_DRAW_OSD_ONLY : 0,
+                     PL_OVERLAY_COORDS_DST_FRAME, &p->osd_state, &target, frame->current,
+                     frame->current ? frame->current->params.stereo3d : 0, get_ref_luma(p));
+     stats_time_end(p->stats, "osd-update");
+@@ -1883,7 +1927,7 @@
+             struct mp_image *mpi = image->user_data;
+             struct frame_priv *fp = mpi->priv;
+             apply_crop(image, p->src, vo->params->w, vo->params->h);
+-            if (opts->blend_subs) {
++            if (blend_subs) {
+                 if (frame->redraw)
+                     p->osd_sync++;
+                 if (fp->osd_sync < p->osd_sync) {
+@@ -1976,7 +2020,15 @@
+     pacing_gpu_stage(vo, 140, 0);
+     vo_pacing_span_now(vo, 140, 0);
+     pacing_gpu_marker(vo, 2);
+-    bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
++    bool tunneled = false;
++#if HAVE_DOVI_TUNNEL
++    dovi_tunnel_set_picture_options(p->dovi_tunnel, p->next_opts->dovi_gui_peak,
++                                    p->next_opts->dovi_cmv40, p->next_opts->dovi_cmv40_peak);
++    tunneled = dovi_tunnel_draw(p->dovi_tunnel, dovi_enabled,
++                               p->paused || frame->still, true,
++                               dovi_frame, p->src, &target);
++#endif
++    bool render_ok = tunneled || pl_render_image_mix(p->rr, &mix, &target, &params);
+     pacing_gpu_stage(vo, 141, render_ok);
+     vo_pacing_span_now(vo, 141, render_ok);
+     if (p->timing_diagnostics) {
+@@ -2008,11 +2060,11 @@
+ 
+     if (vo->params) {
+         // Augment metadata with the peak detection results
+-        vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &vo->params->color.hdr);
++        vo->has_peak_detect_values = !tunneled && pl_renderer_get_hdr_metadata(p->rr, &vo->params->color.hdr);
+     }
+     mp_mutex_unlock(&vo->params_mutex);
+ 
+-    p->is_interpolated = pts_offset != 0 && mix.num_frames > 1;
++    p->is_interpolated = !tunneled && pts_offset != 0 && mix.num_frames > 1;
+     valid = true;
+     // fall through
+ 
+@@ -2431,9 +2483,41 @@
+                             border_alpha;
+ }
+ 
++#if HAVE_DOVI_TUNNEL
++static bool defer_dovi_window_change(struct vo *vo, uint32_t request, int *events)
++{
++    struct priv *p = vo->priv;
++    struct dovi_tunnel *t = p->dovi_tunnel;
++    if (request == VOCTRL_VO_OPTS_CHANGED &&
++        dovi_tunnel_defer_window_change(t, vo->opts->fullscreen))
++        return true;
++    // update_opts sends this immediately after VO_OPTS_CHANGED. Keep both
++    // halves deferred so the retained carrier is not resized prematurely.
++    if (request == VOCTRL_SET_PANSCAN && dovi_tunnel_window_change_pending(t))
++        return true;
++    if (request == VOCTRL_CHECK_EVENTS && dovi_tunnel_window_change_ready(t)) {
++        // D3D11 and W32 each have their own option cache. Neither has consumed
++        // the pending fullscreen/maximize/geometry updates yet, so this applies
++        // the latest intent once, even after repeated clicks or Esc.
++        int r = p->ra_ctx->fns->control(p->ra_ctx, events, VOCTRL_VO_OPTS_CHANGED, NULL);
++        dovi_tunnel_finish_window_change(t, r > 0);
++        if (r > 0)
++            *events |= VO_EVENT_RESIZE; // includes the deferred panscan update
++        else
++            MP_ERR(vo, "Deferred Dolby Vision window transition failed; output remains held.\n");
++    }
++    return false;
++}
++#endif
++
+ static int control(struct vo *vo, uint32_t request, void *data)
+ {
+     struct priv *p = vo->priv;
++    int events = 0;
++#if HAVE_DOVI_TUNNEL
++    if (defer_dovi_window_change(vo, request, &events))
++        return VO_TRUE;
++#endif
+ 
+     switch (request) {
+     case VOCTRL_SET_PANSCAN:
+@@ -2465,13 +2549,34 @@
+         // Also re-query the auto profile, in case `update_render_options`
+         // unloaded a manually specified icc profile in favor of
+         // icc-profile-auto
+-        int events = 0;
+         update_auto_profile(p, &events);
+         vo_event(vo, events);
+         return VO_TRUE;
+     }
+ 
++    case VOCTRL_FILE_CHANGED:
++#if HAVE_DOVI_TUNNEL
++        p->dovi_file_boundary = p->last_id;
++        p->dovi_file_pending = dovi_tunnel_file_changed(p->dovi_tunnel) || p->dovi_file_pending;
++        p->dovi_wait_file_ready = p->dovi_file_pending;
++#endif
++        return VO_TRUE;
++
++    case VOCTRL_FILE_READY:
++#if HAVE_DOVI_TUNNEL
++        // Redraw/requeue of the retained old image during demux loading may
++        // itself receive a new VO ID. Only the ready boundary can exclude it.
++        if (p->dovi_file_pending) {
++            p->dovi_file_boundary = p->last_id;
++            p->dovi_wait_file_ready = false;
++        }
++#endif
++        return VO_TRUE;
++
+     case VOCTRL_RESET:
++#if HAVE_DOVI_TUNNEL
++        dovi_tunnel_reset(p->dovi_tunnel);
++#endif
+         // Defer until the first new frame (unique ID) actually arrives
+         p->want_seek_reset = true;
+         return VO_TRUE;
+@@ -2496,7 +2601,6 @@
+         return true;
+     }
+ 
+-    int events = 0;
+     int r = p->ra_ctx->fns->control(p->ra_ctx, &events, request, data);
+     if (events & VO_EVENT_ICC_PROFILE_CHANGED) {
+         if (update_auto_profile(p, &events))
+@@ -2722,6 +2826,9 @@
+ {
+     struct priv *p = vo->priv;
+ 
++#if HAVE_DOVI_TUNNEL
++    dovi_tunnel_destroy(&p->dovi_tunnel);
++#endif
+     // Drain any in-flight uploads.
+     if (p->gpu)
+         pl_gpu_finish(p->gpu);
+@@ -2800,6 +2907,7 @@
+     struct gl_video_opts *gl_opts = p->opts_cache->opts;
+     struct ra_ctx_opts *ctx_opts = mp_get_config_group(vo, vo->global, &ra_ctx_conf);
+     update_ra_ctx_options(vo, ctx_opts);
++    ctx_opts->sdr_8bit = p->next_opts->dovi_tunnel;
+     p->context = gpu_ctx_create(vo, ctx_opts);
+     talloc_free(ctx_opts);
+     if (!p->context)
+@@ -2809,6 +2917,9 @@
+     p->pllog = p->context->pllog;
+     p->gpu = p->context->gpu;
+     p->sw = p->context->swapchain;
++#if HAVE_DOVI_TUNNEL
++    p->dovi_tunnel = dovi_tunnel_create(vo, p->log, p->ra_ctx, p->gpu, p->pllog);
++#endif
+     p->hwdec_ctx = (struct ra_hwdec_ctx) {
+         .log = p->log,
+         .global = p->global,
+--- a/video/out/w32_common.c
++++ b/video/out/w32_common.c
+@@ -2618,6 +2618,30 @@
+     mp_dispatch_run(w32->dispatch, cb, ctx);
+ }
+ 
++static void sync_dovi_fullscreen(void *ptr)
++{
++    struct vo_w32_state *w32 = ptr;
++    // Do not alter embedded, minimized or ordinary/windowed playback.
++    if (w32->parent || w32->destroyed || !w32->window ||
++        !w32->current_fs || !w32->opts->fullscreen || IsMinimized(w32->window))
++        return;
++    force_update_display_info(w32);
++    RECT target = get_screen_area(w32);
++    RECT current;
++    if (GetWindowRect(w32->window, &current) && !EqualRect(&current, &target)) {
++        MP_VERBOSE(w32, "DV fullscreen physical rectangle: %ld,%ld %ldx%ld.\n",
++                   target.left, target.top, rect_w(target), rect_h(target));
++        window_set_pos(w32, target);
++        signal_events(w32, VO_EVENT_RESIZE);
++    }
++}
++
++void vo_w32_sync_dovi_fullscreen(struct vo *vo)
++{
++    if (vo && vo->w32)
++        vo_w32_run_on_thread(vo, sync_dovi_fullscreen, vo->w32);
++}
++
+ void vo_w32_set_transparency(struct vo *vo, bool enable)
+ {
+     struct vo_w32_state *w32 = vo->w32;
+--- a/video/out/w32_common.h
++++ b/video/out/w32_common.h
+@@ -35,5 +35,7 @@
+ bool vo_w32_composition_size(struct vo *vo);
+ void vo_w32_run_on_thread(struct vo *vo, void (*cb)(void *ctx), void *ctx);
+ void vo_w32_set_transparency(struct vo *vo, bool enable);
++// DV handshake only: reconcile a fullscreen window after physical mode/DPI changes.
++void vo_w32_sync_dovi_fullscreen(struct vo *vo);
+ 
+ #endif /* MPLAYER_W32_COMMON_H */
