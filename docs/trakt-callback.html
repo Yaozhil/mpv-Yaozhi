@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d131f">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Trakt 授权 · Yaoplayer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: #f1f5fc;
+      background: #0d131f;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none; }
+
+    body {
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      min-height: 100svh;
+      margin: 0;
+      padding: 20px;
+    }
+
+    main {
+      width: min(100%, 32rem);
+      padding: clamp(20px, 6vw, 36px);
+      border: 1px solid #2b3951;
+      border-radius: 16px;
+      background: #151e2e;
+    }
+
+    .brand {
+      margin: 0 0 12px;
+      color: #9bbcff;
+      font-size: .875rem;
+      font-weight: 600;
+    }
+
+    h1 { margin: 0; font-size: clamp(1.5rem, 6vw, 1.875rem); }
+    p { line-height: 1.65; }
+    .description { margin: 12px 0 0; color: #b9c6da; overflow-wrap: anywhere; }
+    .field { margin-top: 24px; }
+    label { display: block; margin-bottom: 8px; font-weight: 600; }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    input, button {
+      min-height: 44px;
+      border: 1px solid #3b5072;
+      border-radius: 8px;
+      font: inherit;
+    }
+
+    input {
+      flex: 1 1 13rem;
+      min-width: 0;
+      padding: 10px 12px;
+      background: #0d131f;
+      color: inherit;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+
+    button {
+      padding: 8px 16px;
+      border-color: #4c8dff;
+      background: #4c8dff;
+      color: #08162b;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:hover { background: #79aaff; }
+    :focus-visible { outline: 2px solid #a7c6ff; outline-offset: 3px; }
+    #copy-status { margin: 8px 0 0; color: #a7c6ff; }
+    #copy-status:empty { margin: 0; }
+
+    @media (max-width: 400px) {
+      .controls > * { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main aria-labelledby="heading">
+    <p class="brand">Yaoplayer · Trakt</p>
+    <h1 id="heading">授权未完成</h1>
+    <p id="reason" class="description">请在 Yaoplayer 中重新发起 Trakt 绑定。</p>
+
+    <section id="manual" hidden>
+      <div class="field">
+        <label for="authorization-code">授权码</label>
+        <div class="controls">
+          <input id="authorization-code" type="text" readonly autocomplete="off" spellcheck="false">
+          <button id="copy" type="button">复制</button>
+        </div>
+        <p id="copy-status" role="status"></p>
+      </div>
+      <p class="description">若未自动跳转，请复制上方授权码回到 Yaoplayer 手动粘贴完成绑定。</p>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const query = window.location.search;
+      const params = new URLSearchParams(query);
+      const code = params.get("code");
+      const state = params.get("state");
+      const error = params.get("error");
+      const heading = document.getElementById("heading");
+      const reason = document.getElementById("reason");
+
+      if (params.has("error") || !code || !code.trim()) {
+        const description = params.get("error_description");
+        if (error === "access_denied") {
+          reason.textContent = "你取消了 Trakt 授权。可回到 Yaoplayer 重新发起绑定。";
+        } else if (params.has("error")) {
+          reason.textContent = description || error || "Trakt 未返回授权结果。请在 Yaoplayer 中重试。";
+        } else {
+          reason.textContent = "回调中缺少授权码。请回到 Yaoplayer 重新发起绑定。";
+        }
+        return;
+      }
+
+      const manual = document.getElementById("manual");
+      const input = document.getElementById("authorization-code");
+      const copy = document.getElementById("copy");
+      const status = document.getElementById("copy-status");
+      const fromBrowserBack = performance.getEntriesByType("navigation")[0]?.type === "back_forward";
+
+      heading.textContent = "已收到 Trakt 授权码";
+      reason.textContent = fromBrowserBack
+        ? "可以在此复制授权码，回到 Yaoplayer 完成绑定。"
+        : "正在将授权结果交给本机 Yaoplayer。";
+      if (!state) reason.textContent = "回调中缺少授权状态。如绑定失败，请从 Yaoplayer 重新发起授权。";
+      input.value = code;
+      manual.hidden = false;
+
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(code);
+          status.textContent = "授权码已复制。";
+          return;
+        } catch {
+          input.focus();
+          input.select();
+          input.setSelectionRange(0, input.value.length);
+        }
+
+        try {
+          if (document.execCommand("copy")) {
+            status.textContent = "授权码已复制。";
+            return;
+          }
+        } catch {
+          // Leave the code selected for the system copy action.
+        }
+        status.textContent = "授权码已选中，请使用 Ctrl+C 或手机的复制菜单。";
+      });
+
+      if (!fromBrowserBack) {
+        // Pass the original query, including state, to the fixed loopback destination.
+        const timer = window.setTimeout(() => {
+          window.location.assign("http://127.0.0.1:45821/trakt/callback" + query);
+        }, 400);
+        window.addEventListener("pagehide", () => window.clearTimeout(timer), { once: true });
+      }
+    })();
+  </script>
+</body>
+</html>
