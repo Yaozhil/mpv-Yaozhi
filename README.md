@@ -323,4 +323,4 @@ mpv-Yaozhi 基于 [mpv](https://github.com/mpv-player/mpv) 与 [dyphire/mpv-conf
 公开仓库中由 Yaozhi 独立创作并由仓库许可证明确覆盖的代码与文档采用 [MIT License](https://github.com/Yaozhil/mpv-Yaozhi/blob/main/LICENSE.md)。
 
 ## Trakt Attribution
-Your app uses Trakt but is not endorsed or certified by Trakt.
+Yaoplayer uses Trakt but is not endorsed or certified by Trakt.
